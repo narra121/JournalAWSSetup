@@ -47,8 +47,10 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS identity
         run: aws sts get-caller-identity
+      - name: Ensure esbuild present
+        run: npx esbuild --version
       - name: SAM Build
-        run: sam build --use-container
+        run: sam build
 
   deploy-dev:
     runs-on: ubuntu-latest
