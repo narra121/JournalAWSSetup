@@ -1,0 +1,10 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /v1/trades/extract",
+  "rawPath": "/v1/trades/extract",
+  "headers": { "content-type": "application/json" },
+  "requestContext": { "http": { "method": "POST", "path": "/v1/trades/extract" } },
+  "body": "{\n  \"imageBase64\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAE0lEQVR4nGP4z8DwnwEIwDiqAgB7Xgbc0HwXfwAAAABJRU5ErkJggg==\"\n}",
+  "isBase64Encoded": false
+}
+

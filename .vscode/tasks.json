@@ -1,0 +1,46 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "sam: start-api (debug)",
+			"type": "shell",
+			"command": "sam local start-api --env-vars env-extract.json ",
+			"isBackground": true,
+			"problemMatcher": {
+				"owner": "sam-debug",
+				"pattern": {
+					"regexp": ".*"
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": ".*Mounting ",
+					"endsPattern": ".*Running on http://127.0.0.1:3000"
+				}
+			}
+		},
+		{
+			"label": "Validate SAM Template",
+			"type": "shell",
+			"command": "sam validate",
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Deploy Dev Stack",
+			"type": "shell",
+			"command": "npm run deploy:dev",
+			"group": "none"
+		},
+		{
+			"label": "Deploy Prod Stack",
+			"type": "shell",
+			"command": "npm run deploy:prod",
+			"group": "none"
+		},
+		{
+			"label": "Validate SAM Template",
+			"type": "shell",
+			"command": "sam validate"
+		}
+	]
+}

@@ -1,0 +1,51 @@
+{
+  "name": "trading-journal-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "deploy:dev": "powershell -ExecutionPolicy Bypass -File ./deploy-dev.ps1",
+    "deploy:prod": "powershell -ExecutionPolicy Bypass -File ./deploy-prod.ps1",
+    "cleanup:dev": "aws cloudformation delete-stack --stack-name trading-journal-backend-dev",
+    "cleanup:prod": "aws cloudformation delete-stack --stack-name trading-journal-backend-prod",
+    "wait:dev": "aws cloudformation wait stack-delete-complete --stack-name trading-journal-backend-dev",
+    "wait:prod": "aws cloudformation wait stack-delete-complete --stack-name trading-journal-backend-prod",
+    "redeploy:dev": "npm run cleanup:dev && npm run wait:dev && npm run deploy:dev",
+    "redeploy:prod": "npm run cleanup:prod && npm run wait:prod && npm run deploy:prod",
+    "status:dev": "aws cloudformation describe-stacks --stack-name trading-journal-backend-dev --query \"Stacks[0].{StackStatus:StackStatus,LastUpdated:LastUpdatedTime}\"",
+    "status:prod": "aws cloudformation describe-stacks --stack-name trading-journal-backend-prod --query \"Stacks[0].{StackStatus:StackStatus,LastUpdated:LastUpdatedTime}\"",
+    "outputs:dev": "aws cloudformation describe-stacks --stack-name trading-journal-backend-dev --query \"Stacks[0].Outputs\"",
+    "outputs:prod": "aws cloudformation describe-stacks --stack-name trading-journal-backend-prod --query \"Stacks[0].Outputs\"",
+    "url:dev": "aws cloudformation describe-stacks --stack-name trading-journal-backend-dev --query \"Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue\" --output text",
+    "url:prod": "aws cloudformation describe-stacks --stack-name trading-journal-backend-prod --query \"Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue\" --output text",
+    "logs:dev": "sam logs --stack-name trading-journal-backend-dev --tail",
+    "logs:prod": "sam logs --stack-name trading-journal-backend-prod --tail",
+    "build": "sam build",
+    "validate": "sam validate",
+    "local": "sam local start-api --port 3001"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.634.0",
+    "@aws-sdk/lib-dynamodb": "^3.634.0",
+    "@aws-sdk/client-s3": "^3.634.0",
+    "@aws-sdk/s3-request-presigner": "^3.634.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.634.0",
+    "@aws-sdk/client-ssm": "^3.590.0",
+  "@aws-sdk/client-cloudwatch-logs": "^3.634.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "@google/generative-ai": "^0.11.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/aws-lambda": "^8.10.134",
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.8.0",
+    "@typescript-eslint/eslint-plugin": "^7.8.0",
+    "vitest": "^1.6.0",
+    "ts-node": "^10.9.2"
+  }
+}

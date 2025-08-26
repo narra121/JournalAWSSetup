@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "auth-signup.schema.json",
+  "type": "object",
+  "required": ["email", "password"],
+  "additionalProperties": false,
+  "properties": {
+    "email": { "type": "string", "format": "email" },
+    "password": { "type": "string", "minLength": 12, "maxLength": 128, "pattern": "(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).*" }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "trade-create.schema.json",
+  "type": "object",
+  "required": ["symbol", "side", "quantity", "openDate"],
+  "additionalProperties": false,
+  "properties": {
+    "symbol": { "type": "string", "minLength": 1 },
+    "side": { "type": "string", "enum": ["BUY", "SELL"] },
+    "quantity": { "type": "number", "minimum": 0.0000001 },
+    "openDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "closeDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "entryPrice": { "type": ["number", "null"], "minimum": 0 },
+    "exitPrice": { "type": ["number", "null"], "minimum": 0 },
+    "stopLoss": { "type": ["number", "null"], "minimum": 0 },
+    "takeProfit": { "type": ["number", "null"], "minimum": 0 },
+    "commission": { "type": ["number", "null"], "minimum": 0 },
+    "fees": { "type": ["number", "null"], "minimum": 0 },
+    "riskAmount": { "type": ["number", "null"], "minimum": 0 },
+    "setupType": { "type": ["string", "null"], "maxLength": 64 },
+    "timeframe": { "type": ["string", "null"], "maxLength": 32 },
+    "marketCondition": { "type": ["string", "null"], "maxLength": 64 },
+    "tradingSession": { "type": ["string", "null"], "maxLength": 32 },
+    "tradeGrade": { "type": ["string", "null"], "enum": ["A","B","C","D","F", null] },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+    "setupQuality": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+    "execution": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+    "emotionalState": { "type": ["string", "null"], "maxLength": 128 },
+    "psychology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "greed": { "type": "boolean" },
+        "fear": { "type": "boolean" },
+        "fomo": { "type": "boolean" },
+        "revenge": { "type": "boolean" },
+        "overconfidence": { "type": "boolean" },
+        "patience": { "type": "boolean" }
+      }
+    },
+    "preTradeNotes": { "type": ["string", "null"], "maxLength": 4000 },
+    "postTradeNotes": { "type": ["string", "null"], "maxLength": 4000 },
+    "mistakes": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 50 },
+    "lessons": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 50 },
+    "newsEvents": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 50 },
+    "economicEvents": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 50 },
+    "status": { "type": ["string", "null"], "enum": ["OPEN","CLOSED","PARTIAL","CANCELLED", null] },
+    "tags": { "type": "array", "items": { "type": "string", "maxLength": 32 }, "maxItems": 50 },
+    "images": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "minLength": 1 },
+          "base64Data": { "type": "string", "pattern": "^data:image/" },
+          "timeframe": { "type": ["string", "null"], "maxLength": 32 },
+          "description": { "type": ["string", "null"], "maxLength": 256 }
+        }
+      }
+    }
+  }
+}

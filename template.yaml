@@ -1,0 +1,984 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Trading Journal Backend (Cognito + HTTP API + Lambda + DynamoDB + S3)
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        # Allow either newly created resources or existing ones passed in via parameters
+        TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        TRADE_STATS_TABLE: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+        IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+        RATE_LIMIT_TABLE: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        USER_POOL_ID: !Ref UserPool
+        USER_POOL_CLIENT_ID: !Ref UserPoolClient
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: Deployment stage (lowercase) used in resource names.
+    AllowedPattern: '^[a-z0-9-]+$'
+  ApiVersion:
+    Type: String
+    Default: v1
+    Description: API version prefix (e.g. v1)
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,1827,3653]
+    Description: CloudWatch Logs retention in days (10 is not supported; choose nearest 7 or 14).
+  GeminiApiKeyParamName:
+    Type: String
+    Default: /trading-journal/geminiApiKey
+    Description: Name of SSM SecureString parameter storing the Gemini API key.
+  UseExistingResources:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true","false"]
+    Description: Set to true to reuse existing DynamoDB tables & S3 bucket instead of creating new ones.
+  ExistingTradesTableName:
+    Type: String
+    Default: ""
+    Description: Name of an existing Trades table (required if UseExistingResources=true)
+  ExistingTradeStatsTableName:
+    Type: String
+    Default: ""
+    Description: Name of an existing TradeStats table (required if UseExistingResources=true)
+  ExistingImagesBucketName:
+    Type: String
+    Default: ""
+    Description: Name of an existing Images bucket (required if UseExistingResources=true)
+  ExistingAuthRateLimitTableName:
+    Type: String
+    Default: ""
+    Description: Name of an existing AuthRateLimit table (required if UseExistingResources=true)
+
+Conditions:
+  CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub TradingJournalUserPool-${StageName}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: web
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: ["http://localhost:3000/"]
+      LogoutURLs: ["http://localhost:3000/"]
+      AllowedOAuthFlowsUserPoolClient: false
+
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateNewDataResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, HEAD]
+            MaxAge: 300
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+  TradesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      # Include ApiVersion so table replacement can occur when adding new GSIs; avoids multi-GSI update limit
+      TableName: !Sub Trades-${StageName}-${ApiVersion}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: tradeId
+          AttributeType: S
+        - AttributeName: openDate
+          AttributeType: S
+        - AttributeName: symbolOpenDate
+          AttributeType: S
+        - AttributeName: statusOpenDate
+          AttributeType: S
+        - AttributeName: idempotencyKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: tradeId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: trades-by-date-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: openDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: user-symbol-date-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: symbolOpenDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: user-status-date-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: statusOpenDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: user-idempotency-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: idempotencyKey
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+  TradeStatsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub TradeStats-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  AuthRateLimitTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub AuthRateLimit-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience: [!Ref UserPoolClient]
+        DefaultAuthorizer: CognitoAuthorizer
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - '*'
+        AllowHeaders:
+          - '*'
+        ExposeHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 3600
+
+  CreateTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-trade/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  GetTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-trade/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/{tradeId}
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  ListTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-trades/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  UpdateTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-trade/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/{tradeId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  DeleteTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-trade/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/{tradeId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  BulkDeleteTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/bulk-delete-trades/app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+      Description: Bulk delete trades
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/bulk-delete
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/bulk-delete-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  GenerateUploadUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/generate-upload-url/app.handler
+      Policies:
+        - S3WritePolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: "/upload-url"
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/generate-upload-url/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  UpdateStatsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-stats/app.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt StatsDLQ.Arn
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt TradesTable.StreamArn
+            StartingPosition: LATEST
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 2
+            DestinationConfig:
+              OnFailure:
+                Destination: !GetAtt StatsDLQ.Arn
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  StatsDLQ:
+    Type: AWS::SQS::Queue
+    Condition: CreateNewDataResources
+    Properties:
+      QueueName: !Sub stats-dlq-${StageName}
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  StatsFunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateNewDataResources
+    Properties:
+      AlarmName: !Sub StatsFunctionErrors-${StageName}
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UpdateStatsFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+  GetStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-stats/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/stats
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  RebuildAllStatsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/rebuild-stats-job/app.handler
+      Description: Periodic full stats rebuild for all users (scan Trades)
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Name: !Sub RebuildStats-${StageName}
+            Description: Periodic full stats rebuild
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/rebuild-stats-job/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-signup/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:SignUp
+            Resource: !GetAtt UserPool.Arn
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/signup
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthConfirmSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-confirm-signup/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ConfirmSignUp
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/confirm-signup
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-confirm-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthLoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-login/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:InitiateAuth
+            Resource: '*'
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-login/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthRefreshFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-refresh/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:InitiateAuth
+            Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/refresh
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-refresh/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthForgotPasswordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-forgot-password/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ForgotPassword
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/forgot-password
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-forgot-password/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  AuthConfirmForgotPasswordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-confirm-forgot-password/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ConfirmForgotPassword
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/confirm-forgot-password
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-confirm-forgot-password/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  AuthDeleteAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-delete-account/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminDeleteUser
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/account
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-delete-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  AuthExportAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-export-account/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/export
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-export-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  AuthGlobalSignOutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-global-signout/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminUserGlobalSignOut
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/logout-all
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-global-signout/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  OpenApiSpecFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/openapi-spec/app.handler
+      AutoPublishAlias: live
+      Description: Serve OpenAPI specification (public)
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/openapi.yaml
+            Method: GET
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/openapi-spec/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  OpenApiDocsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/openapi-docs/app.handler
+      AutoPublishAlias: live
+      Description: Serve Swagger UI HTML (public)
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/docs
+            Method: GET
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/openapi-docs/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  ExtractTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/extract-trades/app.handler
+      AutoPublishAlias: live
+      Description: Extract structured trades from an image using Gemini vision model
+      Timeout: 600 # Increased to 10 minutes for long-running Gemini processing
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/extract
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/extract-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  TradesTableName:
+    Value: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+  TradeStatsTableName:
+    Value: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+  ImagesBucketName:
+    Value: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
