@@ -47,6 +47,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS identity
         run: aws sts get-caller-identity
+      - name: Install esbuild (explicit for SAM)
+        run: npm install esbuild --no-audit --no-fund
       - name: Ensure esbuild present
         run: npx esbuild --version
       - name: SAM Build
