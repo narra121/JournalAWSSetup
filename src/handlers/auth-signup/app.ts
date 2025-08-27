@@ -28,7 +28,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const r = await client.send(cmd);
     return resp(200, { userConfirmed: r.UserConfirmed, codeDelivery: r.CodeDeliveryDetails });
   } catch (e: any) {
-    console.error('Signup error:', { name: e?.name, message: e?.message, stack: e?.stack });
+    console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
     return resp(400, { message: e?.message || 'Signup failed', code: e?.name || 'Error' });
   }
 };
