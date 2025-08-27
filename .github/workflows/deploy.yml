@@ -60,7 +60,6 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
-      - uses: PowerShell/setup-powershell@v2
       - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -83,7 +82,6 @@ jobs:
       url: https://console.aws.amazon.com/cloudformation/home?region=${{ env.AWS_REGION }}#/stacks?filter=active&stackStatusFilter=COMPLETE&s=trading-journal-backend-prod
     steps:
       - uses: actions/checkout@v4
-      - uses: PowerShell/setup-powershell@v2
       - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
