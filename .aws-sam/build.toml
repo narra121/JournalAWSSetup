@@ -47,6 +47,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.e4dcbe15-aae4-479d-9f1d-04f30eec4d62]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -64,6 +65,7 @@ EntryPoints = ["src/handlers/get-trade/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -141,6 +143,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.ae93089f-47b4-4d1c-ad15-16152013574e]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -158,6 +161,7 @@ EntryPoints = ["src/handlers/update-trade/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -235,6 +239,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.10ec0c00-8764-4e63-a0ab-c5249c9103cc]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -252,6 +257,7 @@ EntryPoints = ["src/handlers/generate-upload-url/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -329,6 +335,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.67453c9e-5b3a-4272-9bdd-3bd98455bed4]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -346,6 +353,7 @@ EntryPoints = ["src/handlers/get-stats/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -423,6 +431,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.cb0b61ad-e2cb-4a9e-8e4d-5ca7c0a4779d]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -440,6 +449,7 @@ EntryPoints = ["src/handlers/auth-signup/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -517,6 +527,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.619a503e-edf9-49c5-ac8c-db530e45df18]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -534,6 +545,7 @@ EntryPoints = ["src/handlers/auth-login/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -611,6 +623,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.a77f53fd-2a29-4713-b555-aeeca28c368d]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -628,6 +641,7 @@ EntryPoints = ["src/handlers/auth-forgot-password/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -705,6 +719,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.89d13c57-c3b7-4232-a6ff-137e28b879d6]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -722,6 +737,7 @@ EntryPoints = ["src/handlers/auth-delete-account/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -799,6 +815,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.a2922230-307b-4818-bd4b-c15a17e2e463]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -816,6 +833,7 @@ EntryPoints = ["src/handlers/auth-global-signout/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -893,6 +911,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.1b81a96a-2354-4eaa-94e4-6dd0e24e4a53]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -910,6 +929,7 @@ EntryPoints = ["src/handlers/openapi-docs/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
@@ -987,6 +1007,7 @@ Sourcemap = true
 
 
 
+
 [function_build_definitions.17409e68-65d3-41c7-9704-2dc4a183d6f7]
 codeuri = "C:\\Work\\me\\Test"
 runtime = "nodejs20.x"
@@ -1004,6 +1025,7 @@ EntryPoints = ["src/handlers/bulk-delete-trades/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
 
 
 
