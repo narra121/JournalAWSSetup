@@ -21,7 +21,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!event.body) return resp(400, { message: 'Missing body' });
     const { email, password } = JSON.parse(event.body);
     if (!email || !password) return resp(400, { message: 'email and password required' });
-  if (password.length < 5 || password.length > 18) return resp(400, { message: 'password must be 6-18 characters' });
+  if (password.length < 6 || password.length > 18) return resp(400, { message: 'password must be 6-18 characters' });
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
     if (!rl.allowed) return resp(429, { message: 'Too many attempts', retryAfter: rl.retryAfter });
     const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }] });
