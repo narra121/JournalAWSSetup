@@ -57,6 +57,7 @@ components:
         fees: { type: [number, 'null'] }
         riskAmount: { type: [number, 'null'] }
         riskRewardRatio: { type: [number, 'null'] }
+  achievedRiskRewardRatio: { type: [number, 'null'] }
         setupType: { type: [string, 'null'] }
         timeframe: { type: [string, 'null'] }
         marketCondition: { type: [string, 'null'] }
@@ -115,6 +116,7 @@ components:
         commission: { type: [number, 'null'], minimum: 0 }
         fees: { type: [number, 'null'], minimum: 0 }
         riskAmount: { type: [number, 'null'], minimum: 0 }
+  achievedRiskRewardRatio: { type: [number, 'null'], minimum: 0 }
         setupType: { type: [string, 'null'], maxLength: 64 }
         timeframe: { type: [string, 'null'], maxLength: 32 }
         marketCondition: { type: [string, 'null'], maxLength: 64 }

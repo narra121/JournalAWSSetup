@@ -116,6 +116,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           }
           const riskAmount = num(t.riskAmount) || 0;
           const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
+          const achievedRiskRewardRatio = t.achievedRiskRewardRatio != null ? Number(t.achievedRiskRewardRatio) : null;
           const status = t.status; // use client-provided status only
           const nowLocal = new Date().toISOString();
             const item: any = {
@@ -153,6 +154,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             newsEvents: Array.isArray(t.newsEvents) ? t.newsEvents : [],
             economicEvents: Array.isArray(t.economicEvents) ? t.economicEvents : [],
             status,
+            achievedRiskRewardRatio,
             tags: Array.isArray(t.tags) ? t.tags : [],
             images,
             createdAt: nowLocal,
@@ -295,7 +297,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     pnl = netPnl + costs; // reconstruct gross
   }
     const riskAmount = num(data.riskAmount) || 0;
-    const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
+  const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
+  const achievedRiskRewardRatio = data.achievedRiskRewardRatio != null ? Number(data.achievedRiskRewardRatio) : null;
   const status = data.status; // do not infer status; trust request
 
     const now = new Date().toISOString();
@@ -335,7 +338,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       lessons: Array.isArray(data.lessons) ? data.lessons : [],
       newsEvents: Array.isArray(data.newsEvents) ? data.newsEvents : [],
       economicEvents: Array.isArray(data.economicEvents) ? data.economicEvents : [],
-      status,
+  status,
+  achievedRiskRewardRatio,
       tags: Array.isArray(data.tags) ? data.tags : [],
       images,
       createdAt: now,

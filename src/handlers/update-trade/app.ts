@@ -116,7 +116,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Direct field mapping helper
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','status'];
+  const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','status','achievedRiskRewardRatio'];
     for (const f of mapable) if (f in data) existing[f] = data[f];
     const arrFields = ['mistakes','lessons','tags','newsEvents','economicEvents'];
     for (const f of arrFields) if (Array.isArray(data[f])) existing[f] = data[f];
