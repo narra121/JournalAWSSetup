@@ -6,6 +6,7 @@ import { S3Client, PutObjectCommand, DeleteObjectsCommand, GetObjectCommand } fr
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { errorFromException } from '../../shared/validation';
 import { v4 as uuid } from 'uuid';
+import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -105,13 +106,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Determine deletions: any previous image id not present in incoming list -> delete object
       const toDeleteKeys = prevImages
         .filter(img => !incomingById.has(img.id) && typeof img.url === 'string')
-        .map(img => {
-          // Derive key from url (assumes bucket URL format)
-          const idx = img.url.indexOf('.amazonaws.com/');
-          if (idx === -1) return null;
-          return img.url.substring(idx + '.amazonaws.com/'.length);
-        })
-        .filter((k): k is string => !!k && k.startsWith('images/'))
+        .map(img => normalizePotentialKey(img.url, IMAGES_BUCKET))
+        .filter((k): k is string => !!k)
         .map(Key => ({ Key }));
       if (toDeleteKeys.length) {
         await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: toDeleteKeys } }));
@@ -185,18 +181,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const saved: any = result.Attributes || {};
     if (Array.isArray(saved.images)) {
       saved.images = await Promise.all(saved.images.map(async (im: any) => {
-        if (im.key) {
-          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
-          return { ...im, url };
-        } else if (im.url) {
-          const idx = im.url.indexOf('.amazonaws.com/');
-          if (idx !== -1 && im.url.includes(`${IMAGES_BUCKET}.s3.`)) {
-            const key = im.url.substring(idx + '.amazonaws.com/'.length);
-            if (key.startsWith('images/')) {
-              const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: key }), { expiresIn: 900 });
-              return { ...im, key, url };
-            }
-          }
+        const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
+        if (keyCandidate) {
+          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+          return { ...im, key: keyCandidate, url };
         }
         return im;
       }));

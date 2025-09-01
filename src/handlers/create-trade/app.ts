@@ -4,6 +4,7 @@ import { PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { normalizePotentialKey } from '../../shared/s3';
 import { tradeCreateSchema } from '../../schemas';
 import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
@@ -70,6 +71,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           // Process images for this trade
           const imagesInput: any[] = Array.isArray(t.images) ? t.images : [];
           const images: any[] = [];
+          const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
           for (const img of imagesInput) {
             const imgId = img.id || uuid();
             const isDataUriUrl = typeof img.url === 'string' && /^data:image\//i.test(img.url);
@@ -79,10 +81,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               const match = /^data:(.+);base64,(.*)$/i.exec(b64);
               let contentType = 'image/jpeg';
               if (match) { contentType = match[1]; b64 = match[2]; }
-              if (b64.length > 3_000_000) { // guard ~2.25MB decoded
-                throw new Error('Inline image too large');
-              }
               const buffer = Buffer.from(b64, 'base64');
+              if (buffer.byteLength > MAX_IMAGE_BYTES) {
+                throw new Error('Inline image exceeds 5MB limit');
+              }
               const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
               const key = `images/${userId}/${tradeIdLocal}/${imgId}${ext}`;
               await s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: key, Body: buffer, ContentType: contentType }));
@@ -229,18 +231,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const existingItem: any = existing.Items[0];
           if (Array.isArray(existingItem.images)) {
             existingItem.images = await Promise.all(existingItem.images.map(async (im: any) => {
-              if (im.key) {
-                const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
-                return { ...im, url };
-              } else if (im.url) {
-                const idx = im.url.indexOf('.amazonaws.com/');
-                if (idx !== -1 && im.url.includes(`${IMAGES_BUCKET}.s3.`)) {
-                  const key = im.url.substring(idx + '.amazonaws.com/'.length);
-                  if (key.startsWith('images/')) {
-                    const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: key }), { expiresIn: 900 });
-                    return { ...im, key, url };
-                  }
-                }
+              const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
+              if (keyCandidate) {
+                const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+                return { ...im, key: keyCandidate, url };
               }
               return im;
             }));
@@ -256,6 +250,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Process images (optional). Each image may have: id, base64Data, timeframe, description.
     const imagesInput: any[] = Array.isArray(data.images) ? data.images : [];
     const images: any[] = [];
+    const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
     for (const img of imagesInput) {
       const imgId = img.id || uuid();
       const isDataUriUrl = typeof img.url === 'string' && /^data:image\//i.test(img.url);
@@ -265,17 +260,18 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const match = /^data:(.+);base64,(.*)$/i.exec(b64);
         let contentType = 'image/jpeg';
         if (match) { contentType = match[1]; b64 = match[2]; }
-        if (b64.length > 3_000_000) {
-          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Inline image too large');
-        }
         const buffer = Buffer.from(b64, 'base64');
+        if (buffer.byteLength > MAX_IMAGE_BYTES) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Inline image exceeds 5MB limit');
+        }
         const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
         const key = `images/${userId}/${tradeId}/${imgId}${ext}`;
         await s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: key, Body: buffer, ContentType: contentType }));
         images.push({ id: imgId, key, timeframe: img.timeframe || null, description: img.description || null });
       } else if (img.url) {
-        if (img.url.startsWith('images/')) {
-          images.push({ id: imgId, key: img.url, timeframe: img.timeframe || null, description: img.description || null });
+        const keyCandidate = normalizePotentialKey(img.url, IMAGES_BUCKET);
+        if (keyCandidate) {
+          images.push({ id: imgId, key: keyCandidate, timeframe: img.timeframe || null, description: img.description || null });
         }
       }
     }

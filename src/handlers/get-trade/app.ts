@@ -5,6 +5,7 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { makeLogger } from '../../shared/logger';
 import { errorFromException } from '../../shared/validation';
+import { normalizePotentialKey } from '../../shared/s3';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -30,18 +31,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
     if (Array.isArray(item.images)) {
       item.images = await Promise.all(item.images.map(async (im: any) => {
-        if (im.key) {
-          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
-          return { ...im, url };
-        } else if (im.url) {
-          const idx = im.url.indexOf('.amazonaws.com/');
-          if (idx !== -1 && im.url.includes(`${IMAGES_BUCKET}.s3.`)) {
-            const key = im.url.substring(idx + '.amazonaws.com/'.length);
-            if (key.startsWith('images/')) {
-              const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: key }), { expiresIn: 900 });
-              return { ...im, key, url };
-            }
-          }
+        const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
+        if (keyCandidate) {
+          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+          return { ...im, key: keyCandidate, url };
         }
         return im;
       }));
