@@ -116,7 +116,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Direct field mapping helper
-  const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','status','achievedRiskRewardRatio'];
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','status','achievedRiskRewardRatio'];
+    // Normalize numeric field if provided as string
+    if (data.achievedRiskRewardRatio !== undefined) {
+      const val = data.achievedRiskRewardRatio;
+      existing.achievedRiskRewardRatio = (val === null || val === '') ? null : Number(val);
+    }
     for (const f of mapable) if (f in data) existing[f] = data[f];
     const arrFields = ['mistakes','lessons','tags','newsEvents','economicEvents'];
     for (const f of arrFields) if (Array.isArray(data[f])) existing[f] = data[f];
@@ -178,7 +183,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       partialCloseCount: Array.isArray(existing.partialCloses) ? existing.partialCloses.length : 0
     };
     log.info('Trade updated', safeLog);
-    const saved: any = result.Attributes || {};
+  const saved: any = result.Attributes || {};
+  if (saved.achievedRiskRewardRatio === undefined) saved.achievedRiskRewardRatio = null;
     if (Array.isArray(saved.images)) {
       saved.images = await Promise.all(saved.images.map(async (im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);

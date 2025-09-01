@@ -111,8 +111,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       items = items.filter(i => Array.isArray(i.tags) && i.tags.includes(tag));
     }
     // Presign image keys (short-lived) if present
-    if (items.length) {
+  if (items.length) {
       await Promise.all(items.map(async (it: any) => {
+    if (it.achievedRiskRewardRatio === undefined) it.achievedRiskRewardRatio = null;
         if (Array.isArray(it.images)) {
           it.images = await Promise.all(it.images.map(async (im: any) => {
             const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);

@@ -29,7 +29,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       const fees = typeof item.fees === 'number' ? item.fees : 0;
       if (pnl != null) item.netPnl = pnl - (commission + fees);
     }
-    if (Array.isArray(item.images)) {
+  if (item.achievedRiskRewardRatio === undefined) item.achievedRiskRewardRatio = null;
+  if (Array.isArray(item.images)) {
       item.images = await Promise.all(item.images.map(async (im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
         if (keyCandidate) {
