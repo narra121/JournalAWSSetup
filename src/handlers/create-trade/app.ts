@@ -116,7 +116,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           }
           const riskAmount = num(t.riskAmount) || 0;
           const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
-          const status = t.status || (exitPrice != null ? 'CLOSED' : 'OPEN');
+          const status = t.status; // use client-provided status only
           const nowLocal = new Date().toISOString();
             const item: any = {
             userId,
@@ -296,7 +296,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
     const riskAmount = num(data.riskAmount) || 0;
     const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
-    const status = data.status || (exitPrice != null ? 'CLOSED' : 'OPEN');
+  const status = data.status; // do not infer status; trust request
 
     const now = new Date().toISOString();
   const item: any = {

@@ -147,7 +147,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     existing.riskRewardRatio = existing.pnl != null && riskAmount > 0
       ? Number((existing.pnl / riskAmount).toFixed(4))
       : null;
-    existing.status = existing.status || (exitPrice != null ? 'CLOSED' : 'OPEN');
+  // Do not auto-set status; keep whatever currently stored / provided
     existing.updatedAt = new Date().toISOString();
     // Update composite GSI attributes (symbol/date & status/date)
     if (existing.symbol && existing.openDate) {
