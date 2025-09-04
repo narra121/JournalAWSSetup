@@ -250,10 +250,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
 
     // Process images (optional). Each image may have: id, base64Data, timeframe, description.
-    const imagesInput: any[] = Array.isArray(data.images) ? data.images : [];
+          const imagesInput: any[] = Array.isArray(data.images) ? data.images : [];
     const images: any[] = [];
     const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
-    for (const img of imagesInput) {
+  for (const img of imagesInput) {
       const imgId = img.id || uuid();
       const isDataUriUrl = typeof img.url === 'string' && /^data:image\//i.test(img.url);
       const inline = img.base64Data || (isDataUriUrl ? img.url : null);
@@ -341,7 +341,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   status,
   achievedRiskRewardRatio,
       tags: Array.isArray(data.tags) ? data.tags : [],
-      images,
+  images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
       createdAt: now,
       updatedAt: now,
       // Composite attributes for GSIs

@@ -70,6 +70,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const imgId = raw.id || uuid();
         let existingImg = prevImages.find(i => i.id === imgId);
         let url = existingImg?.url;
+        // If client sent a data URI in the url field, normalize to base64Data path
+        if (!raw.base64Data && typeof raw.url === 'string' && /^data:image\//i.test(raw.url)) {
+          raw.base64Data = raw.url;
+          delete raw.url; // prevent accidentally persisting data URI
+        }
         // If base64 provided AND (new image or explicit replace request)
         if (raw.base64Data) {
           let b64 = raw.base64Data;
@@ -112,7 +117,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       if (toDeleteKeys.length) {
         await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: toDeleteKeys } }));
       }
-  existing.images = finalImages;
+      // Final sanitization: strip any base64/data URI remnants before persisting
+      existing.images = finalImages.map(im => {
+        const cleaned: any = { ...im };
+        if (cleaned.base64Data) delete cleaned.base64Data;
+        if (typeof cleaned.url === 'string' && /^data:image\//i.test(cleaned.url)) delete cleaned.url;
+        return cleaned;
+      });
     }
 
     // Direct field mapping helper
