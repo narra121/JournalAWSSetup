@@ -1613,39 +1613,6 @@ Resources:
         Sourcemap: true
 
   # Razorpay Subscription Functions
-  GetSubscriptionPlansFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/get-subscription-plans/app.handler
-      AutoPublishAlias: live
-      Environment:
-        Variables:
-          STAGE_NAME: !Ref StageName
-      Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - ssm:GetParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${StageName}/razorpay/plan/*"
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/subscriptions/plans
-            Method: GET
-            Auth:
-              Authorizer: NONE
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/get-subscription-plans/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
   CreateSubscriptionPlanRazorpayFunction:
     Type: AWS::Serverless::Function
     Properties:
