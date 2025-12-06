@@ -11,7 +11,7 @@ export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGat
   const type = (event.queryStringParameters?.type || 'hourly') as AnalyticsType;
   const logger = makeLogger({ requestId: event.requestContext.requestId, userId });
   
-  logger.info('Analytics request', { userId, type });
+  console.log('Analytics request', { userId, type });
 
   try {
     let data: any;
@@ -52,7 +52,7 @@ export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGat
       }),
     };
   } catch (error) {
-    logger.error('Analytics error', { error, userId, type });
+    console.error('Analytics error', { error, userId, type });
     return {
       statusCode: 500,
       headers: { 'Content-Type': 'application/json' },

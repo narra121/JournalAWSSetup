@@ -42,7 +42,7 @@ Parameters:
     Description: CloudWatch Logs retention in days (10 is not supported; choose nearest 7 or 14).
   GeminiApiKeyParamName:
     Type: String
-    Default: /trading-journal/geminiApiKey
+    Default: /tradeflow/geminiApiKey
     Description: Name of SSM SecureString parameter storing the Gemini API key.
   UseExistingResources:
     Type: String
@@ -65,6 +65,20 @@ Parameters:
     Type: String
     Default: ""
     Description: Name of an existing AuthRateLimit table (required if UseExistingResources=true)
+  RazorpayKeyId:
+    Type: String
+    Default: ""
+    Description: Razorpay API Key ID (public key)
+  RazorpayKeySecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Razorpay API Key Secret (private key)
+  RazorpayWebhookSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Razorpay Webhook Secret for signature verification
 
 Conditions:
   CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
@@ -73,7 +87,7 @@ Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub TradingJournalUserPool-${StageName}
+      UserPoolName: !Sub TradeFlowUserPool-${StageName}
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
       Policies:
@@ -1646,6 +1660,192 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/cancel-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Razorpay Payment Functions
+  CreateOrderRazorpayFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-order-razorpay/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
+          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/payments/create-order
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-order-razorpay/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Razorpay Subscription Functions
+  CreateSubscriptionPlanRazorpayFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-subscription-plan-razorpay/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
+          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions/plans
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-subscription-plan-razorpay/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  CreateRazorpaySubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-razorpay-subscription/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
+          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-razorpay-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  ManageRazorpaySubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/manage-razorpay-subscription/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
+          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        GetSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: GET
+        PauseResumeSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: PUT
+        CancelSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/manage-razorpay-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  VerifyPaymentRazorpayFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/verify-payment-razorpay/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/payments/verify
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/verify-payment-razorpay/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  RazorpayWebhookFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/razorpay-webhook/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RAZORPAY_WEBHOOK_SECRET: !Ref RazorpayWebhookSecret
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/payments/webhook
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/razorpay-webhook/app.ts
         Minify: true
         Target: es2020
         Sourcemap: true
