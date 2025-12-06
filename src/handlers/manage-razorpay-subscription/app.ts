@@ -2,6 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -17,7 +18,7 @@ const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
  * Supports GET (fetch details), PUT (pause/resume), DELETE (cancel)
  */
 export const handler = async (
-  event: APIGatewayProxyEvent
+  event: APIGatewayProxyEvent | any
 ): Promise<APIGatewayProxyResult> => {
   console.log('Event:', JSON.stringify(event, null, 2));
 
@@ -25,14 +26,11 @@ export const handler = async (
     // Get userId from Cognito authorizer
     const userId = event.requestContext?.authorizer?.jwt?.claims?.sub;
     if (!userId) {
-      return {
-        statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'Unauthorized' }),
-      };
+      return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }
 
-    const method = event.httpMethod;
+    // Handle both v1 and v2 event structures for method
+    const method = event.httpMethod || event.requestContext?.http?.method;
 
     // GET: Fetch subscription details
     if (method === 'GET') {
@@ -44,11 +42,7 @@ export const handler = async (
       );
 
       if (!result.Item) {
-        return {
-          statusCode: 404,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: 'No subscription found' }),
-        };
+        return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
       }
 
       // Fetch latest details from Razorpay
@@ -57,10 +51,9 @@ export const handler = async (
         try {
           const razorpaySubscription = await razorpay.subscriptions.fetch(subscriptionId);
           
-          return {
+          return envelope({
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            data: {
               ...result.Item,
               razorpayDetails: {
                 status: razorpaySubscription.status,
@@ -71,18 +64,14 @@ export const handler = async (
                 chargeAt: razorpaySubscription.charge_at,
                 endedAt: razorpaySubscription.ended_at,
               },
-            }),
-          };
+            }
+          });
         } catch (error) {
           console.log('Could not fetch from Razorpay, returning DB data', error);
         }
       }
 
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(result.Item),
-      };
+      return envelope({ statusCode: 200, data: result.Item });
     }
 
     // PUT: Pause or Resume subscription
@@ -91,13 +80,7 @@ export const handler = async (
       const { action } = body; // 'pause' or 'resume'
 
       if (!['pause', 'resume'].includes(action)) {
-        return {
-          statusCode: 400,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: 'Invalid action. Must be "pause" or "resume"',
-          }),
-        };
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid action. Must be "pause" or "resume"');
       }
 
       // Get subscription ID from DB
@@ -109,11 +92,7 @@ export const handler = async (
       );
 
       if (!result.Item || !result.Item.subscriptionId) {
-        return {
-          statusCode: 404,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: 'No subscription found' }),
-        };
+        return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
       }
 
       const subscriptionId = result.Item.subscriptionId;
@@ -138,14 +117,13 @@ export const handler = async (
           })
         );
 
-        return {
+        return envelope({
           statusCode: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          data: {
             message: 'Subscription paused successfully',
             subscriptionId,
-          }),
-        };
+          }
+        });
       } else {
         // Resume
         await razorpay.subscriptions.resume(subscriptionId, {
@@ -165,14 +143,13 @@ export const handler = async (
           })
         );
 
-        return {
+        return envelope({
           statusCode: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          data: {
             message: 'Subscription resumed successfully',
             subscriptionId,
-          }),
-        };
+          }
+        });
       }
     }
 
@@ -190,11 +167,7 @@ export const handler = async (
       );
 
       if (!result.Item || !result.Item.subscriptionId) {
-        return {
-          statusCode: 404,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: 'No subscription found' }),
-        };
+        return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
       }
 
       const subscriptionId = result.Item.subscriptionId;
@@ -223,32 +196,20 @@ export const handler = async (
         })
       );
 
-      return {
+      return envelope({
         statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        data: {
           message: cancelAtCycleEnd
             ? 'Subscription will be cancelled at end of billing cycle'
             : 'Subscription cancelled immediately',
           subscriptionId,
-        }),
-      };
+        }
+      });
     }
 
-    return {
-      statusCode: 405,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'Method not allowed' }),
-    };
+    return errorResponse(405, ErrorCodes.VALIDATION_ERROR, 'Method not allowed');
   } catch (error: any) {
     console.error('Error managing subscription:', error);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Failed to manage subscription',
-        error: error.message,
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to manage subscription', error.message);
   }
 };
