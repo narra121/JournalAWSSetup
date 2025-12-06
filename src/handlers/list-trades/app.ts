@@ -128,11 +128,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
     const newNextToken = result.LastEvaluatedKey ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') : undefined;
   log.info('Trades listed', { count: items.length, hasMore: !!newNextToken });
-  return resp(200, { items, nextToken: newNextToken });
+  return {
+    statusCode: 200,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: { trades: items, nextToken: newNextToken }, error: null, meta: null })
+  };
   } catch (e) {
   log.error('list-trades failed', { error: (e as any)?.message });
-    return resp(500, { message: 'Internal error' });
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: null, error: { code: 'INTERNAL_ERROR', message: 'Internal error' }, meta: null })
+    };
   }
 };
-
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }

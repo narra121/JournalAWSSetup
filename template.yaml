@@ -1588,7 +1588,6 @@ Resources:
   # Razorpay Payment Functions
   CreateOrderRazorpayFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/create-order-razorpay/app.handler
@@ -1616,7 +1615,6 @@ Resources:
   # Razorpay Subscription Functions
   CreateSubscriptionPlanRazorpayFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/create-subscription-plan-razorpay/app.handler
@@ -1643,7 +1641,6 @@ Resources:
 
   CreateRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/create-razorpay-subscription/app.handler
@@ -1652,9 +1649,10 @@ Resources:
         Variables:
           RAZORPAY_KEY_ID: !Ref RazorpayKeyId
           RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref SubscriptionsTable
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
       Events:
         Api:
           Type: HttpApi
@@ -1673,7 +1671,6 @@ Resources:
 
   ManageRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/manage-razorpay-subscription/app.handler
@@ -1682,9 +1679,10 @@ Resources:
         Variables:
           RAZORPAY_KEY_ID: !Ref RazorpayKeyId
           RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref SubscriptionsTable
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
       Events:
         GetSubscription:
           Type: HttpApi
@@ -1715,7 +1713,6 @@ Resources:
 
   VerifyPaymentRazorpayFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/verify-payment-razorpay/app.handler
@@ -1723,9 +1720,10 @@ Resources:
       Environment:
         Variables:
           RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref SubscriptionsTable
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
       Events:
         Api:
           Type: HttpApi
@@ -1744,7 +1742,6 @@ Resources:
 
   RazorpayWebhookFunction:
     Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
     Properties:
       CodeUri: .
       Handler: src/handlers/razorpay-webhook/app.handler
@@ -1752,9 +1749,10 @@ Resources:
       Environment:
         Variables:
           RAZORPAY_WEBHOOK_SECRET: !Ref RazorpayWebhookSecret
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref SubscriptionsTable
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
       Events:
         Api:
           Type: HttpApi

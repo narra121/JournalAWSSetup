@@ -26,7 +26,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const key = `images/${userId}/${tradeId}/${uuid()}` + extensionFor(contentType);
     const command = new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: contentType });
     const url = await getSignedUrl(s3, command, { expiresIn: 300 });
-    return resp(200, { uploadUrl: url, key });
+    return resp(200, { url, key });
   } catch (e) {
     console.error(e);
     return resp(500, { message: 'Internal error' });

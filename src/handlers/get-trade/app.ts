@@ -41,7 +41,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }));
     }
     log.info('Trade fetched', { tradeId });
-    return resp(200, item);
+    return resp(200, { trade: item });
   } catch (e: any) {
     log.error('get-trade failed', { error: e.message, stack: e.stack });
     return errorFromException(e, true);

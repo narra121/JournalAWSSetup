@@ -206,7 +206,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         return im;
       }));
     }
-    return resp(200, saved);
+    return resp(200, { trade: saved });
   } catch (e: any) {
     log.error('update-trade failed', { error: e.message, stack: e.stack });
     if (e.name === 'ConditionalCheckFailedException') return resp(404, { message: 'Not found' });

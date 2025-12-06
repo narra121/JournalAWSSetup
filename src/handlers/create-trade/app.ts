@@ -361,7 +361,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
     return im;
   }));
-  return envelope({ statusCode: 201, data: { ...item, images: signedImages } });
+  return envelope({ statusCode: 201, data: { trade: { ...item, images: signedImages } } });
   } catch (err: any) {
     console.error(err);
     return errorFromException(err, true);
