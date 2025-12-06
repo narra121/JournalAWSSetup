@@ -82,11 +82,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('account created', { accountId });
     
-    return {
-      statusCode: 201,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 201, data: { account } }))
-    };
+    return envelope({ statusCode: 201, data: { account } });
   } catch (error: any) {
     log.error('failed to create account', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create account');

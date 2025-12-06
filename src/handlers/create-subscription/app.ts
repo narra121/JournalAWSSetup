@@ -68,11 +68,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('subscription created', { amount: data.amount, billingCycle: data.billingCycle });
     
-    return {
-      statusCode: 201,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 201, data: { subscription, paymentUrl } }))
-    };
+    return envelope({ statusCode: 201, data: { subscription, paymentUrl } });
   } catch (error: any) {
     log.error('failed to create subscription', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create subscription');

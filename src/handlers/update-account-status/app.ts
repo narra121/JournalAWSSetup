@@ -73,13 +73,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ReturnValues: 'ALL_NEW'
     }));
 
-    log.info('account status updated', { accountId, status: data.status });
+    log.info('account status updated', { accountId, status });
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { account: result.Attributes } }))
-    };
+    return envelope({ statusCode: 200, data: { account: result.Attributes } });
   } catch (error: any) {
     log.error('failed to update account status', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update account status');

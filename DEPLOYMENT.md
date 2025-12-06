@@ -128,9 +128,38 @@ aws cloudformation describe-stacks \
 5. Set **Active**: Yes
 6. Save
 
-### Step 8: Create Subscription Plans
+### Step 8: Verify Subscription Plans
 
-Use the API endpoint to create recurring billing plans:
+Subscription plans are **automatically created** during deployment. Verify they were created:
+
+```bash
+# Get available plans
+curl https://your-api-url/tradeflow-dev/v1/subscriptions/plans
+
+# Or check SSM Parameter Store
+aws ssm get-parameter --name "/tradeflow/tradeflow-dev/razorpay/plan/monthly"
+aws ssm get-parameter --name "/tradeflow/tradeflow-dev/razorpay/plan/yearly"
+```
+
+**Default Plans Created:**
+
+_All plans include the same features. Higher tiers support continued development._
+
+Monthly Plans:
+- **TradeFlow Supporter**: ₹99/month
+- **TradeFlow Enthusiast**: ₹299/month
+- **TradeFlow Champion**: ₹499/month
+
+Yearly Plans (save ~16% vs monthly):
+- **TradeFlow Supporter**: ₹999/year
+- **TradeFlow Enthusiast**: ₹2,999/year
+- **TradeFlow Champion**: ₹4,999/year
+
+**To customize plans**, edit `src/handlers/init-subscription-plans/app.ts` before deployment.
+
+### Step 9: Manual Plan Creation (Optional)
+
+If you need to create additional custom plans:
 
 ```bash
 # Create Monthly ₹99 Plan

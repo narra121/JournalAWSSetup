@@ -36,11 +36,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('subscription retrieved');
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { subscription } }))
-    };
+    return envelope({ statusCode: 200, data: { subscription } });
   } catch (error: any) {
     log.error('failed to get subscription', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve subscription');

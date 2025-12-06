@@ -69,11 +69,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('rule updated', { ruleId });
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { rule: result.Attributes } }))
-    };
+    return envelope({ statusCode: 200, data: { rule: result.Attributes } });
   } catch (error: any) {
     log.error('failed to update rule', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update rule');

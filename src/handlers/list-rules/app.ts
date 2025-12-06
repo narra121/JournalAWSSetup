@@ -29,13 +29,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     const rules = result.Items || [];
-    log.info('rules retrieved', { count: rules.length });
+    log.info('rules listed', { count: rules.length });
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { rules } }))
-    };
+    return envelope({ statusCode: 200, data: { rules } });
   } catch (error: any) {
     log.error('failed to list rules', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve rules');

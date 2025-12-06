@@ -70,11 +70,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('user profile retrieved');
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { user } }))
-    };
+    return envelope({ statusCode: 200, data: { user } });
   } catch (error: any) {
     log.error('failed to get user profile', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve user profile');

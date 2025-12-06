@@ -44,11 +44,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('rule deleted', { ruleId });
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { message: 'Rule deleted successfully' } }))
-    };
+    return envelope({ statusCode: 200, data: { message: 'Rule deleted successfully' } });
   } catch (error: any) {
     log.error('failed to delete rule', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to delete rule');

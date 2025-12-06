@@ -29,13 +29,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     const goals = result.Items || [];
-    log.info('goals retrieved', { count: goals.length });
+    log.info('goals listed', { count: goals.length });
     
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 200, data: { goals } }))
-    };
+    return envelope({ statusCode: 200, data: { goals } });
   } catch (error: any) {
     log.error('failed to list goals', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve goals');

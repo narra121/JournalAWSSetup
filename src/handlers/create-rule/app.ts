@@ -59,11 +59,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('rule created', { ruleId });
     
-    return {
-      statusCode: 201,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({ statusCode: 201, data: { rule } }))
-    };
+    return envelope({ statusCode: 201, data: { rule } });
   } catch (error: any) {
     log.error('failed to create rule', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create rule');
