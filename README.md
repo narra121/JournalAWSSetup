@@ -26,21 +26,55 @@ Use the phase guides for hands-on steps. Each phase is a separate, detailed mark
                                                      +---------------------------+      +------------------+
 ```
 
-## Phase Index
+## Quick Start
 
-- Phase 0 – Prerequisites and Local Setup: [docs/phase-0-prerequisites-and-local-setup.md](docs/phase-0-prerequisites-and-local-setup.md)
-- Phase 1 – Backend Infrastructure with AWS SAM: [docs/phase-1-sam-backend-infrastructure.md](docs/phase-1-sam-backend-infrastructure.md)
-- Phase 2 – Develop Lambda Function Code: [docs/phase-2-develop-lambda-functions.md](docs/phase-2-develop-lambda-functions.md)
-- Phase 3 – Deploy the Backend (Programmatic): [docs/phase-3-deploy-backend.md](docs/phase-3-deploy-backend.md)
-- Phase 4 – Frontend and Authentication (Amplify): [docs/phase-4-frontend-and-auth-amplify.md](docs/phase-4-frontend-and-auth-amplify.md)
-- Phase 5 – Continuous Integration & Deployment (CI/CD): [docs/phase-5-ci-cd.md](docs/phase-5-ci-cd.md)
+For detailed setup and deployment instructions, refer to:
+- **Roadmap** - Development phases: [docs/roadmap.md](docs/roadmap.md)
+- **Runbook** - Deployment procedures: [docs/runbook.md](docs/runbook.md)
+- **YAML Reference** - SAM template guide: [docs/yaml.md](docs/yaml.md)
 
-## Usage Notes
+## Documentation
 
-- Commands are shown for Windows PowerShell 5.1+.
-- Replace placeholders like <YOUR_REGION>, <YOUR_BUCKET>, <STACK_NAME> with your values.
-- Keep the docs and code in sync; treat `template.yaml` as the single source of truth for infrastructure.
+### Complete Application Context
+- **Copilot Context** - Comprehensive API & UI reference: [../COPILOT_CONTEXT.md](../COPILOT_CONTEXT.md)
+- **Trades API** - Detailed trade endpoints: [docs/api/trades.md](docs/api/trades.md)
+- **Roadmap** - Feature roadmap: [docs/roadmap.md](docs/roadmap.md)
+- **Runbook** - Operational guide: [docs/runbook.md](docs/runbook.md)
 
-## API Documentation
+### Migration & Updates
+- **Backend Updates Summary** - Complete changelog of new features: [BACKEND_UPDATES_SUMMARY.md](BACKEND_UPDATES_SUMMARY.md)
+- **Migration Guide** - Step-by-step upgrade instructions: [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)
 
-Primary trade endpoints and behavior (create, bulk create, get, list, update, single & bulk delete, hybrid PnL logic, idempotency) are documented in `docs/api/trades.md`.
+### Quick Start
+
+1. **New Deployment**:
+   ```bash
+   sam build
+   sam deploy --guided
+   ```
+
+2. **Check Available Endpoints**:
+   ```bash
+   sam list stack-outputs --stack-name trading-journal-backend-prod
+   ```
+
+3. **Test New Features**:
+   - Accounts: `/v1/accounts`
+   - Goals & Rules: `/v1/goals`, `/v1/rules`
+   - Analytics: `/v1/analytics/hourly`, `/v1/analytics/daily-win-rate`
+   - User Profile: `/v1/user/profile`
+   - Export: `/v1/export/trades?format=csv`
+
+## What's New
+
+### Latest Update (December 2024)
+✅ **26 new Lambda functions** supporting enhanced UI
+✅ **6 new DynamoDB tables** (Accounts, Goals, Rules, Preferences, Options, Subscriptions)
+✅ **Enhanced trade model** with `accountIds` and `brokenRuleIds`
+✅ **Analytics endpoints** for hourly, daily, symbol, and strategy analysis
+✅ **User preferences** and profile management
+✅ **Subscription** management (payment integration pending)
+✅ **Export functionality** (CSV/JSON)
+
+See [BACKEND_UPDATES_SUMMARY.md](BACKEND_UPDATES_SUMMARY.md) for complete details.
+

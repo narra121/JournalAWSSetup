@@ -15,6 +15,12 @@ Globals:
         TRADE_STATS_TABLE: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
         IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
         RATE_LIMIT_TABLE: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        ACCOUNTS_TABLE: !If [CreateNewDataResources, !Ref AccountsTable, '']
+        GOALS_TABLE: !If [CreateNewDataResources, !Ref GoalsTable, '']
+        RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+        USER_PREFERENCES_TABLE: !If [CreateNewDataResources, !Ref UserPreferencesTable, '']
+        SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
         USER_POOL_ID: !Ref UserPool
         USER_POOL_CLIENT_ID: !Ref UserPoolClient
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
@@ -200,6 +206,96 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Accounts-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: accountId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: accountId
+          KeyType: RANGE
+
+  GoalsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Goals-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: goalId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: goalId
+          KeyType: RANGE
+
+  RulesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Rules-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: ruleId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: ruleId
+          KeyType: RANGE
+
+  UserPreferencesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub UserPreferences-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  SavedOptionsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub SavedOptions-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  SubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Subscriptions-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
 
   HttpApi:
     Type: AWS::Serverless::HttpApi
@@ -965,6 +1061,617 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/extract-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Account Management Functions
+  ListAccountsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-accounts/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-accounts/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  CreateAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-account/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-account/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateAccountStatusFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-account-status/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}/status
+            Method: PATCH
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-account-status/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  DeleteAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-account/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Goals and Rules Functions
+  ListGoalsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-goals/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-goals/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateGoalFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-goal/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals/{goalId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-goal/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  ListRulesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-rules/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-rules/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  CreateRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-rule/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-rule/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  ToggleRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/toggle-rule/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}/toggle
+            Method: PATCH
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/toggle-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  DeleteRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-rule/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Analytics Function (Unified for all analytics types)
+  AnalyticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/analytics/app.handler
+      AutoPublishAlias: live
+      Description: Unified analytics endpoint - supports hourly, daily-win-rate, symbol-distribution, strategy-distribution via ?type= query param
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/analytics
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/analytics/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # User Profile and Preferences Functions
+  GetUserProfileFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-user-profile/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserPreferencesTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:GetUser
+            Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/profile
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-user-profile/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateUserProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-profile/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:UpdateUserAttributes
+            Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/profile
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-profile/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateUserPreferencesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-preferences/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserPreferencesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/preferences
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-preferences/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateUserNotificationsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-notifications/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserPreferencesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/notifications
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-notifications/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Saved Options Functions
+  GetSavedOptionsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-saved-options/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SavedOptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/options
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-saved-options/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  AddSavedOptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/add-saved-option/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SavedOptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/options/{category}
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/add-saved-option/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Subscription Functions
+  GetSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-subscription/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  CreateSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-subscription/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  CancelSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/cancel-subscription/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscriptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/cancel-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  # Export Function
+  ExportTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/export-trades/app.handler
+      AutoPublishAlias: live
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/export/trades
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/export-trades/app.ts
         Minify: true
         Target: es2020
         Sourcemap: true
