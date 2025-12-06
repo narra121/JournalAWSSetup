@@ -54,3 +54,4 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to delete account');
   }
 };
+

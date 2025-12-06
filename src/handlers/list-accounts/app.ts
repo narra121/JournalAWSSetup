@@ -39,18 +39,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('accounts retrieved', { count: accounts.length });
     
-    return {
+    return envelope({
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope({
-        statusCode: 200,
-        data: {
-          accounts,
-          totalBalance,
-          totalPnl
-        }
-      }))
-    };
+      data: {
+        accounts,
+        totalBalance,
+        totalPnl
+      }
+    });
   } catch (error: any) {
     log.error('failed to list accounts', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve accounts');
