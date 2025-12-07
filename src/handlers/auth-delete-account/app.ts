@@ -15,7 +15,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rc: any = event.requestContext as any;
   const userId = rc?.authorizer?.jwt?.claims?.sub;
   const username = rc?.authorizer?.jwt?.claims?.email; // assuming email-as-username
-  if (!userId) return resp(401, { message: 'Unauthorized' });
+  if (!userId) return resp(401, null, { code: 'UNAUTHORIZED', message: 'Unauthorized' });
 
   try {
     // Delete all trade items (paginate query + delete)
@@ -52,11 +52,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       await cognito.send(new AdminDeleteUserCommand({ UserPoolId: USER_POOL_ID, Username: username }));
     }
 
-    return resp(200, { message: 'Account deleted' });
+    return resp(200, { message: 'Account deleted' }, null);
   } catch (e: any) {
     console.error(e);
-    return resp(500, { message: e.message || 'Failed to delete account' });
+    return resp(500, null, { code: 'DELETE_FAILED', message: e.message || 'Failed to delete account' });
   }
 };
 
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }
+function resp(statusCode: number, data: any, error: any) {
+  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
+}

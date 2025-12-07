@@ -28,7 +28,14 @@ export const handler = async (
       return {
         statusCode: 401,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'Unauthorized' }),
+        body: JSON.stringify({
+          data: null,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Unauthorized',
+          },
+          meta: null,
+        }),
       };
     }
 
@@ -109,11 +116,15 @@ export const handler = async (
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        subscriptionId: subscription.id,
-        planId: subscription.plan_id,
-        status: subscription.status,
-        shortUrl: subscription.short_url, // Payment link for customer
-        authAttempts: subscription.auth_attempts,
+        data: {
+          subscriptionId: subscription.id,
+          planId: subscription.plan_id,
+          status: subscription.status,
+          shortUrl: subscription.short_url, // Payment link for customer
+          authAttempts: subscription.auth_attempts,
+        },
+        error: null,
+        meta: null,
       }),
     };
   } catch (error: any) {
@@ -122,8 +133,13 @@ export const handler = async (
       statusCode: 500,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Failed to create subscription',
-        error: error.message,
+        data: null,
+        error: {
+          code: 'SUBSCRIPTION_CREATE_FAILED',
+          message: 'Failed to create subscription',
+          details: error.message,
+        },
+        meta: null,
       }),
     };
   }

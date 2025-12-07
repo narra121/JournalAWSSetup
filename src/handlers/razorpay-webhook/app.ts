@@ -64,7 +64,14 @@ export const lambdaHandler = async (
       console.error('Webhook signature verification failed');
       return {
         statusCode: 400,
-        body: JSON.stringify({ error: 'Invalid signature' }),
+        body: JSON.stringify({
+          data: null,
+          error: {
+            code: 'INVALID_SIGNATURE',
+            message: 'Invalid signature',
+          },
+          meta: null,
+        }),
       };
     }
 
@@ -356,7 +363,11 @@ export const lambdaHandler = async (
     if (webhookEvent === 'payment.failed') {
       if (!webhookPayload.payment) return {
         statusCode: 200,
-        body: JSON.stringify({ message: 'No payment data' }),
+        body: JSON.stringify({
+          data: { message: 'No payment data' },
+          error: null,
+          meta: null,
+        }),
       };
       const payment = webhookPayload.payment.entity;
       console.log('Payment failed', {
@@ -367,14 +378,25 @@ export const lambdaHandler = async (
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: 'Webhook processed successfully' }),
+      body: JSON.stringify({
+        data: { message: 'Webhook processed successfully' },
+        error: null,
+        meta: null,
+      }),
     };
   } catch (error) {
     console.error('Error processing Razorpay webhook:', error);
 
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: 'Failed to process webhook' }),
+      body: JSON.stringify({
+        data: null,
+        error: {
+          code: 'WEBHOOK_PROCESSING_FAILED',
+          message: 'Failed to process webhook',
+        },
+        meta: null,
+      }),
     };
   }
 };

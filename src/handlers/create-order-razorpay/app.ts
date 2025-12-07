@@ -31,7 +31,12 @@ export const lambdaHandler = async (
           'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
-          error: { message: 'Invalid amount. Amount must be greater than 0.' },
+          data: null,
+          error: {
+            code: 'INVALID_AMOUNT',
+            message: 'Invalid amount. Amount must be greater than 0.',
+          },
+          meta: null,
         }),
       };
     }
@@ -46,7 +51,12 @@ export const lambdaHandler = async (
           'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
-          error: { message: 'Unauthorized' },
+          data: null,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Unauthorized',
+          },
+          meta: null,
         }),
       };
     }
@@ -73,9 +83,13 @@ export const lambdaHandler = async (
         'Access-Control-Allow-Origin': '*',
       },
       body: JSON.stringify({
-        orderId: order.id,
-        amount: order.amount,
-        currency: order.currency,
+        data: {
+          orderId: order.id,
+          amount: order.amount,
+          currency: order.currency,
+        },
+        error: null,
+        meta: null,
       }),
     };
   } catch (error) {
@@ -88,7 +102,12 @@ export const lambdaHandler = async (
         'Access-Control-Allow-Origin': '*',
       },
       body: JSON.stringify({
-        error: { message: 'Failed to create order' },
+        data: null,
+        error: {
+          code: 'ORDER_CREATE_FAILED',
+          message: 'Failed to create order',
+        },
+        meta: null,
       }),
     };
   }

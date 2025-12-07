@@ -26,9 +26,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="journal-export.json"' },
-      body: JSON.stringify({ trades: all, stats: stats.Item || null, exportedAt: new Date().toISOString() })
+      body: JSON.stringify({
+        data: {
+          trades: all,
+          stats: stats.Item || null,
+          exportedAt: new Date().toISOString(),
+        },
+        error: null,
+        meta: null,
+      })
     };
   } catch (e: any) { console.error(e); return resp(500, { message: e.message || 'Failed to export' }); }
 };
 
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }
+function resp(statusCode: number, body: any) {
+  return {
+    statusCode,
+    body: JSON.stringify({
+      data: statusCode === 200 ? body : null,
+      error: statusCode !== 200 ? { code: 'ERROR', message: body.message } : null,
+      meta: null,
+    })
+  };
+}

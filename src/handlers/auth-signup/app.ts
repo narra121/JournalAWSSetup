@@ -18,19 +18,21 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } catch (e) {
       console.log('Failed to parse body for logging');
     }
-    if (!event.body) return resp(400, { message: 'Missing body' });
+    if (!event.body) return resp(400, null, { code: 'INVALID_REQUEST', message: 'Missing body' });
     const { email, password } = JSON.parse(event.body);
-    if (!email || !password) return resp(400, { message: 'email and password required' });
-  if (password.length < 6 || password.length > 18) return resp(400, { message: 'password must be 6-18 characters' });
+    if (!email || !password) return resp(400, null, { code: 'INVALID_REQUEST', message: 'email and password required' });
+  if (password.length < 6 || password.length > 18) return resp(400, null, { code: 'INVALID_REQUEST', message: 'password must be 6-18 characters' });
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
-    if (!rl.allowed) return resp(429, { message: 'Too many attempts', retryAfter: rl.retryAfter });
+    if (!rl.allowed) return resp(429, null, { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many attempts', details: { retryAfter: rl.retryAfter } });
     const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }] });
     const r = await client.send(cmd);
-    return resp(200, { userConfirmed: r.UserConfirmed, codeDelivery: r.CodeDeliveryDetails });
+    return resp(200, { userConfirmed: r.UserConfirmed, codeDelivery: r.CodeDeliveryDetails }, null);
   } catch (e: any) {
     console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
-    return resp(400, { message: e?.message || 'Signup failed', code: e?.name || 'Error' });
+    return resp(400, null, { code: e?.name || 'SIGNUP_FAILED', message: e?.message || 'Signup failed' });
   }
 };
 
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }
+function resp(statusCode: number, data: any, error: any) {
+  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
+}

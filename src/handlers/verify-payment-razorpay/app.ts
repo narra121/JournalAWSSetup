@@ -32,7 +32,12 @@ export const lambdaHandler = async (
           'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
-          error: { message: 'Missing required payment verification fields' },
+          data: null,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Missing required payment verification fields',
+          },
+          meta: null,
         }),
       };
     }
@@ -47,7 +52,12 @@ export const lambdaHandler = async (
           'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
-          error: { message: 'Unauthorized' },
+          data: null,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Unauthorized',
+          },
+          meta: null,
         }),
       };
     }
@@ -72,8 +82,12 @@ export const lambdaHandler = async (
           'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
-          error: { message: 'Payment verification failed. Invalid signature.' },
-          verified: false,
+          data: null,
+          error: {
+            code: 'VERIFICATION_FAILED',
+            message: 'Payment verification failed. Invalid signature.',
+          },
+          meta: null,
         }),
       };
     }
@@ -111,10 +125,13 @@ export const lambdaHandler = async (
         'Access-Control-Allow-Origin': '*',
       },
       body: JSON.stringify({
-        verified: true,
-        message: 'Payment verified successfully',
-        paymentId: razorpay_payment_id,
-        orderId: razorpay_order_id,
+        data: {
+          verified: true,
+          paymentId: razorpay_payment_id,
+          orderId: razorpay_order_id,
+        },
+        error: null,
+        meta: null,
       }),
     };
   } catch (error) {
@@ -127,8 +144,12 @@ export const lambdaHandler = async (
         'Access-Control-Allow-Origin': '*',
       },
       body: JSON.stringify({
-        error: { message: 'Failed to verify payment' },
-        verified: false,
+        data: null,
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to verify payment',
+        },
+        meta: null,
       }),
     };
   }
