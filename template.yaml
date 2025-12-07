@@ -315,8 +315,6 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref StageName
-      DefaultRouteSettings:
-        PayloadFormatVersion: "2.0"
       Auth:
         Authorizers:
           CognitoAuthorizer:
