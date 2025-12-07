@@ -102,20 +102,28 @@ function response(statusCode: number, body: any) {
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     if (!event.body) return response(400, { error: { code: 'BadRequest', message: 'Missing body' }, data: null, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS } });
-    let imageBase64: string | undefined;
+    
+    let images: string[] = [];
     try {
       const parsed = JSON.parse(event.body);
-      imageBase64 = parsed.imageBase64;
+      // Support both single image (imageBase64) and multiple images (images array)
+      if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
+        images = [parsed.imageBase64];
+      } else if (parsed.images && Array.isArray(parsed.images)) {
+        images = parsed.images;
+      }
     } catch {
       return response(400, { error: { code: 'BadJSON', message: 'Body must be JSON' }, data: null, meta: null });
     }
-    if (!imageBase64 || typeof imageBase64 !== 'string') return response(400, { error: { code: 'BadRequest', message: 'imageBase64 required' }, data: null, meta: null });
-    // Strip possible data URI prefix
-    const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
-    if (cleaned.length > MAX_IMAGE_BASE64_LENGTH) {
-      return response(413, { error: { code: 'ImageTooLarge', message: `Image base64 length ${cleaned.length} exceeds limit ${MAX_IMAGE_BASE64_LENGTH}` }, data: null, meta: { max: MAX_IMAGE_BASE64_LENGTH } });
+    
+    if (images.length === 0) {
+      return response(400, { error: { code: 'BadRequest', message: 'imageBase64 or images array required' }, data: null, meta: null });
     }
-    console.log('ExtractTrades start', { sizeChars: cleaned.length, requestTimeoutMs: REQUEST_TIMEOUT_MS });
+    
+    if (images.length > 3) {
+      return response(400, { error: { code: 'BadRequest', message: 'Maximum 3 images allowed' }, data: null, meta: { maxImages: 3 } });
+    }
+
     const started = Date.now();
     let apiKey: string;
     try {
@@ -123,78 +131,134 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } catch (e: any) {
       return response(500, { error: { code: 'ConfigError', message: e.message }, data: null, meta: null });
     }
+
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: MODEL_ID }, { timeout: REQUEST_TIMEOUT_MS });
-    let text: string;
-    try {
-      console.log('Calling Gemini model', { model: MODEL_ID });
-      const result = await model.generateContent([
-        GEMINI_VISION_PROMPT,
-        { inlineData: { data: cleaned, mimeType: 'image/png' } }
-      ]);
-      text = result.response.text().trim();
-    } catch (err: any) {
-      const elapsed = Date.now() - started;
-      const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
-      console.error('Gemini call failed', { elapsedMs: elapsed, isAbort, error: err?.message });
-      if (isAbort) {
-        return response(504, { error: { code: 'UpstreamTimeout', message: `Gemini request exceeded ${REQUEST_TIMEOUT_MS}ms` }, data: null, meta: { elapsedMs: elapsed } });
+
+    // Process each image and collect all extracted trades
+    const allItems: any[] = [];
+    const processingDetails: any[] = [];
+
+    for (let i = 0; i < images.length; i++) {
+      const imageBase64 = images[i];
+      
+      // Strip possible data URI prefix
+      const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+      
+      if (cleaned.length > MAX_IMAGE_BASE64_LENGTH) {
+        processingDetails.push({
+          imageIndex: i,
+          error: `Image base64 length ${cleaned.length} exceeds limit ${MAX_IMAGE_BASE64_LENGTH}`,
+          skipped: true
+        });
+        continue;
       }
-      return response(502, { error: { code: 'UpstreamError', message: err?.message || 'Gemini error' }, data: null, meta: { elapsedMs: elapsed } });
+
+      console.log(`ExtractTrades processing image ${i + 1}/${images.length}`, { sizeChars: cleaned.length });
+
+      let text: string;
+      try {
+        console.log('Calling Gemini model', { model: MODEL_ID, imageIndex: i });
+        const result = await model.generateContent([
+          GEMINI_VISION_PROMPT,
+          { inlineData: { data: cleaned, mimeType: 'image/png' } }
+        ]);
+        text = result.response.text().trim();
+      } catch (err: any) {
+        const imageElapsed = Date.now() - started;
+        const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
+        console.error(`Gemini call failed for image ${i}`, { elapsedMs: imageElapsed, isAbort, error: err?.message });
+        
+        processingDetails.push({
+          imageIndex: i,
+          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message,
+          skipped: true
+        });
+        continue;
+      }
+
+      console.log(`Gemini response received for image ${i}`, { chars: text.length });
+
+      const extracted = extractJsonArray(text);
+      if (!extracted.json) {
+        processingDetails.push({
+          imageIndex: i,
+          error: 'Model did not return JSON array',
+          rawPreview: text.slice(0, 200),
+          skipped: true
+        });
+        continue;
+      }
+
+      let items: any[];
+      try {
+        items = JSON.parse(extracted.json);
+        allItems.push(...items);
+        processingDetails.push({
+          imageIndex: i,
+          extractedCount: items.length,
+          parseSteps: extracted.steps
+        });
+      } catch (e: any) {
+        processingDetails.push({
+          imageIndex: i,
+          error: `JSON parse error: ${e.message}`,
+          skipped: true
+        });
+      }
     }
+
     const elapsed = Date.now() - started;
-    console.log('Gemini response received', { elapsedMs: elapsed, chars: text.length });
-
-    function extractJsonArray(raw: string): { json?: string; steps: string[] } {
-      const steps: string[] = [];
-      let work = raw.trim();
-      // 1. Strip markdown code fences if present
-      const fenceMatch = work.match(/```(?:json)?\s*[\r\n]+([\s\S]*?)```/i);
-      if (fenceMatch) {
-        steps.push('Stripped markdown code fence');
-        work = fenceMatch[1].trim();
-      }
-      // 2. Direct check
-      if (work.startsWith('[') && work.endsWith(']')) {
-        steps.push('Detected array boundaries directly');
-        return { json: work, steps };
-      }
-      // 3. Attempt to locate first JSON array via bracket balancing
-      const firstOpen = work.indexOf('[');
-      if (firstOpen !== -1) {
-        let depth = 0;
-        for (let i = firstOpen; i < work.length; i++) {
-          const ch = work[i];
-          if (ch === '[') depth++;
-          else if (ch === ']') {
-            depth--;
-            if (depth === 0) {
-              const candidate = work.slice(firstOpen, i + 1).trim();
-              if (candidate.startsWith('[') && candidate.endsWith(']')) {
-                steps.push('Extracted balanced array slice');
-                return { json: candidate, steps };
-              }
-              break;
-            }
-          }
-        }
-      }
-      return { steps };
-    }
-
-    const extracted = extractJsonArray(text);
-    if (!extracted.json) {
-      return response(500, { error: { code: 'ParseError', message: 'Model did not return JSON array', raw: text.slice(0, 2000) }, data: null, meta: { elapsedMs: elapsed, parseSteps: extracted.steps } });
-    }
-    let items: any[];
-    try {
-      items = JSON.parse(extracted.json);
-    } catch (e: any) {
-      return response(500, { error: { code: 'JSONParseError', message: e.message }, data: null, meta: { elapsedMs: elapsed, parseSteps: extracted.steps } });
-    }
-    return response(200, { data: { items }, meta: { elapsedMs: elapsed, parseSteps: extracted.steps }, error: null });
+    
+    return response(200, { 
+      data: { items: allItems }, 
+      meta: { 
+        elapsedMs: elapsed, 
+        totalImages: images.length,
+        totalExtracted: allItems.length,
+        processingDetails 
+      }, 
+      error: null 
+    });
   } catch (e: any) {
     console.error('ExtractTrades error', e);
     return response(500, { error: { code: 'InternalError', message: e?.message || 'Unexpected error' }, data: null, meta: null });
   }
 };
+
+function extractJsonArray(raw: string): { json?: string; steps: string[] } {
+  const steps: string[] = [];
+  let work = raw.trim();
+  // 1. Strip markdown code fences if present
+  const fenceMatch = work.match(/```(?:json)?\s*[\r\n]+([\s\S]*?)```/i);
+  if (fenceMatch) {
+    steps.push('Stripped markdown code fence');
+    work = fenceMatch[1].trim();
+  }
+  // 2. Direct check
+  if (work.startsWith('[') && work.endsWith(']')) {
+    steps.push('Detected array boundaries directly');
+    return { json: work, steps };
+  }
+  // 3. Attempt to locate first JSON array via bracket balancing
+  const firstOpen = work.indexOf('[');
+  if (firstOpen !== -1) {
+    let depth = 0;
+    for (let i = firstOpen; i < work.length; i++) {
+      const ch = work[i];
+      if (ch === '[') depth++;
+      else if (ch === ']') {
+        depth--;
+        if (depth === 0) {
+          const candidate = work.slice(firstOpen, i + 1).trim();
+          if (candidate.startsWith('[') && candidate.endsWith(']')) {
+            steps.push('Extracted balanced array slice');
+            return { json: candidate, steps };
+          }
+          break;
+        }
+      }
+    }
+  }
+  return { steps };
+}
