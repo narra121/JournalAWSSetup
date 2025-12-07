@@ -148,7 +148,7 @@ Resources:
           AttributeType: S
         - AttributeName: symbolOpenDate
           AttributeType: S
-        - AttributeName: statusOpenDate
+        - AttributeName: outcomeOpenDate
           AttributeType: S
         - AttributeName: idempotencyKey
           AttributeType: S
@@ -174,11 +174,11 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-        - IndexName: user-status-date-gsi
+        - IndexName: user-outcome-date-gsi
           KeySchema:
             - AttributeName: userId
               KeyType: HASH
-            - AttributeName: statusOpenDate
+            - AttributeName: outcomeOpenDate
               KeyType: RANGE
           Projection:
             ProjectionType: ALL

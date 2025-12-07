@@ -127,7 +127,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Direct field mapping helper
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','status','achievedRiskRewardRatio'];
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','outcome','achievedRiskRewardRatio'];
     // Normalize numeric field if provided as string
     if (data.achievedRiskRewardRatio !== undefined) {
       const val = data.achievedRiskRewardRatio;
@@ -163,14 +163,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     existing.riskRewardRatio = existing.pnl != null && riskAmount > 0
       ? Number((existing.pnl / riskAmount).toFixed(4))
       : null;
-  // Do not auto-set status; keep whatever currently stored / provided
+  // Do not auto-set outcome; keep whatever currently stored / provided
     existing.updatedAt = new Date().toISOString();
-    // Update composite GSI attributes (symbol/date & status/date)
+    // Update composite GSI attributes (symbol/date & outcome/date)
     if (existing.symbol && existing.openDate) {
       existing.symbolOpenDate = `${existing.symbol}#${existing.openDate}`;
     }
-    if (existing.status && existing.openDate) {
-      existing.statusOpenDate = `${existing.status}#${existing.openDate}`;
+    if (existing.outcome && existing.openDate) {
+      existing.outcomeOpenDate = `${existing.outcome}#${existing.openDate}`;
     }
 
     // Persist full object (replace strategy) with stricter condition (must belong to user and exist)

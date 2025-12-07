@@ -78,6 +78,16 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS identity
         run: aws sts get-caller-identity
+      - name: Store Gemini API Key in SSM
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          aws ssm put-parameter \
+            --name "/tradeflow/geminiApiKey" \
+            --value "${GEMINI_API_KEY}" \
+            --type "SecureString" \
+            --overwrite \
+            --region $AWS_REGION
       - name: Validate SAM (dev)
         run: sam validate --region $AWS_REGION
       - name: Deploy to Dev
@@ -94,7 +104,7 @@ jobs:
               StageName=tradeflow-dev \
               ApiVersion=v1 \
               LogRetentionDays=7 \
-              GeminiApiKeyParamName=/trading-journal/geminiApiKey \
+              GeminiApiKeyParamName=/tradeflow/geminiApiKey \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
@@ -121,6 +131,16 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS identity
         run: aws sts get-caller-identity
+      - name: Store Gemini API Key in SSM
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          aws ssm put-parameter \
+            --name "/tradeflow/geminiApiKey" \
+            --value "${GEMINI_API_KEY}" \
+            --type "SecureString" \
+            --overwrite \
+            --region $AWS_REGION
       - name: Validate SAM (prod)
         run: sam validate --region $AWS_REGION
       - name: Deploy to Prod
@@ -137,7 +157,7 @@ jobs:
               StageName=tradeflow-prod \
               ApiVersion=v1 \
               LogRetentionDays=14 \
-              GeminiApiKeyParamName=/trading-journal/geminiApiKey \
+              GeminiApiKeyParamName=/tradeflow/geminiApiKey \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \

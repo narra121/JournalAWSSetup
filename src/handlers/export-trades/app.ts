@@ -12,7 +12,7 @@ function convertToCSV(trades: any[]): string {
   const headers = [
     'Symbol', 'Direction', 'Quantity', 'Entry Price', 'Exit Price',
     'Stop Loss', 'Take Profit', 'Open Date', 'Close Date',
-    'Status', 'PnL', 'Net PnL', 'Commission', 'Fees',
+    'Outcome', 'PnL', 'Net PnL', 'Commission', 'Fees',
     'Strategy', 'Session', 'Market Condition', 'Notes'
   ];
 
@@ -26,7 +26,7 @@ function convertToCSV(trades: any[]): string {
     t.takeProfit || '',
     t.openDate || '',
     t.closeDate || '',
-    t.status || '',
+    t.outcome || '',
     t.pnl || '',
     t.netPnl || '',
     t.commission || '',

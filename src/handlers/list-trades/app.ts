@@ -20,7 +20,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const startDate = query.startDate;
     const endDate = query.endDate;
     const symbol = query.symbol;
-    const status = query.status;
+    const outcome = query.outcome;
     const tag = query.tag; // simple filter post-query
     const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
     const nextToken = query.nextToken ? Buffer.from(query.nextToken, 'base64').toString('utf-8') : undefined;
@@ -51,14 +51,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           ExclusiveStartKey: exclusiveStartKey
         });
       }
-    } else if (status) {
+    } else if (outcome) {
       if (startDate || endDate) {
-        const startKey = `${status}#${startDate || '0000-00-00'}`;
-        const endKey = `${status}#${endDate || '9999-12-31'}`;
+        const startKey = `${outcome}#${startDate || '0000-00-00'}`;
+        const endKey = `${outcome}#${endDate || '9999-12-31'}`;
         command = new QueryCommand({
           TableName: TRADES_TABLE,
-          IndexName: 'user-status-date-gsi',
-          KeyConditionExpression: 'userId = :u AND statusOpenDate BETWEEN :start AND :end',
+          IndexName: 'user-outcome-date-gsi',
+          KeyConditionExpression: 'userId = :u AND outcomeOpenDate BETWEEN :start AND :end',
           ExpressionAttributeValues: { ':u': userId, ':start': startKey, ':end': endKey },
           Limit: limit,
           ExclusiveStartKey: exclusiveStartKey
@@ -66,9 +66,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       } else {
         command = new QueryCommand({
           TableName: TRADES_TABLE,
-          IndexName: 'user-status-date-gsi',
-          KeyConditionExpression: 'userId = :u AND begins_with(statusOpenDate, :p)',
-          ExpressionAttributeValues: { ':u': userId, ':p': `${status}#` },
+          IndexName: 'user-outcome-date-gsi',
+          KeyConditionExpression: 'userId = :u AND begins_with(outcomeOpenDate, :p)',
+          ExpressionAttributeValues: { ':u': userId, ':p': `${outcome}#` },
           Limit: limit,
           ExclusiveStartKey: exclusiveStartKey
         });
