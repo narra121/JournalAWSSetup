@@ -25,15 +25,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       Key: { userId }
     }));
 
-    const subscription = result.Item || {
-      userId,
-      status: 'inactive',
-      plan: 'free',
-      amount: 0,
-      billingCycle: 'monthly',
-      nextBillingDate: null
-    };
+    if (!result.Item) {
+      log.info('no subscription found');
+      return envelope({ statusCode: 404, data: { subscription: null, message: 'No subscription found' } });
+    }
 
+    const subscription = result.Item;
     log.info('subscription retrieved');
     
     return envelope({ statusCode: 200, data: { subscription } });

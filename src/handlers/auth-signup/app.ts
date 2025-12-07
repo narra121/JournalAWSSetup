@@ -19,14 +19,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.log('Failed to parse body for logging');
     }
     if (!event.body) return resp(400, null, { code: 'INVALID_REQUEST', message: 'Missing body' });
-    const { email, password } = JSON.parse(event.body);
-    if (!email || !password) return resp(400, null, { code: 'INVALID_REQUEST', message: 'email and password required' });
+    const { email, password, name } = JSON.parse(event.body);
+    if (!email || !password || !name) return resp(400, null, { code: 'INVALID_REQUEST', message: 'email, name, and password required' });
   if (password.length < 6 || password.length > 18) return resp(400, null, { code: 'INVALID_REQUEST', message: 'password must be 6-18 characters' });
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
     if (!rl.allowed) return resp(429, null, { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many attempts', details: { retryAfter: rl.retryAfter } });
-    const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }] });
+    const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }, { Name: 'name', Value: name }] });
     const r = await client.send(cmd);
-    return resp(200, { userConfirmed: r.UserConfirmed, codeDelivery: r.CodeDeliveryDetails }, null);
+    return resp(200, { user: { id: r.UserSub, name, email }, message: 'User created. Please check your email for a confirmation code.' }, null);
   } catch (e: any) {
     console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
     return resp(400, null, { code: e?.name || 'SIGNUP_FAILED', message: e?.message || 'Signup failed' });

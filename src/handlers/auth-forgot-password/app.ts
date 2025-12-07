@@ -14,7 +14,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!rl.allowed) return resp(429, null, { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many attempts', details: { retryAfter: rl.retryAfter } });
     const cmd = new ForgotPasswordCommand({ ClientId: CLIENT_ID, Username: email });
     const r = await client.send(cmd);
-    return resp(200, { codeDelivery: r.CodeDeliveryDetails }, null);
+    return resp(200, { message: `Password reset code sent to ${r.CodeDeliveryDetails?.Destination}.` }, null);
   } catch (e: any) { console.error(e); return resp(400, null, { code: 'FORGOT_PASSWORD_FAILED', message: e.message || 'Forgot password failed' }); }
 };
 

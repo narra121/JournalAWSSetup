@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { CognitoIdentityProviderClient, InitiateAuthCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, InitiateAuthCommand, GetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 
 const client = new CognitoIdentityProviderClient({});
@@ -20,7 +20,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const r = await client.send(cmd);
     if (!r.AuthenticationResult) return resp(400, null, { code: 'AUTH_FAILED', message: 'Authentication failed' });
     const { IdToken, AccessToken, RefreshToken, ExpiresIn, TokenType } = r.AuthenticationResult;
-    return resp(200, { IdToken, AccessToken, RefreshToken, ExpiresIn, TokenType }, null);
+
+    const userCmd = new GetUserCommand({ AccessToken: AccessToken! });
+    const userRes = await client.send(userCmd);
+
+    const user = {
+      id: userRes.UserAttributes?.find(a => a.Name === 'sub')?.Value,
+      name: userRes.UserAttributes?.find(a => a.Name === 'name')?.Value,
+      email: userRes.UserAttributes?.find(a => a.Name === 'email')?.Value,
+    };
+
+    return resp(200, { IdToken, AccessToken, RefreshToken, ExpiresIn, TokenType, user }, null);
   } catch (e: any) { console.error(e); return resp(400, null, { code: 'LOGIN_FAILED', message: e.message || 'Login failed' }); }
 };
 

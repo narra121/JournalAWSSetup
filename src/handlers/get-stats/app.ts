@@ -8,7 +8,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
   const rc: any = event.requestContext as any;
   const userId = rc?.authorizer?.jwt?.claims?.sub;
-    if (!userId) return resp(401, { message: 'Unauthorized' });
+    if (!userId) return resp(401, null, { code: 'UNAUTHORIZED', message: 'Unauthorized' });
 
     const result = await ddb.send(new GetCommand({
       TableName: STATS_TABLE,
@@ -20,13 +20,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const avgWin = base.wins > 0 ? base.sumWinPnL / base.wins : 0;
   const avgLoss = base.losses > 0 ? base.sumLossPnL / base.losses : 0; // negative
   const expectancy = (winRate * avgWin) + ((1 - winRate) * avgLoss); // could be negative
-  return resp(200, { ...base, winRate, avgWin, avgLoss, expectancy });
+  const stats = { ...base, winRate, avgWin, avgLoss, expectancy };
+  return resp(200, { stats }, null);
   } catch (e) {
     console.error(e);
-    return resp(500, { message: 'Internal error' });
+    return resp(500, null, { code: 'INTERNAL_ERROR', message: 'Internal error' });
   }
 };
 
-function resp(statusCode: number, body: any) {
-  return { statusCode, body: JSON.stringify(body) };
+function resp(statusCode: number, data: any, error: any) {
+  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
 }
