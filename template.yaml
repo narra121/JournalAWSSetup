@@ -315,6 +315,8 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref StageName
+      DefaultRouteSettings:
+        PayloadFormatVersion: "2.0"
       Auth:
         Authorizers:
           CognitoAuthorizer:
@@ -1795,44 +1797,6 @@ Resources:
         Target: es2020
         Sourcemap: true
 
-  # Initialize Subscription Plans Function (Custom Resource)
-  InitSubscriptionPlansFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/init-subscription-plans/app.handler
-      Runtime: nodejs20.x
-      Timeout: 60
-      MemorySize: 256
-      Environment:
-        Variables:
-          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
-          STAGE_NAME: !Ref StageName
-      Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - ssm:GetParameter
-              - ssm:PutParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${StageName}/razorpay/plan/*"
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/init-subscription-plans/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-        External:
-          - razorpay
-
-  # Custom Resource to trigger plan initialization
-  SubscriptionPlansInitializer:
-    Type: Custom::InitSubscriptionPlans
-    Properties:
-      ServiceToken: !GetAtt InitSubscriptionPlansFunction.Arn
-
 Outputs:
   ApiBaseUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"
@@ -1846,6 +1810,3 @@ Outputs:
     Value: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
   ImagesBucketName:
     Value: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
-  SubscriptionPlansEndpoint:
-    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}/subscriptions/plans"
-    Description: "Endpoint to retrieve available subscription plans"
