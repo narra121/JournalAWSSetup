@@ -62,11 +62,14 @@ export const handler = async (
         ...notes,
         userId,
       },
+      // Set total billing cycles. Default to 120 (10 years) for long-term subscriptions
+      // This can be overridden by passing totalCount in the request
+      total_count: totalCount || 120,
     };
 
-    // Optional: Set total billing cycles (e.g., 12 for 12 months)
-    if (totalCount) {
-      subscriptionData.total_count = totalCount;
+    // Remove total_count if explicitly passed as null or 0
+    if (totalCount === null || totalCount === 0) {
+      delete subscriptionData.total_count;
     }
 
     // Optional: Schedule subscription to start in the future (Unix timestamp)
