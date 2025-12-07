@@ -59,6 +59,7 @@ async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly
   try {
     const planKey = `${tier}_${period}`;
     const paramName = `/tradeflow/${STAGE_NAME}/razorpay/plan/${planKey}`;
+    console.log(`Fetching SSM parameter: ${paramName}`);
     const result = await ssmClient.send(
       new GetParameterCommand({ Name: paramName })
     );
@@ -99,10 +100,12 @@ async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly
 
     return planDetails;
   } catch (error: any) {
+    console.error(`Error fetching plan ${tier} ${period}:`, error.name, error.message);
     if (error.name === 'ParameterNotFound') {
       console.log(`Plan not found for ${tier} ${period}`);
       return null;
     }
+    console.error('Unexpected error:', error);
     throw error;
   }
 }
