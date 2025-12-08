@@ -171,9 +171,21 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         
         processingDetails.push({
           imageIndex: i,
-          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message,
+          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message || 'Gemini API call failed',
           skipped: true
         });
+        
+        // If this is the only image and it failed, return error immediately
+        if (images.length === 1) {
+          return response(500, { 
+            error: { 
+              code: isAbort ? 'GeminiTimeout' : 'GeminiError', 
+              message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'Gemini API call failed')
+            }, 
+            data: null, 
+            meta: { elapsedMs: imageElapsed } 
+          });
+        }
         continue;
       }
 
@@ -209,6 +221,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const elapsed = Date.now() - started;
+    
+    // If all images failed to process, return error
+    const allFailed = processingDetails.every(d => d.skipped === true);
+    if (allFailed && processingDetails.length > 0) {
+      return response(500, { 
+        error: { 
+          code: 'ExtractionFailed', 
+          message: 'All images failed to process',
+          details: processingDetails
+        }, 
+        data: null, 
+        meta: { elapsedMs: elapsed, totalImages: images.length } 
+      });
+    }
     
     return response(200, { 
       data: { items: allItems }, 

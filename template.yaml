@@ -1313,6 +1313,40 @@ Resources:
         Target: es2020
         Sourcemap: true
 
+  GetRulesGoalsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-rules-goals/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RULES_TABLE: !Ref RulesTable
+          GOALS_TABLE: !Ref GoalsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RulesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules-goals
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-rules-goals/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
   CreateRuleFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
