@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Replace with your API key
-const API_KEY = 'AIzaSyBjsUCjFzsgOajM_WFjUpsBAvFvUGYLqn4';
+const API_KEY = 'AIzaSyBC5X9fIX5qwgQNYLbvUXnRe_6paaICH3s';
 
 async function testExtract() {
   try {
