@@ -741,12 +741,26 @@ Resources:
       CodeUri: .
       Handler: src/handlers/auth-confirm-signup/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
+          RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
       Policies:
         - Statement:
             Effect: Allow
             Action:
               - cognito-idp:ConfirmSignUp
+              - cognito-idp:AdminGetUser
             Resource: !GetAtt UserPool.Arn
+        - !If
+          - CreateNewDataResources
+          - Statement:
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt RulesTable.Arn
+          - !Ref AWS::NoValue
       Events:
         Api:
           Type: HttpApi
