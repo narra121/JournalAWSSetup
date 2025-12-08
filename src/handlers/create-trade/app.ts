@@ -160,6 +160,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             createdAt: nowLocal,
             updatedAt: nowLocal,
             symbolOpenDate: `${t.symbol}#${t.openDate}`,
+            statusOpenDate: `${outcome || 'UNKNOWN'}#${t.openDate}`,
             outcomeOpenDate: `${outcome}#${t.openDate}`,
             // Only include idempotencyKey if provided; null would break GSI key expectations
           };
@@ -346,6 +347,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       updatedAt: now,
       // Composite attributes for GSIs
       symbolOpenDate: `${data.symbol}#${data.openDate}`,
+      statusOpenDate: `${outcome || 'UNKNOWN'}#${data.openDate}`,
       outcomeOpenDate: `${outcome}#${data.openDate}`,
       // idempotencyKey added conditionally below
     };

@@ -165,11 +165,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       : null;
   // Do not auto-set outcome; keep whatever currently stored / provided
     existing.updatedAt = new Date().toISOString();
-    // Update composite GSI attributes (symbol/date & outcome/date)
+    // Update composite GSI attributes (symbol/date, status/date & outcome/date)
     if (existing.symbol && existing.openDate) {
       existing.symbolOpenDate = `${existing.symbol}#${existing.openDate}`;
     }
     if (existing.outcome && existing.openDate) {
+      existing.statusOpenDate = `${existing.outcome}#${existing.openDate}`;
       existing.outcomeOpenDate = `${existing.outcome}#${existing.openDate}`;
     }
 
