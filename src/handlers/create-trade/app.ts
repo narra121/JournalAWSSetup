@@ -100,74 +100,64 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const entryPrice = num(t.entryPrice);
           const exitPrice = num(t.exitPrice);
           const quantity = Number(t.quantity);
-          // Hybrid PnL logic: prefer provided values; if missing, derive
-          const commission = num(t.commission);
-          const fees = t.fees ?? 0;
+          
+          // Use PnL from frontend if provided (already calculated in UI)
           let pnl = num(t.pnl);
-          let netPnl = num(t.netPnl);
-          const costs = (commission || 0) + (fees || 0);
           if (pnl == null && entryPrice != null && exitPrice != null && !Number.isNaN(quantity)) {
-            if (t.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; else if (t.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
+            if (t.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; 
+            else if (t.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
           }
-          if (pnl != null && netPnl == null) {
-            netPnl = pnl - costs;
-          } else if (pnl == null && netPnl != null) {
-            pnl = netPnl + costs; // reconstruct gross
-          }
-          const riskAmount = num(t.riskAmount) || 0;
-          const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
-          const achievedRiskRewardRatio = t.achievedRiskRewardRatio != null ? Number(t.achievedRiskRewardRatio) : null;
-          const outcome = t.outcome; // use client-provided outcome only
+          
+          // Use riskRewardRatio from frontend if provided (already calculated in UI)
+          const riskRewardRatio = num(t.riskRewardRatio);
+          const outcome = t.outcome;
           const nowLocal = new Date().toISOString();
+          
+          // Get accountIds - if multiple accounts, create separate entry for each
+          const accountIds = Array.isArray(t.accountIds) && t.accountIds.length > 0 
+            ? t.accountIds 
+            : ['-1']; // No account specified, use -1 for 'all accounts'
+          
+          const itemsToCreate = accountIds.map((accountId: string) => {
+            const tradeId = accountIds.length > 1 ? uuid() : tradeIdLocal; // Unique ID per account if multiple
             const item: any = {
-            userId,
-            tradeId: tradeIdLocal,
-            symbol: t.symbol,
-            side: t.side,
-            quantity,
-            openDate: t.openDate,
-            closeDate: t.closeDate || null,
-            entryPrice,
-            exitPrice,
-            stopLoss: num(t.stopLoss),
-            takeProfit: num(t.takeProfit),
-            pnl,
-            commission,
-            fees,
-            netPnl,
-            riskAmount,
-            riskRewardRatio,
-            setupType: t.setupType || null,
-            timeframe: t.timeframe || null,
-            marketCondition: t.marketCondition || null,
-            tradingSession: t.tradingSession || null,
-            tradeGrade: t.tradeGrade || null,
-            confidence: num(t.confidence),
-            setupQuality: num(t.setupQuality),
-            execution: num(t.execution),
-            emotionalState: t.emotionalState || null,
-            psychology: t.psychology || { greed: false, fear: false, fomo: false, revenge: false, overconfidence: false, patience: false },
-            preTradeNotes: t.preTradeNotes || null,
-            postTradeNotes: t.postTradeNotes || null,
-            mistakes: Array.isArray(t.mistakes) ? t.mistakes : [],
-            lessons: Array.isArray(t.lessons) ? t.lessons : [],
-            newsEvents: Array.isArray(t.newsEvents) ? t.newsEvents : [],
-            economicEvents: Array.isArray(t.economicEvents) ? t.economicEvents : [],
-            outcome,
-            achievedRiskRewardRatio,
-            tags: Array.isArray(t.tags) ? t.tags : [],
-            images,
-            createdAt: nowLocal,
-            updatedAt: nowLocal,
-            symbolOpenDate: `${t.symbol}#${t.openDate}`,
-            statusOpenDate: `${outcome || 'UNKNOWN'}#${t.openDate}`,
-            outcomeOpenDate: `${outcome}#${t.openDate}`,
-            // Only include idempotencyKey if provided; null would break GSI key expectations
-          };
-          if (idemKeyItem) item.idempotencyKey = idemKeyItem;
-          created.push(item);
-          log.debug('bulk item prepared', { index, tradeId: tradeIdLocal });
-          return item;
+              userId,
+              tradeId,
+              accountId: accountId || '-1',
+              symbol: t.symbol,
+              side: t.side,
+              quantity,
+              openDate: t.openDate,
+              closeDate: t.closeDate || null,
+              entryPrice,
+              exitPrice,
+              stopLoss: num(t.stopLoss),
+              takeProfit: num(t.takeProfit),
+              pnl,
+              riskRewardRatio,
+              setupType: t.setupType || null,
+              marketCondition: t.marketCondition || null,
+              tradingSession: t.tradingSession || null,
+              mistakes: Array.isArray(t.mistakes) ? t.mistakes : [],
+              lessons: Array.isArray(t.lessons) ? t.lessons : [],
+              newsEvents: Array.isArray(t.newsEvents) ? t.newsEvents : [],
+              outcome,
+              tags: Array.isArray(t.tags) ? t.tags : [],
+              images,
+              brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
+              createdAt: nowLocal,
+              updatedAt: nowLocal,
+              symbolOpenDate: `${t.symbol}#${t.openDate}`,
+              statusOpenDate: `${outcome || 'UNKNOWN'}#${t.openDate}`,
+              outcomeOpenDate: `${outcome}#${t.openDate}`,
+            };
+            if (idemKeyItem) item.idempotencyKey = `${idemKeyItem}${accountId ? `-${accountId}` : ''}`;
+            return item;
+          });
+          
+          created.push(...itemsToCreate);
+          log.debug('bulk item prepared', { index, tradeId: tradeIdLocal, accountCount: itemsToCreate.length });
+          return itemsToCreate;
         } catch (err: any) {
           errors.push({ index, message: err.message || 'error' });
           log.warn('bulk item error', { index, error: err.message });
@@ -178,8 +168,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Process sequentially to limit parallel S3 pressure (could be parallelized with Promise.allSettled if needed)
       const toWrite: any[] = [];
   for (let i=0;i<itemsArr.length;i++) {
-        const resItem = await processOne(itemsArr[i], i);
-        if (resItem) toWrite.push(resItem);
+        const resItems = await processOne(itemsArr[i], i);
+        if (resItems) {
+          // resItems is now an array of items (one per account)
+          if (Array.isArray(resItems)) {
+            toWrite.push(...resItems);
+          } else {
+            toWrite.push(resItems);
+          }
+        }
       }
 
       // Batch write in chunks of 25
@@ -283,87 +280,88 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const entryPrice = num(data.entryPrice);
   const exitPrice = num(data.exitPrice);
   const quantity = Number(data.quantity);
-  // Hybrid PnL logic for single create
-  const commission = num(data.commission);
-  const fees = data.fees ?? 0;
+  
+  // Use PnL from frontend if provided (already calculated in UI)
   let pnl = num(data.pnl);
-  let netPnl = num(data.netPnl);
-  const costs = (commission || 0) + (fees || 0);
   if (pnl == null && entryPrice != null && exitPrice != null && !Number.isNaN(quantity)) {
-    if (data.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; else if (data.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
+    if (data.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; 
+    else if (data.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
   }
-  if (pnl != null && netPnl == null) {
-    netPnl = pnl - costs;
-  } else if (pnl == null && netPnl != null) {
-    pnl = netPnl + costs; // reconstruct gross
-  }
-    const riskAmount = num(data.riskAmount) || 0;
-  const riskRewardRatio = pnl != null && riskAmount > 0 ? Number((pnl / riskAmount).toFixed(4)) : null;
-  const achievedRiskRewardRatio = data.achievedRiskRewardRatio != null ? Number(data.achievedRiskRewardRatio) : null;
-  const outcome = data.outcome; // do not infer outcome; trust request
+  
+  // Use riskRewardRatio from frontend if provided (already calculated in UI)
+  const riskRewardRatio = num(data.riskRewardRatio);
+  const outcome = data.outcome;
 
     const now = new Date().toISOString();
-  const item: any = {
-      userId,
-      tradeId,
-      symbol: data.symbol,
-      side: data.side,
-      quantity,
-      openDate: data.openDate,
-      closeDate: data.closeDate || null,
-      entryPrice,
-      exitPrice,
-      stopLoss: num(data.stopLoss),
-      takeProfit: num(data.takeProfit),
-      pnl,
-      commission,
-      fees,
-      netPnl,
-      riskAmount,
-      riskRewardRatio,
-      setupType: data.setupType || null,
-      timeframe: data.timeframe || null,
-      marketCondition: data.marketCondition || null,
-      tradingSession: data.tradingSession || null,
-      tradeGrade: data.tradeGrade || null,
-      confidence: num(data.confidence),
-      setupQuality: num(data.setupQuality),
-      execution: num(data.execution),
-      emotionalState: data.emotionalState || null,
-      psychology: data.psychology || {
-        greed: false, fear: false, fomo: false, revenge: false, overconfidence: false, patience: false
-      },
-      preTradeNotes: data.preTradeNotes || null,
-      postTradeNotes: data.postTradeNotes || null,
-      mistakes: Array.isArray(data.mistakes) ? data.mistakes : [],
-      lessons: Array.isArray(data.lessons) ? data.lessons : [],
-      newsEvents: Array.isArray(data.newsEvents) ? data.newsEvents : [],
-      economicEvents: Array.isArray(data.economicEvents) ? data.economicEvents : [],
-  outcome,
-  achievedRiskRewardRatio,
-      tags: Array.isArray(data.tags) ? data.tags : [],
-  images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
-      createdAt: now,
-      updatedAt: now,
-      // Composite attributes for GSIs
-      symbolOpenDate: `${data.symbol}#${data.openDate}`,
-      statusOpenDate: `${outcome || 'UNKNOWN'}#${data.openDate}`,
-      outcomeOpenDate: `${outcome}#${data.openDate}`,
-      // idempotencyKey added conditionally below
-    };
-    if (idemKey) item.idempotencyKey = idemKey;
+    
+    // Get accountIds - if multiple accounts, create separate entry for each
+    const accountIds = Array.isArray(data.accountIds) && data.accountIds.length > 0 
+      ? data.accountIds 
+      : ['-1']; // No account specified, use -1 for 'all accounts'
+    
+    const itemsToCreate = accountIds.map((accountId: string) => {
+      const itemTradeId = accountIds.length > 1 ? uuid() : tradeId; // Unique ID per account if multiple
+      const item: any = {
+        userId,
+        tradeId: itemTradeId,
+        accountId: accountId || '-1',
+        symbol: data.symbol,
+        side: data.side,
+        quantity,
+        openDate: data.openDate,
+        closeDate: data.closeDate || null,
+        entryPrice,
+        exitPrice,
+        stopLoss: num(data.stopLoss),
+        takeProfit: num(data.takeProfit),
+        pnl,
+        riskRewardRatio,
+        setupType: data.setupType || null,
+        marketCondition: data.marketCondition || null,
+        tradingSession: data.tradingSession || null,
+        mistakes: Array.isArray(data.mistakes) ? data.mistakes : [],
+        lessons: Array.isArray(data.lessons) ? data.lessons : [],
+        newsEvents: Array.isArray(data.newsEvents) ? data.newsEvents : [],
+        outcome,
+        tags: Array.isArray(data.tags) ? data.tags : [],
+        brokenRuleIds: Array.isArray(data.brokenRuleIds) ? data.brokenRuleIds : [],
+        images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
+        createdAt: now,
+        updatedAt: now,
+        // Composite attributes for GSIs
+        symbolOpenDate: `${data.symbol}#${data.openDate}`,
+        statusOpenDate: `${outcome || 'UNKNOWN'}#${data.openDate}`,
+        outcomeOpenDate: `${outcome}#${data.openDate}`,
+      };
+      if (idemKey) item.idempotencyKey = `${idemKey}${accountId ? `-${accountId}` : ''}`;
+      return item;
+    });
 
-  await ddb.send(new PutCommand({ TableName: TRADES_TABLE, Item: item }));
-  log.info('single trade created', { tradeId });
+  // Write all items (one per account)
+  await Promise.all(itemsToCreate.map((item: any) => 
+    ddb.send(new PutCommand({ TableName: TRADES_TABLE, Item: item }))
+  ));
+  
+  log.info('single trade(s) created', { count: itemsToCreate.length, tradeIds: itemsToCreate.map((i: any) => i.tradeId) });
+  
   // Attach presigned URLs for response only
-  const signedImages = await Promise.all(item.images.map(async (im: any) => {
-    if (im.key) {
-      const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
-      return { ...im, url };
-    }
-    return im;
+  const itemsWithUrls = await Promise.all(itemsToCreate.map(async (item: any) => {
+    const signedImages = await Promise.all(item.images.map(async (im: any) => {
+      if (im.key) {
+        const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
+        return { ...im, url };
+      }
+      return im;
+    }));
+    return { ...item, images: signedImages };
   }));
-  return envelope({ statusCode: 201, data: { trade: { ...item, images: signedImages } } });
+  
+  // Return first item for single account, or all items for multiple accounts
+  const responseData = itemsToCreate.length === 1 
+    ? { trade: itemsWithUrls[0] } 
+    : { trades: itemsWithUrls, count: itemsWithUrls.length };
+  
+  return envelope({ statusCode: 201, data: responseData });
   } catch (err: any) {
     console.error(err);
     return errorFromException(err, true);

@@ -126,17 +126,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    // Direct field mapping helper
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','commission','fees','riskAmount','setupType','timeframe','marketCondition','tradingSession','tradeGrade','confidence','setupQuality','execution','emotionalState','preTradeNotes','postTradeNotes','outcome','achievedRiskRewardRatio'];
-    // Normalize numeric field if provided as string
-    if (data.achievedRiskRewardRatio !== undefined) {
-      const val = data.achievedRiskRewardRatio;
-      existing.achievedRiskRewardRatio = (val === null || val === '') ? null : Number(val);
+    // Direct field mapping helper - only fields from UI
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','pnl','riskRewardRatio','setupType','tradingSession','marketCondition'];
+    
+    // Normalize numeric fields if provided as string
+    if (data.pnl !== undefined) {
+      const val = data.pnl;
+      existing.pnl = (val === null || val === '') ? null : Number(val);
     }
+    if (data.riskRewardRatio !== undefined) {
+      const val = data.riskRewardRatio;
+      existing.riskRewardRatio = (val === null || val === '') ? null : Number(val);
+    }
+    
     for (const f of mapable) if (f in data) existing[f] = data[f];
-    const arrFields = ['mistakes','lessons','tags','newsEvents','economicEvents'];
+    const arrFields = ['mistakes','lessons','tags','newsEvents'];
     for (const f of arrFields) if (Array.isArray(data[f])) existing[f] = data[f];
-    if (data.psychology && typeof data.psychology === 'object') existing.psychology = { ...existing.psychology, ...data.psychology };
 
     // Recompute derived fields if relevant, but respect values passed in request
     // If request body includes pnl/netPnl, use those; otherwise calculate

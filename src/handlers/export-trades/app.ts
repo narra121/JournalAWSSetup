@@ -12,8 +12,8 @@ function convertToCSV(trades: any[]): string {
   const headers = [
     'Symbol', 'Direction', 'Quantity', 'Entry Price', 'Exit Price',
     'Stop Loss', 'Take Profit', 'Open Date', 'Close Date',
-    'Outcome', 'PnL', 'Net PnL', 'Commission', 'Fees',
-    'Strategy', 'Session', 'Market Condition', 'Notes'
+    'Outcome', 'PnL', 'Risk/Reward',
+    'Strategy', 'Session', 'Market Condition', 'Mistakes', 'Lessons', 'News Events', 'Tags'
   ];
 
   const rows = trades.map(t => [
@@ -28,13 +28,14 @@ function convertToCSV(trades: any[]): string {
     t.closeDate || '',
     t.outcome || '',
     t.pnl || '',
-    t.netPnl || '',
-    t.commission || '',
-    t.fees || '',
+    t.riskRewardRatio || '',
     t.setupType || '',
     t.tradingSession || '',
     t.marketCondition || '',
-    (t.preTradeNotes || '') + ' ' + (t.postTradeNotes || '')
+    (Array.isArray(t.mistakes) ? t.mistakes.join('; ') : ''),
+    (Array.isArray(t.lessons) ? t.lessons.join('; ') : ''),
+    (Array.isArray(t.newsEvents) ? t.newsEvents.join('; ') : ''),
+    (Array.isArray(t.tags) ? t.tags.join('; ') : '')
   ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
 
   return [headers.join(','), ...rows].join('\n');

@@ -15,101 +15,76 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
   try {
-    if (!userId) { log.warn('Unauthorized access list-trades'); return resp(401, { message: 'Unauthorized' }); }
+    if (!userId) { 
+      log.warn('Unauthorized access list-trades'); 
+      return {
+        statusCode: 401,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: null, error: { code: 'UNAUTHORIZED', message: 'Unauthorized' }, meta: null })
+      };
+    }
     const query = event.queryStringParameters || {};
+    const accountId = query.accountId;
     const startDate = query.startDate;
     const endDate = query.endDate;
-    const symbol = query.symbol;
-    const outcome = query.outcome;
-    const tag = query.tag; // simple filter post-query
     const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
     const nextToken = query.nextToken ? Buffer.from(query.nextToken, 'base64').toString('utf-8') : undefined;
     let exclusiveStartKey = nextToken ? JSON.parse(nextToken) : undefined;
 
     let command;
-    if (symbol) {
-      // Query symbol GSI: user-symbol-date-gsi with begins_with on composite (symbol#date)
-      const base = `${symbol}#`;
-      if (startDate || endDate) {
-        const startKey = `${symbol}#${startDate || '0000-00-00'}`;
-        const endKey = `${symbol}#${endDate || '9999-12-31'}`;
-        command = new QueryCommand({
-          TableName: TRADES_TABLE,
-          IndexName: 'user-symbol-date-gsi',
-          KeyConditionExpression: 'userId = :u AND symbolOpenDate BETWEEN :start AND :end',
-          ExpressionAttributeValues: { ':u': userId, ':start': startKey, ':end': endKey },
-          Limit: limit,
-          ExclusiveStartKey: exclusiveStartKey
-        });
-      } else {
-        command = new QueryCommand({
-          TableName: TRADES_TABLE,
-          IndexName: 'user-symbol-date-gsi',
-          KeyConditionExpression: 'userId = :u AND begins_with(symbolOpenDate, :p)',
-          ExpressionAttributeValues: { ':u': userId, ':p': base },
-          Limit: limit,
-          ExclusiveStartKey: exclusiveStartKey
-        });
-      }
-    } else if (outcome) {
-      if (startDate || endDate) {
-        const startKey = `${outcome}#${startDate || '0000-00-00'}`;
-        const endKey = `${outcome}#${endDate || '9999-12-31'}`;
-        command = new QueryCommand({
-          TableName: TRADES_TABLE,
-          IndexName: 'user-outcome-date-gsi',
-          KeyConditionExpression: 'userId = :u AND outcomeOpenDate BETWEEN :start AND :end',
-          ExpressionAttributeValues: { ':u': userId, ':start': startKey, ':end': endKey },
-          Limit: limit,
-          ExclusiveStartKey: exclusiveStartKey
-        });
-      } else {
-        command = new QueryCommand({
-          TableName: TRADES_TABLE,
-          IndexName: 'user-outcome-date-gsi',
-          KeyConditionExpression: 'userId = :u AND begins_with(outcomeOpenDate, :p)',
-          ExpressionAttributeValues: { ':u': userId, ':p': `${outcome}#` },
-          Limit: limit,
-          ExclusiveStartKey: exclusiveStartKey
-        });
-      }
-    } else if (startDate || endDate) {
+    if (startDate || endDate) {
       const conditions: string[] = [];
       const exprValues: Record<string, any> = { ':u': userId };
+      const exprNames: Record<string, string> = { '#od': 'openDate' };
+      
       if (startDate) { conditions.push('#od >= :start'); exprValues[':start'] = startDate; }
       if (endDate) { conditions.push('#od <= :end'); exprValues[':end'] = endDate; }
+      
+      // Add accountId filter at DB level using FilterExpression
+      let filterExpression = undefined;
+      if (accountId) {
+        filterExpression = '#aid = :aid OR #aid = :all';
+        exprValues[':aid'] = accountId;
+        exprValues[':all'] = '-1';
+        exprNames['#aid'] = 'accountId';
+      }
+      
       command = new QueryCommand({
         TableName: TRADES_TABLE,
         IndexName: 'trades-by-date-gsi',
         KeyConditionExpression: 'userId = :u' + (conditions.length ? ' AND ' + conditions.join(' AND ') : ''),
+        FilterExpression: filterExpression,
         ExpressionAttributeValues: exprValues,
-        ExpressionAttributeNames: { '#od': 'openDate' },
+        ExpressionAttributeNames: exprNames,
         Limit: limit,
         ExclusiveStartKey: exclusiveStartKey
       });
     } else {
+      const exprValues: Record<string, any> = { ':u': userId };
+      
+      // Add accountId filter at DB level using FilterExpression
+      let filterExpression = undefined;
+      const exprNames: Record<string, string> = {};
+      if (accountId) {
+        filterExpression = '#aid = :aid OR #aid = :all';
+        exprValues[':aid'] = accountId;
+        exprValues[':all'] = '-1';
+        exprNames['#aid'] = 'accountId';
+      }
+      
       command = new QueryCommand({
         TableName: TRADES_TABLE,
         KeyConditionExpression: 'userId = :u',
-        ExpressionAttributeValues: { ':u': userId },
+        FilterExpression: filterExpression,
+        ExpressionAttributeValues: exprValues,
+        ExpressionAttributeNames: Object.keys(exprNames).length > 0 ? exprNames : undefined,
         Limit: limit,
         ExclusiveStartKey: exclusiveStartKey
       });
     }
   const result = await ddb.send(command);
     let items = result.Items || [];
-    // Guarantee netPnl on each item
-    for (const it of items) {
-      if (it && it.netPnl == null) {
-        const pnl = typeof it.pnl === 'number' ? it.pnl : null;
-        const commission = typeof it.commission === 'number' ? it.commission : 0;
-        const fees = typeof it.fees === 'number' ? it.fees : 0;
-        if (pnl != null) it.netPnl = pnl - (commission + fees);
-      }
-    }
-    if (tag) {
-      items = items.filter(i => Array.isArray(i.tags) && i.tags.includes(tag));
-    }
+    
     // Presign image keys (short-lived) if present
   if (items.length) {
       await Promise.all(items.map(async (it: any) => {
