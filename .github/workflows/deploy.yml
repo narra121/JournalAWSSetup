@@ -5,7 +5,7 @@ on:
     branches:
       - main
 
-# Prevent overlapping deploys to same branch
+# Prevent overlapping deploys to same branchs
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
