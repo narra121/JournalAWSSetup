@@ -1,11 +1,60 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
+const GOALS_TABLE = process.env.GOALS_TABLE!;
+
+// Default goal types with their configurations
+const DEFAULT_GOAL_TYPES = [
+  {
+    goalType: 'profit',
+    title: 'Profit Target',
+    description: 'Reach your profit goal',
+    unit: '$',
+    icon: 'target',
+    color: 'text-primary',
+    isInverse: false,
+    weeklyTarget: 500,
+    monthlyTarget: 2000
+  },
+  {
+    goalType: 'winRate',
+    title: 'Win Rate',
+    description: 'Maintain win rate goal',
+    unit: '%',
+    icon: 'trending-up',
+    color: 'text-success',
+    isInverse: false,
+    weeklyTarget: 65,
+    monthlyTarget: 70
+  },
+  {
+    goalType: 'maxDrawdown',
+    title: 'Max Drawdown',
+    description: 'Keep drawdown under limit',
+    unit: '%',
+    icon: 'shield',
+    color: 'text-warning',
+    isInverse: true,
+    weeklyTarget: 3,
+    monthlyTarget: 10
+  },
+  {
+    goalType: 'maxTrades',
+    title: 'Max Trades',
+    description: 'Stay under trade limit',
+    unit: ' trades',
+    icon: 'award',
+    color: 'text-accent',
+    isInverse: true,
+    weeklyTarget: 8,
+    monthlyTarget: 30
+  }
+];
 
 const accountSchema = {
   type: 'object',
@@ -79,6 +128,56 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       TableName: ACCOUNTS_TABLE,
       Item: account
     }));
+
+    // Create default goals for this account
+    const defaultGoals: any[] = [];
+    for (const goalType of DEFAULT_GOAL_TYPES) {
+      // Weekly goal
+      defaultGoals.push({
+        userId,
+        goalId: uuid(),
+        accountId,
+        goalType: goalType.goalType,
+        period: 'weekly',
+        target: goalType.weeklyTarget,
+        title: goalType.title,
+        description: goalType.description,
+        unit: goalType.unit,
+        icon: goalType.icon,
+        color: goalType.color,
+        isInverse: goalType.isInverse,
+        createdAt: now,
+        updatedAt: now
+      });
+
+      // Monthly goal
+      defaultGoals.push({
+        userId,
+        goalId: uuid(),
+        accountId,
+        goalType: goalType.goalType,
+        period: 'monthly',
+        target: goalType.monthlyTarget,
+        title: goalType.title,
+        description: goalType.description,
+        unit: goalType.unit,
+        icon: goalType.icon,
+        color: goalType.color,
+        isInverse: goalType.isInverse,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+
+    // Batch write all default goals
+    if (defaultGoals.length > 0) {
+      await ddb.send(new BatchWriteCommand({
+        RequestItems: {
+          [GOALS_TABLE]: defaultGoals.map(goal => ({ PutRequest: { Item: goal } }))
+        }
+      }));
+      log.info('default goals created for account', { accountId, goalsCount: defaultGoals.length });
+    }
 
     log.info('account created', { accountId });
     

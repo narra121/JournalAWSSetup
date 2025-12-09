@@ -1143,9 +1143,14 @@ Resources:
       CodeUri: .
       Handler: src/handlers/create-account/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          GOALS_TABLE: !Ref GoalsTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
       Events:
         Api:
           Type: HttpApi
