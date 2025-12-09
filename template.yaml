@@ -1215,9 +1215,14 @@ Resources:
       CodeUri: .
       Handler: src/handlers/delete-account/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
       Events:
         Api:
           Type: HttpApi

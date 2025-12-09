@@ -1,10 +1,11 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
+const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rc: any = event.requestContext as any;
@@ -37,14 +38,69 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
     }
 
+    // Delete all trades associated with this account
+    log.info('fetching trades for account deletion', { accountId });
+    
+    let tradesToDelete: { tradeId: string }[] = [];
+    let lastEvaluatedKey: any = undefined;
+    
+    do {
+      const queryResult = await ddb.send(new QueryCommand({
+        TableName: TRADES_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        FilterExpression: 'accountId = :accountId',
+        ExpressionAttributeValues: {
+          ':userId': userId,
+          ':accountId': accountId,
+        },
+        ProjectionExpression: 'tradeId',
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      
+      if (queryResult.Items && queryResult.Items.length > 0) {
+        tradesToDelete.push(...queryResult.Items as { tradeId: string }[]);
+      }
+      
+      lastEvaluatedKey = queryResult.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+    
+    log.info('found trades to delete', { count: tradesToDelete.length, accountId });
+    
+    // Delete trades in batches of 25 (DynamoDB BatchWrite limit)
+    if (tradesToDelete.length > 0) {
+      const batchSize = 25;
+      for (let i = 0; i < tradesToDelete.length; i += batchSize) {
+        const batch = tradesToDelete.slice(i, i + batchSize);
+        
+        await ddb.send(new BatchWriteCommand({
+          RequestItems: {
+            [TRADES_TABLE]: batch.map(trade => ({
+              DeleteRequest: {
+                Key: { userId, tradeId: trade.tradeId }
+              }
+            }))
+          }
+        }));
+        
+        log.info('deleted trade batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
+      }
+    }
+
+    // Delete the account
     await ddb.send(new DeleteCommand({
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId }
     }));
 
-    log.info('account deleted', { accountId });
+    log.info('account and associated trades deleted', { accountId, tradesDeleted: tradesToDelete.length });
     
-    return envelope({ statusCode: 200, data: { message: 'Account deleted successfully' } });
+    return envelope({ 
+      statusCode: 200, 
+      data: { 
+        message: 'Account deleted successfully',
+        tradesDeleted: tradesToDelete.length 
+      } 
+    });
   } catch (error: any) {
     log.error('failed to delete account', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to delete account');
