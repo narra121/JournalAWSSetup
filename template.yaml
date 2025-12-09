@@ -1242,8 +1242,16 @@ Resources:
       CodeUri: .
       Handler: src/handlers/list-goals/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          GOALS_TABLE: !Ref GoalsTable
+          ACCOUNTS_TABLE: !Ref AccountsTable
       Policies:
         - DynamoDBReadPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref AccountsTable
+        - DynamoDBWritePolicy:
             TableName: !Ref GoalsTable
       Events:
         Api:

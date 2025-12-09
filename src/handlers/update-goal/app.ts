@@ -57,7 +57,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     
     let index = 0;
     for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined && ['target', 'title', 'description'].includes(key)) {
+      if (value !== undefined && ['target', 'title', 'description', 'accountId', 'period'].includes(key)) {
         const attrName = `#attr${index}`;
         const attrValue = `:val${index}`;
         updateExpressions.push(`${attrName} = ${attrValue}`);
