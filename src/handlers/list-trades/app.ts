@@ -27,6 +27,43 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const accountId = query.accountId;
     const startDate = query.startDate;
     const endDate = query.endDate;
+    
+    // Require accountId, startDate, and endDate
+    if (!accountId) {
+      log.warn('Missing required parameter: accountId');
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          data: null, 
+          error: { 
+            code: 'MISSING_ACCOUNT_ID', 
+            message: 'accountId is required' 
+          }, 
+          meta: null 
+        })
+      };
+    }
+    
+    if (!startDate || !endDate) {
+      log.warn('Missing required date parameters');
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          data: null, 
+          error: { 
+            code: 'MISSING_DATE_RANGE', 
+            message: 'Both startDate and endDate are required' 
+          }, 
+          meta: null 
+        })
+      };
+    }
+    
+    // If accountId is 'ALL', skip account filtering
+    const shouldFilterByAccount = accountId !== 'ALL';
+    
     const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
     const nextToken = query.nextToken ? Buffer.from(query.nextToken, 'base64').toString('utf-8') : undefined;
     let exclusiveStartKey = nextToken ? JSON.parse(nextToken) : undefined;
@@ -40,9 +77,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       if (startDate) { conditions.push('#od >= :start'); exprValues[':start'] = startDate; }
       if (endDate) { conditions.push('#od <= :end'); exprValues[':end'] = endDate; }
       
-      // Add accountId filter at DB level using FilterExpression
+      // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
       let filterExpression = undefined;
-      if (accountId) {
+      if (shouldFilterByAccount) {
         filterExpression = '#aid = :aid OR #aid = :all';
         exprValues[':aid'] = accountId;
         exprValues[':all'] = '-1';
@@ -62,10 +99,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } else {
       const exprValues: Record<string, any> = { ':u': userId };
       
-      // Add accountId filter at DB level using FilterExpression
+      // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
       let filterExpression = undefined;
       const exprNames: Record<string, string> = {};
-      if (accountId) {
+      if (shouldFilterByAccount) {
         filterExpression = '#aid = :aid OR #aid = :all';
         exprValues[':aid'] = accountId;
         exprValues[':all'] = '-1';
