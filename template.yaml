@@ -499,6 +499,9 @@ Resources:
       AutoPublishAlias: live
       DeploymentPreference:
         Type: Canary10Percent5Minutes
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -538,6 +541,9 @@ Resources:
       DeploymentPreference:
         Type: Canary10Percent5Minutes
       Description: Bulk delete trades
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -1218,11 +1224,14 @@ Resources:
       Environment:
         Variables:
           TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - S3CrudPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Events:
         Api:
           Type: HttpApi

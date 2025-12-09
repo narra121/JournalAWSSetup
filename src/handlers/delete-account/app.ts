@@ -3,6 +3,7 @@ import { ddb } from '../../shared/dynamo';
 import { DeleteCommand, GetCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { removeImagesForTrade } from '../../shared/images';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -65,6 +66,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } while (lastEvaluatedKey);
     
     log.info('found trades to delete', { count: tradesToDelete.length, accountId });
+    
+    // Delete images for each trade
+    if (tradesToDelete.length > 0) {
+      log.info('deleting images for trades', { count: tradesToDelete.length });
+      
+      // Delete images in parallel batches to improve performance
+      const imageDeletePromises = tradesToDelete.map(trade => 
+        removeImagesForTrade(userId, trade.tradeId)
+      );
+      
+      await Promise.all(imageDeletePromises);
+      log.info('deleted all trade images', { count: tradesToDelete.length });
+    }
     
     // Delete trades in batches of 25 (DynamoDB BatchWrite limit)
     if (tradesToDelete.length > 0) {
