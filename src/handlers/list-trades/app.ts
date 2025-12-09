@@ -76,9 +76,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
       let filterExpression = undefined;
       if (shouldFilterByAccount) {
-        filterExpression = '#aid = :aid OR #aid = :all';
+        // Filter by exact accountId only (don't include -1 "all accounts" trades)
+        filterExpression = '#aid = :aid';
         exprValues[':aid'] = accountId;
-        exprValues[':all'] = '-1';
         exprNames['#aid'] = 'accountId';
       }
       
@@ -99,9 +99,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       let filterExpression = undefined;
       const exprNames: Record<string, string> = {};
       if (shouldFilterByAccount) {
-        filterExpression = '#aid = :aid OR #aid = :all';
+        // Filter by exact accountId only (don't include -1 "all accounts" trades)
+        filterExpression = '#aid = :aid';
         exprValues[':aid'] = accountId;
-        exprValues[':all'] = '-1';
         exprNames['#aid'] = 'accountId';
       }
       
