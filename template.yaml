@@ -1230,11 +1230,17 @@ Resources:
         Variables:
           TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
           IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+          GOALS_TABLE: !Ref GoalsTable
+          RULES_TABLE: !Ref RulesTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
         - S3CrudPolicy:
             BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Events:

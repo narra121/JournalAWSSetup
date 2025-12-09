@@ -7,6 +7,8 @@ import { removeImagesForTrade } from '../../shared/images';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
+const GOALS_TABLE = process.env.GOALS_TABLE!;
+const RULES_TABLE = process.env.RULES_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rc: any = event.requestContext as any;
@@ -100,19 +102,120 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
+    // Delete all goals associated with this account
+    log.info('fetching goals for account deletion', { accountId });
+    
+    let goalsToDelete: { goalId: string }[] = [];
+    lastEvaluatedKey = undefined;
+    
+    do {
+      const queryResult = await ddb.send(new QueryCommand({
+        TableName: GOALS_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        FilterExpression: 'accountId = :accountId',
+        ExpressionAttributeValues: {
+          ':userId': userId,
+          ':accountId': accountId,
+        },
+        ProjectionExpression: 'goalId',
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      
+      if (queryResult.Items && queryResult.Items.length > 0) {
+        goalsToDelete.push(...queryResult.Items as { goalId: string }[]);
+      }
+      
+      lastEvaluatedKey = queryResult.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+    
+    log.info('found goals to delete', { count: goalsToDelete.length, accountId });
+    
+    // Delete goals in batches of 25
+    if (goalsToDelete.length > 0) {
+      const batchSize = 25;
+      for (let i = 0; i < goalsToDelete.length; i += batchSize) {
+        const batch = goalsToDelete.slice(i, i + batchSize);
+        
+        await ddb.send(new BatchWriteCommand({
+          RequestItems: {
+            [GOALS_TABLE]: batch.map(goal => ({
+              DeleteRequest: {
+                Key: { userId, goalId: goal.goalId }
+              }
+            }))
+          }
+        }));
+        
+        log.info('deleted goal batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
+      }
+    }
+
+    // Delete all rules associated with this user (rules are not account-specific, but delete on account deletion)
+    log.info('fetching rules for user', { userId });
+    
+    let rulesToDelete: { ruleId: string }[] = [];
+    lastEvaluatedKey = undefined;
+    
+    do {
+      const queryResult = await ddb.send(new QueryCommand({
+        TableName: RULES_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: {
+          ':userId': userId,
+        },
+        ProjectionExpression: 'ruleId',
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      
+      if (queryResult.Items && queryResult.Items.length > 0) {
+        rulesToDelete.push(...queryResult.Items as { ruleId: string }[]);
+      }
+      
+      lastEvaluatedKey = queryResult.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+    
+    log.info('found rules to delete', { count: rulesToDelete.length });
+    
+    // Delete rules in batches of 25
+    if (rulesToDelete.length > 0) {
+      const batchSize = 25;
+      for (let i = 0; i < rulesToDelete.length; i += batchSize) {
+        const batch = rulesToDelete.slice(i, i + batchSize);
+        
+        await ddb.send(new BatchWriteCommand({
+          RequestItems: {
+            [RULES_TABLE]: batch.map(rule => ({
+              DeleteRequest: {
+                Key: { userId, ruleId: rule.ruleId }
+              }
+            }))
+          }
+        }));
+        
+        log.info('deleted rule batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
+      }
+    }
+
     // Delete the account
     await ddb.send(new DeleteCommand({
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId }
     }));
 
-    log.info('account and associated trades deleted', { accountId, tradesDeleted: tradesToDelete.length });
+    log.info('account and all associated data deleted', { 
+      accountId, 
+      tradesDeleted: tradesToDelete.length,
+      goalsDeleted: goalsToDelete.length,
+      rulesDeleted: rulesToDelete.length
+    });
     
     return envelope({ 
       statusCode: 200, 
       data: { 
         message: 'Account deleted successfully',
-        tradesDeleted: tradesToDelete.length 
+        tradesDeleted: tradesToDelete.length,
+        goalsDeleted: goalsToDelete.length,
+        rulesDeleted: rulesToDelete.length
       } 
     });
   } catch (error: any) {
