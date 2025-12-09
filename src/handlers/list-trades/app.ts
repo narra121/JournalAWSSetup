@@ -69,13 +69,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     let exclusiveStartKey = nextToken ? JSON.parse(nextToken) : undefined;
 
     let command;
-    if (startDate || endDate) {
-      const conditions: string[] = [];
-      const exprValues: Record<string, any> = { ':u': userId };
+    if (startDate && endDate) {
+      const exprValues: Record<string, any> = { ':u': userId, ':start': startDate, ':end': endDate };
       const exprNames: Record<string, string> = { '#od': 'openDate' };
-      
-      if (startDate) { conditions.push('#od >= :start'); exprValues[':start'] = startDate; }
-      if (endDate) { conditions.push('#od <= :end'); exprValues[':end'] = endDate; }
       
       // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
       let filterExpression = undefined;
@@ -89,7 +85,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       command = new QueryCommand({
         TableName: TRADES_TABLE,
         IndexName: 'trades-by-date-gsi',
-        KeyConditionExpression: 'userId = :u' + (conditions.length ? ' AND ' + conditions.join(' AND ') : ''),
+        KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
         FilterExpression: filterExpression,
         ExpressionAttributeValues: exprValues,
         ExpressionAttributeNames: exprNames,
