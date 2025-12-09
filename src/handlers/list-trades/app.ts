@@ -28,6 +28,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const startDate = query.startDate;
     const endDate = query.endDate;
     
+    log.info('List trades request', { accountId, startDate, endDate });
+    
     // Require accountId, startDate, and endDate
     if (!accountId) {
       log.warn('Missing required parameter: accountId');
@@ -64,6 +66,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // If accountId is 'ALL', skip account filtering
     const shouldFilterByAccount = accountId !== 'ALL';
     
+    log.info('Filter settings', { shouldFilterByAccount, accountId });
+    
     const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
     const nextToken = query.nextToken ? Buffer.from(query.nextToken, 'base64').toString('utf-8') : undefined;
     let exclusiveStartKey = nextToken ? JSON.parse(nextToken) : undefined;
@@ -80,6 +84,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         filterExpression = '#aid = :aid';
         exprValues[':aid'] = accountId;
         exprNames['#aid'] = 'accountId';
+        log.info('Adding accountId filter', { filterExpression, accountIdValue: accountId });
       }
       
       command = new QueryCommand({
@@ -117,6 +122,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
   const result = await ddb.send(command);
     let items = result.Items || [];
+    
+    log.info('Query results', { 
+      itemCount: items.length, 
+      sampleAccountIds: items.slice(0, 3).map((i: any) => i.accountId),
+      hasMore: !!result.LastEvaluatedKey 
+    });
     
     // Presign image keys (short-lived) if present
   if (items.length) {
