@@ -1,8 +1,7 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 
-const MODEL_ID = 'gemini-2.0-flash';
+const MODEL_ID = 'google/gemini-2.0-flash-001';
 
 
 const GEMINI_VISION_PROMPT = `ROLE:
@@ -19,8 +18,8 @@ json
     "closeDate": "YYYY-MM-DDTHH:MM:SS",
     "entryPrice": NUMBER,
     "exitPrice": NUMBER,
-    "fee": NUMBER,
-    "swap": NUMBER,
+    "stopLoss": NUMBER,
+    "takeProfit": NUMBER,
     "pnl": NUMBER
   }
 ]
@@ -32,8 +31,8 @@ FIELD INTERPRETATION:
 - quantity: Numeric size/lot. If unreadable, skip the row (do not guess). Accept decimals.
 - openDate / closeDate: See DATE COMPLETION ALGORITHM below.
 - entryPrice / exitPrice: Prices as decimals. Strip currency symbols ($, €) and commas. If a thousands separator or decimal point appears, interpret according to standard US/ISO formatting (e.g., 3,344.78 -> 3344.78).
-- fee: Commission or fee column value. Preserve sign. If shown in parenthesis (0.80), treat as -0.80. If blank, default to 0.
-- swap: Overnight swap/financing. If absent or blank, default to 0.
+- stopLoss: Stop loss price. If absent or blank, default to 0.
+- takeProfit: Take profit price. If absent or blank, default to 0.
 - pnl: Profit/Loss value for that row. Preserve sign. Parentheses or a leading minus sign means negative. If colored red and no sign, assume negative.
 
 DATE COMPLETION ALGORITHM (CRITICAL):
@@ -50,25 +49,25 @@ For this task, the current date is August 25, 2025. Use these components to comp
 
 MISSING / BLANK HANDLING:
 - Required Fields: A valid row must contain \`symbol\`, \`side\`, \`quantity\`, and an open date/time. If any of these are unreadable, SKIP the entire row.
-- Optional Numeric Fields: If \`entryPrice\`, \`exitPrice\`, \`fee\`, \`swap\`, or \`pnl\` are blank, set them to \`0\`. However, if both \`entryPrice\` and \`exitPrice\` are blank, skip the row as it is likely not a valid trade.
+- Optional Numeric Fields: If \`entryPrice\`, \`exitPrice\`, \`stopLoss\`, \`takeProfit\`, or \`pnl\` are blank, set them to \`0\`. However, if both \`entryPrice\` and \`exitPrice\` are blank, skip the row as it is likely not a valid trade.
 
 NORMALIZATION & VALIDATION:
 - Strip leading/trailing whitespace from all text fields.
-- Convert \`fee\`, \`swap\`, \`pnl\`, and \`quantity\` to numbers.
+- Convert \`stopLoss\`, \`takeProfit\`, \`pnl\`, and \`quantity\` to numbers.
 - Do not compute or adjust \`pnl\`; use exactly the value displayed in the image.
 - If duplicate rows appear, keep them as separate entries unless they are clear visual OCR artifacts of the exact same row.
 
 VISION-SPECIFIC GUIDANCE:
 - Pay close attention to column alignment to correctly identify fields.
 - Ignore all UI elements like buttons, icons, sort arrows, or checkboxes.
-- Ignore columns not present in the target schema (e.g., Status, Order ID).
+- Ignore columns not present in the target schema (e.g., Status, Order ID, Commission, Fees, Swap).
 - If a currency symbol precedes a price (e.g., $3343.24), drop the symbol.
 
 STRICT OUTPUT RULES:
 - Return ONLY a valid JSON array.
 - Do not include any leading/trailing text, explanations, or markdown fences (\`\`\`json\`\`\`).
 - Every object in the array must include all keys defined in the schema.
-- Ensure keys in each object follow this exact order: \`symbol\`, \`side\`, \`quantity\`, \`openDate\`, \`closeDate\`, \`entryPrice\`, \`exitPrice\`, \`fee\`, \`swap\`, \`pnl\`.
+- Ensure keys in each object follow this exact order: \`symbol\`, \`side\`, \`quantity\`, \`openDate\`, \`closeDate\`, \`entryPrice\`, \`exitPrice\`, \`stopLoss\`, \`takeProfit\`, \`pnl\`.
 - Do not use trailing commas in the JSON.
 - If no valid trade rows can be extracted, output an empty array \`[]\`.`;
 // Configurable upstream request timeout (ms) for Gemini fetch; default 80000 (80s)
@@ -86,11 +85,11 @@ let cachedApiKey: string | undefined;
 const ssm = new SSMClient({});
 async function getApiKey(): Promise<string> {
   if (cachedApiKey) return cachedApiKey;
-  const paramName = process.env.GEMINI_API_KEY_PARAM;
-  if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
+  const paramName = process.env.OPENROUTER_API_KEY_PARAM || process.env.GEMINI_API_KEY_PARAM;
+  if (!paramName) throw new Error('Missing OPENROUTER_API_KEY_PARAM or GEMINI_API_KEY_PARAM');
   const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   const v = res.Parameter?.Value;
-  if (!v) throw new Error('Gemini API key parameter empty');
+  if (!v) throw new Error('OpenRouter API key parameter empty');
   cachedApiKey = v;
   return v;
 }
@@ -132,9 +131,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return response(500, { error: { code: 'ConfigError', message: e.message }, data: null, meta: null });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: MODEL_ID }, { timeout: REQUEST_TIMEOUT_MS });
-
     // Process each image and collect all extracted trades
     const allItems: any[] = [];
     const processingDetails: any[] = [];
@@ -158,20 +154,59 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
       let text: string;
       try {
-        console.log('Calling Gemini model', { model: MODEL_ID, imageIndex: i });
-        const result = await model.generateContent([
-          GEMINI_VISION_PROMPT,
-          { inlineData: { data: cleaned, mimeType: 'image/png' } }
-        ]);
-        text = result.response.text().trim();
+        console.log('Calling OpenRouter API with Gemini model', { model: MODEL_ID, imageIndex: i });
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        
+        const fetchResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.HTTP_REFERER || 'https://tradehaven.app',
+            'X-Title': 'Trading Journal'
+          },
+          body: JSON.stringify({
+            model: MODEL_ID,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: GEMINI_VISION_PROMPT
+                  },
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: `data:image/png;base64,${cleaned}`
+                    }
+                  }
+                ]
+              }
+            ]
+          }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!fetchResponse.ok) {
+          const errorText = await fetchResponse.text();
+          throw new Error(`OpenRouter API error: ${fetchResponse.status} ${fetchResponse.statusText} - ${errorText}`);
+        }
+        
+        const data = await fetchResponse.json();
+        text = data.choices[0].message.content.trim();
       } catch (err: any) {
         const imageElapsed = Date.now() - started;
         const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
-        console.error(`Gemini call failed for image ${i}`, { elapsedMs: imageElapsed, isAbort, error: err?.message });
+        console.error(`OpenRouter API call failed for image ${i}`, { elapsedMs: imageElapsed, isAbort, error: err?.message });
         
         processingDetails.push({
           imageIndex: i,
-          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message || 'Gemini API call failed',
+          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message || 'OpenRouter API call failed',
           skipped: true
         });
         
@@ -179,8 +214,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         if (images.length === 1) {
           return response(500, { 
             error: { 
-              code: isAbort ? 'GeminiTimeout' : 'GeminiError', 
-              message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'Gemini API call failed')
+              code: isAbort ? 'OpenRouterTimeout' : 'OpenRouterError', 
+              message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'OpenRouter API call failed')
             }, 
             data: null, 
             meta: { elapsedMs: imageElapsed } 
@@ -189,7 +224,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         continue;
       }
 
-      console.log(`Gemini response received for image ${i}`, { chars: text.length });
+      console.log(`OpenRouter response received for image ${i}`, { chars: text.length });
 
       const extracted = extractJsonArray(text);
       if (!extracted.json) {

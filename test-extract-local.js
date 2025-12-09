@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -6,8 +5,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Replace with your API key
-const API_KEY = 'AIzaSyBC5X9fIX5qwgQNYLbvUXnRe_6paaICH3s';
+// Replace with your OpenRouter API key
+const API_KEY = '';
+const MODEL = 'google/gemini-2.0-flash-001'; // Using Google's Gemini via OpenRouter
 
 async function testExtract() {
   try {
@@ -29,10 +29,6 @@ async function testExtract() {
       base64Length: base64Image.length
     });
 
-    // Initialize Gemini
-    const genAI = new GoogleGenerativeAI(API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
     const prompt = `Extract trade data from this image. Return only a JSON array with this structure:
 [{
   "symbol": "STRING",
@@ -47,18 +43,45 @@ async function testExtract() {
   "pnl": NUMBER
 }]`;
 
-    console.log('Calling Gemini API...');
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          data: base64Image,
-          mimeType: 'image/png'
-        }
-      }
-    ]);
+    console.log('Calling OpenRouter API with Google Gemini...');
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:3000', // Optional: your site URL
+        'X-Title': 'Trading Journal' // Optional: your app name
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: prompt
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${base64Image}`
+                }
+              }
+            ]
+          }
+        ]
+      })
+    });
 
-    const text = result.response.text();
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorText}`);
+    }
+
+    const data = await response.json();
+    const text = data.choices[0].message.content;
+    
     console.log('Response received:');
     console.log(text);
 
