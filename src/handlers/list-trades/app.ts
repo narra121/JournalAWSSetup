@@ -133,6 +133,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (items.length) {
       await Promise.all(items.map(async (it: any) => {
     if (it.achievedRiskRewardRatio === undefined) it.achievedRiskRewardRatio = null;
+        // Remove accountIds field (legacy) - each trade has only one accountId
+        if (it.accountIds) delete it.accountIds;
         if (Array.isArray(it.images)) {
           it.images = await Promise.all(it.images.map(async (im: any) => {
             const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);

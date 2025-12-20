@@ -257,6 +257,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const saved: any = result.Attributes || {};
   if (saved.achievedRiskRewardRatio === undefined) saved.achievedRiskRewardRatio = null;
+  // Remove accountIds field (legacy) - each trade has only one accountId
+  if (saved.accountIds) delete saved.accountIds;
     if (Array.isArray(saved.images)) {
       saved.images = await Promise.all(saved.images.map(async (im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
@@ -271,6 +273,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Process images for additional trades and return all trades
     const allTrades = [saved];
     for (const ct of createdTrades) {
+      // Remove accountIds field (legacy) - each trade has only one accountId
+      if (ct.accountIds) delete ct.accountIds;
       if (Array.isArray(ct.images)) {
         ct.images = await Promise.all(ct.images.map(async (im: any) => {
           const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
