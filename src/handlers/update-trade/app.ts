@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { makeLogger } from '../../shared/logger';
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -127,7 +127,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Direct field mapping helper - only fields from UI
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','pnl','riskRewardRatio','setupType','tradingSession','marketCondition','postTradeNotes','preTradeNotes'];
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','pnl','riskRewardRatio','setupType','tradingSession','marketCondition','tradeNotes'];
     
     // Normalize numeric fields if provided as string
     if (data.pnl !== undefined) {
@@ -140,10 +140,48 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
     
     for (const f of mapable) if (f in data) existing[f] = data[f];
-    const arrFields = ['mistakes','lessons','tags','newsEvents','accountIds','brokenRuleIds'];
+    const arrFields = ['mistakes','lessons','tags','newsEvents','brokenRuleIds'];
     for (const f of arrFields) if (Array.isArray(data[f])) existing[f] = data[f];
-    // Map accountId if provided (for backward compat with single-account UI)
-    if (data.accountId !== undefined) existing.accountId = data.accountId;
+    
+    // Handle accountIds: if multiple accounts provided, handle multi-account logic
+    const incomingAccountIds: string[] = Array.isArray(data.accountIds) && data.accountIds.length > 0 
+      ? data.accountIds 
+      : (data.accountId ? [data.accountId] : []);
+    
+    const existingAccountId = existing.accountId || '-1';
+    let additionalTrades: any[] = [];
+    
+    if (incomingAccountIds.length > 1) {
+      // Multiple accounts selected: update existing trade with first accountId, create new trades for rest
+      existing.accountId = incomingAccountIds[0];
+      
+      // Create additional trades for remaining accountIds
+      for (let i = 1; i < incomingAccountIds.length; i++) {
+        const newTradeId = uuid();
+        const newTrade: any = { 
+          ...existing, 
+          tradeId: newTradeId, 
+          accountId: incomingAccountIds[i],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        // Update GSI attributes for the new trade
+        if (newTrade.symbol && newTrade.openDate) {
+          newTrade.symbolOpenDate = `${newTrade.symbol}#${newTrade.openDate}`;
+        }
+        if (newTrade.outcome && newTrade.openDate) {
+          newTrade.statusOpenDate = `${newTrade.outcome}#${newTrade.openDate}`;
+          newTrade.outcomeOpenDate = `${newTrade.outcome}#${newTrade.openDate}`;
+        }
+        additionalTrades.push(newTrade);
+      }
+    } else if (incomingAccountIds.length === 1) {
+      // Single account: just update the accountId
+      existing.accountId = incomingAccountIds[0];
+    } else {
+      // No accountIds provided: store as -1
+      existing.accountId = '-1';
+    }
 
     // Recompute derived fields if relevant, but respect values passed in request
     // If request body includes pnl/netPnl, use those; otherwise calculate
@@ -199,9 +237,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       tradeId,
       updatedFields: Object.keys(data).filter(k => k !== 'images' && k !== 'partialCloses'),
       imageCount: Array.isArray(existing.images) ? existing.images.length : 0,
-      partialCloseCount: Array.isArray(existing.partialCloses) ? existing.partialCloses.length : 0
+      partialCloseCount: Array.isArray(existing.partialCloses) ? existing.partialCloses.length : 0,
+      additionalTradesCreated: additionalTrades.length
     };
     log.info('Trade updated', safeLog);
+
+    // Create additional trades for extra accounts
+    const createdTrades: any[] = [];
+    if (additionalTrades.length > 0) {
+      for (const newTrade of additionalTrades) {
+        await ddb.send(new PutCommand({
+          TableName: TRADES_TABLE,
+          Item: newTrade
+        }));
+        createdTrades.push(newTrade);
+        log.info('Additional trade created for account', { tradeId: newTrade.tradeId, accountId: newTrade.accountId });
+      }
+    }
+
   const saved: any = result.Attributes || {};
   if (saved.achievedRiskRewardRatio === undefined) saved.achievedRiskRewardRatio = null;
     if (Array.isArray(saved.images)) {
@@ -214,7 +267,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         return im;
       }));
     }
-    return resp(200, { trade: saved });
+    
+    // Process images for additional trades and return all trades
+    const allTrades = [saved];
+    for (const ct of createdTrades) {
+      if (Array.isArray(ct.images)) {
+        ct.images = await Promise.all(ct.images.map(async (im: any) => {
+          const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
+          if (keyCandidate) {
+            const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+            return { ...im, key: keyCandidate, url };
+          }
+          return im;
+        }));
+      }
+      allTrades.push(ct);
+    }
+    
+    return resp(200, { trade: saved, createdTrades: createdTrades.length > 0 ? createdTrades : undefined });
   } catch (e: any) {
     log.error('update-trade failed', { error: e.message, stack: e.stack });
     if (e.name === 'ConditionalCheckFailedException') return resp(404, { message: 'Not found' });

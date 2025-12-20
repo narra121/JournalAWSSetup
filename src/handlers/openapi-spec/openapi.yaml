@@ -76,8 +76,7 @@ components:
             revenge: { type: boolean }
             overconfidence: { type: boolean }
             patience: { type: boolean }
-        preTradeNotes: { type: [string, 'null'] }
-        postTradeNotes: { type: [string, 'null'] }
+        tradeNotes: { type: [string, 'null'] }
         mistakes: { type: array, items: { type: string } }
         lessons: { type: array, items: { type: string } }
         newsEvents: { type: array, items: { type: string } }
@@ -134,8 +133,7 @@ components:
             revenge: { type: boolean }
             overconfidence: { type: boolean }
             patience: { type: boolean }
-        preTradeNotes: { type: [string, 'null'], maxLength: 4000 }
-        postTradeNotes: { type: [string, 'null'], maxLength: 4000 }
+        tradeNotes: { type: [string, 'null'], maxLength: 4000 }
         mistakes: { type: array, items: { type: string, maxLength: 64 }, maxItems: 50 }
         lessons: { type: array, items: { type: string, maxLength: 64 }, maxItems: 50 }
         newsEvents: { type: array, items: { type: string, maxLength: 128 }, maxItems: 50 }
