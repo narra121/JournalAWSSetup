@@ -1,9 +1,10 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { batchWritePutAll } from '../../shared/batchWrite';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -106,6 +107,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
+    if (!GOALS_TABLE) {
+      log.error('GOALS_TABLE env var is not configured');
+      return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Goals table is not configured');
+    }
+
     const accountId = uuid();
     const now = new Date().toISOString();
 
@@ -171,11 +177,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     // Batch write all default goals
     if (defaultGoals.length > 0) {
-      await ddb.send(new BatchWriteCommand({
-        RequestItems: {
-          [GOALS_TABLE]: defaultGoals.map(goal => ({ PutRequest: { Item: goal } }))
-        }
-      }));
+      await batchWritePutAll({
+        ddb,
+        tableName: GOALS_TABLE,
+        items: defaultGoals,
+        log
+      });
       log.info('default goals created for account', { accountId, goalsCount: defaultGoals.length });
     }
 

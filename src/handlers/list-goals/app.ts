@@ -1,9 +1,10 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { v4 as uuid } from 'uuid';
+import { batchWritePutAll } from '../../shared/batchWrite';
 
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
@@ -107,11 +108,7 @@ async function ensureDefaultGoals(userId: string, accountId: string, existingGoa
 
   // Batch write all default goals
   if (newGoals.length > 0) {
-    await ddb.send(new BatchWriteCommand({
-      RequestItems: {
-        [GOALS_TABLE]: newGoals.map(goal => ({ PutRequest: { Item: goal } }))
-      }
-    }));
+    await batchWritePutAll({ ddb, tableName: GOALS_TABLE, items: newGoals });
 
     console.log('Default goals created', { userId, accountId, count: newGoals.length });
   }
@@ -130,6 +127,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (!userId) {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+  }
+
+  if (!ACCOUNTS_TABLE || !GOALS_TABLE) {
+    log.error('goals/accounts table env vars are not configured', {
+      hasAccountsTable: !!ACCOUNTS_TABLE,
+      hasGoalsTable: !!GOALS_TABLE
+    });
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Goals/accounts tables are not configured');
   }
 
   try {
