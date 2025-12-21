@@ -98,7 +98,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           rulesCount: rules.length,
           goalsCount: goals.length
         }
-      } 
+      },
+      message: 'Rules and goals retrieved'
+    }); 
     });
   } catch (error: any) {
     log.error('failed to fetch rules and goals', { error: error.message });

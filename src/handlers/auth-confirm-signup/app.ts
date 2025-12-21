@@ -3,6 +3,7 @@ import { CognitoIdentityProviderClient, ConfirmSignUpCommand, AdminGetUserComman
 import { ddb } from '../../shared/dynamo';
 import { BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
@@ -42,9 +43,9 @@ async function createDefaultRules(userId: string): Promise<void> {
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    if (!event.body) return resp(400, null, { code: 'INVALID_REQUEST', message: 'Missing body' });
+    if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const { email, code } = JSON.parse(event.body);
-    if (!email || !code) return resp(400, null, { code: 'INVALID_REQUEST', message: 'email and code required' });
+    if (!email || !code) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email and code required');
     
     await client.send(new ConfirmSignUpCommand({ ClientId: CLIENT_ID, Username: email, ConfirmationCode: code }));
     
@@ -65,10 +66,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Don't fail the confirmation if rule creation fails
     }
     
-    return resp(200, { confirmed: true }, null);
-  } catch (e: any) { console.error(e); return resp(400, null, { code: 'CONFIRM_FAILED', message: e.message || 'Confirm failed' }); }
+    return envelope({ statusCode: 200, data: { confirmed: true }, message: 'Email verified successfully' });
+  } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e.message || 'Confirm failed'); }
 };
-
-function resp(statusCode: number, data: any, error: any) {
-  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
-}

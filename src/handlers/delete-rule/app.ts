@@ -37,6 +37,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(404, ErrorCodes.NOT_FOUND, 'Rule not found');
     }
 
+    const ruleToDelete = existing.Item;
+
     await ddb.send(new DeleteCommand({
       TableName: RULES_TABLE,
       Key: { userId, ruleId }
@@ -44,7 +46,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('rule deleted', { ruleId });
     
-    return envelope({ statusCode: 200, data: { message: 'Rule deleted successfully' } });
+    // Return deleted rule for frontend cache optimization
+    return envelope({ statusCode: 200, data: { rule: ruleToDelete }, message: 'Rule deleted successfully' });
   } catch (error: any) {
     log.error('failed to delete rule', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to delete rule');

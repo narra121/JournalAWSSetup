@@ -1,5 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -24,41 +25,13 @@ export const lambdaHandler = async (
 
     // Validate amount
     if (!amount || amount <= 0) {
-      return {
-        statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
-        body: JSON.stringify({
-          data: null,
-          error: {
-            code: 'INVALID_AMOUNT',
-            message: 'Invalid amount. Amount must be greater than 0.',
-          },
-          meta: null,
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid amount. Amount must be greater than 0.');
     }
 
     // Get user ID from authorizer
     const userId = event.requestContext.authorizer?.claims?.sub;
     if (!userId) {
-      return {
-        statusCode: 401,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
-        body: JSON.stringify({
-          data: null,
-          error: {
-            code: 'UNAUTHORIZED',
-            message: 'Unauthorized',
-          },
-          meta: null,
-        }),
-      };
+      return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }
 
     // Create order with Razorpay
@@ -76,28 +49,21 @@ export const lambdaHandler = async (
 
     console.log('Razorpay order created successfully', { orderId: order.id });
 
-    return {
+    return envelope({
       statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
+      data: {
+        orderId: order.id,
+        amount: order.amount,
+        currency: order.currency,
       },
-      body: JSON.stringify({
-        data: {
-          orderId: order.id,
-          amount: order.amount,
-          currency: order.currency,
-        },
-        error: null,
-        meta: null,
-      }),
-    };
-  } catch (error) {
+      message: 'Order created successfully'
+    });
+  } catch (error: any) {
     console.error('Error creating Razorpay order', { error });
 
-    return {
-      statusCode: 500,
-      headers: {
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create order', error.message);
+  }
+};
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       },

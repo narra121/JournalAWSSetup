@@ -1,6 +1,7 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { CognitoIdentityProviderClient, SignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
@@ -18,21 +19,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } catch (e) {
       console.log('Failed to parse body for logging');
     }
-    if (!event.body) return resp(400, null, { code: 'INVALID_REQUEST', message: 'Missing body' });
+    if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const { email, password, name } = JSON.parse(event.body);
-    if (!email || !password || !name) return resp(400, null, { code: 'INVALID_REQUEST', message: 'email, name, and password required' });
-  if (password.length < 6 || password.length > 18) return resp(400, null, { code: 'INVALID_REQUEST', message: 'password must be 6-18 characters' });
+    if (!email || !password || !name) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email, name, and password required');
+  if (password.length < 6 || password.length > 18) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'password must be 6-18 characters');
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
-    if (!rl.allowed) return resp(429, null, { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many attempts', details: { retryAfter: rl.retryAfter } });
+    if (!rl.allowed) return errorResponse(429, ErrorCodes.INTERNAL_ERROR, 'Too many attempts', { retryAfter: rl.retryAfter });
     const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }, { Name: 'name', Value: name }] });
     const r = await client.send(cmd);
-    return resp(200, { user: { id: r.UserSub, name, email }, message: 'User created. Please check your email for a confirmation code.' }, null);
+    return envelope({ statusCode: 200, data: { user: { id: r.UserSub, name, email } }, message: 'User created. Please check your email for a confirmation code.' });
   } catch (e: any) {
     console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
-    return resp(400, null, { code: e?.name || 'SIGNUP_FAILED', message: e?.message || 'Signup failed' });
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e?.message || 'Signup failed');
   }
 };
-
-function resp(statusCode: number, data: any, error: any) {
-  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
-}

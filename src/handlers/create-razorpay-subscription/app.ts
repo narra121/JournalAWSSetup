@@ -2,6 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -25,18 +26,7 @@ export const handler = async (
     // Get userId from Cognito authorizer
     const userId = event.requestContext?.authorizer?.jwt?.claims?.sub;
     if (!userId) {
-      return {
-        statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          data: null,
-          error: {
-            code: 'UNAUTHORIZED',
-            message: 'Unauthorized',
-          },
-          meta: null,
-        }),
-      };
+      return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }
 
     const body = JSON.parse(event.body || '{}');
@@ -51,13 +41,7 @@ export const handler = async (
 
     // Validate required fields
     if (!planId) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: 'Missing required field: planId',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing required field: planId');
     }
 
     // Create subscription in Razorpay
@@ -112,35 +96,19 @@ export const handler = async (
       })
     );
 
-    return {
+    return envelope({
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        data: {
-          subscriptionId: subscription.id,
-          planId: subscription.plan_id,
-          status: subscription.status,
-          shortUrl: subscription.short_url, // Payment link for customer
-          authAttempts: subscription.auth_attempts,
-        },
-        error: null,
-        meta: null,
-      }),
-    };
+      data: {
+        subscriptionId: subscription.id,
+        planId: subscription.plan_id,
+        status: subscription.status,
+        shortUrl: subscription.short_url, // Payment link for customer
+        authAttempts: subscription.auth_attempts,
+      },
+      message: 'Subscription created successfully'
+    });
   } catch (error: any) {
     console.error('Error creating subscription:', error);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        data: null,
-        error: {
-          code: 'SUBSCRIPTION_CREATE_FAILED',
-          message: 'Failed to create subscription',
-          details: error.message,
-        },
-        meta: null,
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create subscription', error.message);
   }
 };

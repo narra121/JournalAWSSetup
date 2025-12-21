@@ -39,7 +39,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('saved options retrieved');
     
-    return envelope({ statusCode: 200, data: options });
+    return envelope({ statusCode: 200, data: options, message: 'Saved options retrieved' });
   } catch (error: any) {
     log.error('failed to get saved options', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve saved options');

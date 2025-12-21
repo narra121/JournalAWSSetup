@@ -24,11 +24,30 @@ export function formatErrors(errors: ErrorObject[] | null | undefined): Validati
   }));
 }
 
-export function envelope(params: { statusCode: number; data?: any; error?: any; meta?: any }) {
-  const { statusCode, data, error, meta } = params;
+export function envelope(params: { statusCode: number; data?: any; error?: any; meta?: any; message?: string }) {
+  const { statusCode, data, error, meta, message } = params;
+  const success = statusCode >= 200 && statusCode < 300;
+  
+  const body: any = {
+    success,
+    message: message || (success ? 'Success' : (error?.message || 'Error')),
+    data: data ?? null,
+  };
+
+  if (!success && error) {
+    body.errorCode = error.code;
+    if (error.details) {
+      body.errors = Array.isArray(error.details) ? error.details : [error.details];
+    }
+  }
+
+  if (meta) {
+    body.meta = meta;
+  }
+
   return {
     statusCode,
-    body: JSON.stringify({ data: data ?? null, error: error ?? null, meta: meta ?? null })
+    body: JSON.stringify(body)
   };
 }
 
@@ -41,7 +60,7 @@ export enum ErrorCodes {
 }
 
 export function errorResponse(statusCode: number, code: ErrorCodes, message: string, details?: any) {
-  return envelope({ statusCode, error: { code, message, details } });
+  return envelope({ statusCode, error: { code, message, details }, message });
 }
 
 // Estimates DynamoDB item size in bytes (DynamoDB limit is 400KB)

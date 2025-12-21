@@ -45,7 +45,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         accounts,
         totalBalance,
         totalPnl
-      }
+      },
+      message: 'Accounts retrieved'
     });
   } catch (error: any) {
     log.error('failed to list accounts', { error: error.message });

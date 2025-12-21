@@ -170,7 +170,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           goalsCount: goals.length,
           accountsCount: accounts.length
         }
-      } 
+      },
+      message: 'Goals retrieved'
     });
   } catch (error: any) {
     log.error('failed to list goals', { error: error.message });

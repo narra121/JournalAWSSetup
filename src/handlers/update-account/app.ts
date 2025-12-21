@@ -104,7 +104,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('account updated', { accountId });
     
-    return envelope({ statusCode: 200, data: { account: result.Attributes } });
+    return envelope({ statusCode: 200, data: { account: result.Attributes }, message: 'Account updated successfully' });
   } catch (error: any) {
     log.error('failed to update account', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update account');

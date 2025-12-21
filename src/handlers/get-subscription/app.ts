@@ -27,13 +27,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     if (!result.Item) {
       log.info('no subscription found');
-      return envelope({ statusCode: 404, data: { subscription: null, message: 'No subscription found' } });
+      return envelope({ statusCode: 404, data: { subscription: null }, message: 'No subscription found' });
     }
 
     const subscription = result.Item;
     log.info('subscription retrieved');
     
-    return envelope({ statusCode: 200, data: { subscription } });
+    return envelope({ statusCode: 200, data: { subscription }, message: 'Subscription retrieved' });
   } catch (error: any) {
     log.error('failed to get subscription', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve subscription');

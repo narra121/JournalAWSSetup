@@ -1,16 +1,29 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { removeImagesForTrade } from '../../shared/images';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     const userId = (event.requestContext as any)?.authorizer?.jwt?.claims?.sub;
-    if (!userId) return resp(401, { message: 'Unauthorized' });
+    if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     const tradeId = event.pathParameters?.tradeId;
-    if (!tradeId) return resp(400, { message: 'Missing tradeId' });
+    if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
+
+    // Fetch the trade before deleting to return it in response
+    const getResult = await ddb.send(new GetCommand({
+      TableName: TRADES_TABLE,
+      Key: { userId, tradeId }
+    }));
+
+    if (!getResult.Item) {
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
+    }
+
+    const trade = getResult.Item;
 
     // Conditional delete ensures existence & ownership (ownership via partition key, existence via attribute_exists)
     await ddb.send(new DeleteCommand({
@@ -20,12 +33,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     await removeImagesForTrade(userId, tradeId);
-    return resp(200, { message: 'Deleted' });
+    
+    // Return the deleted trade details for frontend cache optimization
+    return envelope({ statusCode: 200, data: { trade }, message: 'Deleted' });
   } catch (e: any) {
-    if (e.name === 'ConditionalCheckFailedException') return resp(404, { message: 'Not found' });
+    if (e.name === 'ConditionalCheckFailedException') return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
     console.error(e);
-    return resp(500, { message: 'Internal error' });
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error');
   }
 };
-
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }

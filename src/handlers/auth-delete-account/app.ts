@@ -3,6 +3,7 @@ import { ddb } from '../../shared/dynamo';
 import { QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
@@ -15,7 +16,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rc: any = event.requestContext as any;
   const userId = rc?.authorizer?.jwt?.claims?.sub;
   const username = rc?.authorizer?.jwt?.claims?.email; // assuming email-as-username
-  if (!userId) return resp(401, null, { code: 'UNAUTHORIZED', message: 'Unauthorized' });
+  if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
 
   try {
     // Delete all trade items (paginate query + delete)
@@ -52,13 +53,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       await cognito.send(new AdminDeleteUserCommand({ UserPoolId: USER_POOL_ID, Username: username }));
     }
 
-    return resp(200, { message: 'Account deleted' }, null);
+    return envelope({ statusCode: 200, data: { message: 'Account deleted' }, message: 'Account deleted successfully' });
   } catch (e: any) {
     console.error(e);
-    return resp(500, null, { code: 'DELETE_FAILED', message: e.message || 'Failed to delete account' });
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, e.message || 'Failed to delete account');
   }
 };
-
-function resp(statusCode: number, data: any, error: any) {
-  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
-}

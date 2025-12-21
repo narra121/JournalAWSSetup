@@ -5,6 +5,7 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { makeLogger } from '../../shared/logger';
 import { normalizePotentialKey } from '../../shared/s3';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -17,11 +18,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     if (!userId) { 
       log.warn('Unauthorized access list-trades'); 
-      return {
-        statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: null, error: { code: 'UNAUTHORIZED', message: 'Unauthorized' }, meta: null })
-      };
+      return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }
     const query = event.queryStringParameters || {};
     const accountId = query.accountId;
@@ -33,34 +30,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Require accountId, startDate, and endDate
     if (!accountId) {
       log.warn('Missing required parameter: accountId');
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          data: null, 
-          error: { 
-            code: 'MISSING_ACCOUNT_ID', 
-            message: 'accountId is required' 
-          }, 
-          meta: null 
-        })
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId is required');
     }
     
     if (!startDate || !endDate) {
       log.warn('Missing required date parameters');
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          data: null, 
-          error: { 
-            code: 'MISSING_DATE_RANGE', 
-            message: 'Both startDate and endDate are required' 
-          }, 
-          meta: null 
-        })
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Both startDate and endDate are required');
     }
     
     // If accountId is 'ALL', skip account filtering
@@ -139,7 +114,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           it.images = await Promise.all(it.images.map(async (im: any) => {
             const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
             if (keyCandidate) {
-              const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+              const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
               return { ...im, key: keyCandidate, url };
             }
             return im;
@@ -149,17 +124,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
     const newNextToken = result.LastEvaluatedKey ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') : undefined;
   log.info('Trades listed', { count: items.length, hasMore: !!newNextToken });
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: { trades: items, nextToken: newNextToken }, error: null, meta: null })
-  };
+  return envelope({ statusCode: 200, data: { trades: items, nextToken: newNextToken }, message: 'Trades retrieved' });
   } catch (e) {
   log.error('list-trades failed', { error: (e as any)?.message });
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: null, error: { code: 'INTERNAL_ERROR', message: 'Internal error' }, meta: null })
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error');
   }
 };

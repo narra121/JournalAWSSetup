@@ -4,7 +4,7 @@ import { GetCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { makeLogger } from '../../shared/logger';
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { errorFromException } from '../../shared/validation';
+import { errorFromException, envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { v4 as uuid } from 'uuid';
 import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
 
@@ -18,15 +18,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
   try {
-    if (!userId) return resp(401, { message: 'Unauthorized' });
+    if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     const tradeId = event.pathParameters?.tradeId;
-    if (!tradeId) return resp(400, { message: 'Missing tradeId' });
-    if (!event.body) return resp(400, { message: 'Missing body' });
+    if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
+    if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const data = JSON.parse(event.body);
 
     // Fetch current item for merging arrays/images if needed (scoped by userId + tradeId)
     const current = await ddb.send(new GetCommand({ TableName: TRADES_TABLE, Key: { userId, tradeId } }));
-    if (!current.Item) return resp(404, { message: 'Not found' });
+    if (!current.Item) return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
     const existing: any = current.Item;
 
     // Handle partial closes: if data.partialCloses is array of { quantity, exitPrice, time } apply FIFO reduction.
@@ -263,7 +263,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       saved.images = await Promise.all(saved.images.map(async (im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
         if (keyCandidate) {
-          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
           return { ...im, key: keyCandidate, url };
         }
         return im;
@@ -279,7 +279,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         ct.images = await Promise.all(ct.images.map(async (im: any) => {
           const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
           if (keyCandidate) {
-            const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+            const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
             return { ...im, key: keyCandidate, url };
           }
           return im;
@@ -288,12 +288,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       allTrades.push(ct);
     }
     
-    return resp(200, { trade: saved, createdTrades: createdTrades.length > 0 ? createdTrades : undefined });
+    return envelope({ 
+      statusCode: 200, 
+      data: { trade: saved, createdTrades: createdTrades.length > 0 ? createdTrades : undefined },
+      message: 'Updated'
+    });
   } catch (e: any) {
     log.error('update-trade failed', { error: e.message, stack: e.stack });
-    if (e.name === 'ConditionalCheckFailedException') return resp(404, { message: 'Not found' });
+    if (e.name === 'ConditionalCheckFailedException') return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
     return errorFromException(e, true);
   }
 };
-
-function resp(statusCode: number, body: any) { return { statusCode, body: JSON.stringify(body) }; }

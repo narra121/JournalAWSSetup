@@ -234,7 +234,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             existingItem.images = await Promise.all(existingItem.images.map(async (im: any) => {
               const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
               if (keyCandidate) {
-                const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 900 });
+                const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
                 return { ...im, key: keyCandidate, url };
               }
               return im;
@@ -350,7 +350,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const itemsWithUrls = await Promise.all(itemsToCreate.map(async (item: any) => {
     const signedImages = await Promise.all(item.images.map(async (im: any) => {
       if (im.key) {
-        const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 900 });
+        const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 3600 });
         return { ...im, url };
       }
       return im;
@@ -363,7 +363,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     ? { trade: itemsWithUrls[0] } 
     : { trades: itemsWithUrls, count: itemsWithUrls.length };
   
-  return envelope({ statusCode: 201, data: responseData });
+  return envelope({ statusCode: 201, data: responseData, message: 'Trade created successfully' });
   } catch (err: any) {
     console.error(err);
     return errorFromException(err, true);

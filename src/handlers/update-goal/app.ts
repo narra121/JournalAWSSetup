@@ -82,7 +82,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('goal updated', { goalId });
     
-    return envelope({ statusCode: 200, data: { goal: result.Attributes } });
+    return envelope({ statusCode: 200, data: { goal: result.Attributes }, message: 'Goal updated successfully' });
   } catch (error: any) {
     log.error('failed to update goal', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update goal');

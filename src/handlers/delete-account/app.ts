@@ -41,6 +41,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
     }
 
+    // Store account for response
+    const accountToDelete = existing.Item;
+
     // Delete all trades associated with this account
     log.info('fetching trades for account deletion', { accountId });
     
@@ -211,8 +214,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     
     return envelope({ 
       statusCode: 200, 
+      message: 'Account deleted successfully',
       data: { 
-        message: 'Account deleted successfully',
+        account: accountToDelete, // Return deleted account for frontend cache optimization
         tradesDeleted: tradesToDelete.length,
         goalsDeleted: goalsToDelete.length,
         rulesDeleted: rulesToDelete.length

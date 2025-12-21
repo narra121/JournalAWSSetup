@@ -50,7 +50,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('subscription cancelled', { userId });
     
-    return envelope({ statusCode: 200, data: { subscription: result.Attributes } });
+    return envelope({ statusCode: 200, data: { subscription: result.Attributes }, message: 'Subscription cancelled' });
   } catch (error: any) {
     log.error('failed to cancel subscription', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to cancel subscription');

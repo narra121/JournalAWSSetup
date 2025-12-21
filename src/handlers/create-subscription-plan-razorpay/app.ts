@@ -1,5 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -21,25 +22,13 @@ export const handler = async (
 
     // Validate required fields
     if (!name || !amount || !period) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: 'Missing required fields: name, amount, period',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing required fields: name, amount, period');
     }
 
     // Validate period (monthly, yearly, weekly, daily)
     const validPeriods = ['daily', 'weekly', 'monthly', 'yearly'];
     if (!validPeriods.includes(period)) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: `Invalid period. Must be one of: ${validPeriods.join(', ')}`,
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Invalid period. Must be one of: ${validPeriods.join(', ')}`);
     }
 
     // Create plan in Razorpay
@@ -57,27 +46,20 @@ export const handler = async (
 
     console.log('Plan created:', plan);
 
-    return {
+    return envelope({
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      data: {
         planId: plan.id,
         period: plan.period,
         interval: plan.interval,
         amount: Number(plan.item.amount) / 100, // Convert back to rupees
         currency: plan.item.currency,
         name: plan.item.name,
-      }),
-    };
+      },
+      message: 'Plan created successfully'
+    });
   } catch (error: any) {
     console.error('Error creating plan:', error);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Failed to create subscription plan',
-        error: error.message,
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create subscription plan', error.message);
   }
 };

@@ -54,7 +54,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('profile updated');
     
-    return envelope({ statusCode: 200, data: { message: 'Profile updated successfully' } });
+    return envelope({ statusCode: 200, message: 'Profile updated successfully' });
   } catch (error: any) {
     log.error('failed to update user profile', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update user profile');

@@ -1,5 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const ssmClient = new SSMClient({});
 const STAGE_NAME = process.env.STAGE_NAME || 'dev';
@@ -26,32 +27,14 @@ export const handler = async (
 
     const availablePlans = plans.filter(p => p !== null);
 
-    return {
+    return envelope({
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        data: {
-          plans: availablePlans,
-        },
-        error: null,
-        meta: null,
-      }),
-    };
+      data: { plans: availablePlans },
+      message: 'Subscription plans retrieved'
+    });
   } catch (error: any) {
     console.error('Error fetching plans:', error);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        data: null,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Failed to fetch subscription plans',
-          details: error.message,
-        },
-        meta: null,
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to fetch subscription plans', error.message);
   }
 };
 
