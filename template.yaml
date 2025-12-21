@@ -135,8 +135,6 @@ Resources:
         IgnorePublicAcls: true
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
-      # Additional security: prevent any accidental public access
-      AccessControl: Private
 
   # Explicit bucket policy to deny all public access
   ImagesBucketPolicy:
