@@ -589,6 +589,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: "/upload-url"
             Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -670,6 +672,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/stats
             Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1100,6 +1104,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/trades/extract
             Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1138,6 +1144,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/enhance-text
             Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1922,6 +1930,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/payments/webhook
             Method: POST
+            Auth:
+              Authorizer: NONE
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1948,6 +1958,8 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/export/trades
             Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
