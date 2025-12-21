@@ -1,36 +1,46 @@
-name: Deploy AWS SAM Application
+name: Deploy to Production (Manual)
 
 on:
-  push:
-    branches:
-      - main
-
-# Prevent overlapping deploys to same branchs
-concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  deployments: write
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "deploy-to-production" to confirm'
+        required: true
+        type: string
 
 env:
-  AWS_REGION: us-east-1 # Adjust region if needed
+  AWS_REGION: us-east-1
   SAM_CLI_TELEMETRY: 0
 
 jobs:
-  build:
+  validate-confirmation:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirmation }}" != "deploy-to-production" ]; then
+            echo "::error::Confirmation text does not match. Deployment cancelled."
+            exit 1
+          fi
+          echo "::notice::Confirmation validated. Proceeding with production deployment."
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: validate-confirmation
+    steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      
       - uses: aws-actions/setup-sam@v2
+      
       - name: Cache node_modules
         uses: actions/cache@v4
         with:
@@ -39,49 +49,32 @@ jobs:
           key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/package.json') }}
           restore-keys: |
             npm-${{ runner.os }}-
+      
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      
       - name: Validate SAM template
         run: sam validate --region $AWS_REGION
+      
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+      
       - name: Verify AWS identity
         run: aws sts get-caller-identity
+      
       - name: Install esbuild globally for SAM
         run: npm install -g esbuild@latest
+      
       - name: Ensure esbuild present
         run: npx esbuild --version
+      
       - name: SAM Build
         run: sam build
-      - name: Upload SAM build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: sam-build
-          path: .aws-sam/build
-
-  deploy-dev:
-    runs-on: ubuntu-latest
-    needs: build
-    environment: dev
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: sam-build
-          path: .aws-sam/build
-      - uses: aws-actions/setup-sam@v2
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
+      
       - name: Store Gemini API Key in SSM
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -92,35 +85,33 @@ jobs:
             --type "SecureString" \
             --overwrite \
             --region $AWS_REGION
-      - name: Validate SAM (dev)
+      
+      - name: Validate SAM (prod)
         run: sam validate --region $AWS_REGION
-      - name: Deploy to Dev
+      
+      - name: Deploy to Prod
         env:
-          RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_DEV }}
-          RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET_DEV }}
-          RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
+          RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_PROD }}
+          RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET_PROD }}
+          RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_PROD }}
         run: |
           sam deploy \
-            --stack-name tradeflow-dev \
+            --stack-name tradeflow-prod \
             --no-confirm-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              StageName=tradeflow-dev \
+              StageName=tradeflow-prod \
               ApiVersion=v1 \
-              LogRetentionDays=7 \
+              LogRetentionDays=14 \
               GeminiApiKeyParamName=/tradeflow/geminiApiKey \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
               RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}"
-
-  deploy-prod:
-    runs-on: ubuntu-latest
-    needs: deploy-dev
-    steps:
-      - name: Deployment blocked - use manual workflow
+      
+      - name: Get Stack Outputs
         run: |
-          echo "::warning::Production deployment requires manual approval."
-          echo "::notice::Go to Actions → 'Deploy to Production (Manual)' → Run workflow"
-          echo "::notice::Type 'deploy-to-production' to confirm and trigger deployment."
-          exit 1
+          echo "## Production Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Stack Outputs:" >> $GITHUB_STEP_SUMMARY
+          aws cloudformation describe-stacks --stack-name tradeflow-prod --query "Stacks[0].Outputs" >> $GITHUB_STEP_SUMMARY
