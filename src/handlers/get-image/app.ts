@@ -58,8 +58,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Prevent path traversal attacks
-    if (imageId.includes('..') || imageId.includes('/') || imageId.includes('\\')) {
+    // Prevent path traversal attacks (but allow forward slashes for the path structure)
+    if (imageId.includes('..') || imageId.includes('\\')) {
       return {
         statusCode: 400,
         headers: {
@@ -67,6 +67,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         },
         body: JSON.stringify({
           error: 'Invalid image ID format',
+        }),
+      };
+    }
+
+    // Validate the path structure: should be accountId/tradeId/filename
+    const pathParts = imageId.split('/');
+    if (pathParts.length !== 3) {
+      return {
+        statusCode: 400,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          error: 'Invalid image ID format. Expected: accountId/tradeId/filename',
         }),
       };
     }
