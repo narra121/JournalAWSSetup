@@ -3,7 +3,6 @@ import { ddb } from '../../shared/dynamo';
 import { PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { normalizePotentialKey } from '../../shared/s3';
 import { tradeCreateSchema } from '../../schemas';
 import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
@@ -231,14 +230,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           log.info('single create idempotent repeat', { tradeId: existing.Items[0].tradeId });
           const existingItem: any = existing.Items[0];
           if (Array.isArray(existingItem.images)) {
-            existingItem.images = await Promise.all(existingItem.images.map(async (im: any) => {
+            existingItem.images = existingItem.images.map((im: any) => {
               const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
               if (keyCandidate) {
-                const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
-                return { ...im, key: keyCandidate, url };
+                // Return image ID instead of signed URL
+                return { ...im, id: keyCandidate, key: keyCandidate };
               }
-              return im;
-            }));
+              return { ...im, id: im.id || im.key || '' };
+            });
           }
           return envelope({ statusCode: 200, data: existingItem });
         }
@@ -346,22 +345,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   
   log.info('single trade(s) created', { count: itemsToCreate.length, tradeIds: itemsToCreate.map((i: any) => i.tradeId) });
   
-  // Attach presigned URLs for response only
-  const itemsWithUrls = await Promise.all(itemsToCreate.map(async (item: any) => {
-    const signedImages = await Promise.all(item.images.map(async (im: any) => {
+  // Attach image IDs for response only
+  const itemsWithImageIds = itemsToCreate.map((item: any) => {
+    const imagesWithIds = item.images.map((im: any) => {
       if (im.key) {
-        const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: im.key }), { expiresIn: 3600 });
-        return { ...im, url };
+        // Return image ID instead of signed URL
+        return { ...im, id: im.key };
       }
-      return im;
-    }));
-    return { ...item, images: signedImages };
-  }));
+      return { ...im, id: im.id || im.key || '' };
+    });
+    return { ...item, images: imagesWithIds };
+  });
   
   // Return first item for single account, or all items for multiple accounts
   const responseData = itemsToCreate.length === 1 
-    ? { trade: itemsWithUrls[0] } 
-    : { trades: itemsWithUrls, count: itemsWithUrls.length };
+    ? { trade: itemsWithImageIds[0] } 
+    : { trades: itemsWithImageIds, count: itemsWithImageIds.length };
   
   return envelope({ statusCode: 201, data: responseData, message: 'Trade created successfully' });
   } catch (err: any) {

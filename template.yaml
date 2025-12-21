@@ -120,17 +120,51 @@ Resources:
     Properties:
       VersioningConfiguration:
         Status: Enabled
+      # Restrict CORS to only allow authenticated API calls, not direct browser access
       CorsConfiguration:
         CorsRules:
           - AllowedOrigins: ['*']
-            AllowedHeaders: ['*']
-            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: 
+              - "Authorization"
+              - "Content-Type"
+            AllowedMethods: [GET, PUT]
             MaxAge: 300
+      # Block all public access - images can only be accessed through Lambda
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         IgnorePublicAcls: true
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
+      # Additional security: prevent any accidental public access
+      AccessControl: Private
+
+  # Explicit bucket policy to deny all public access
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateNewDataResources
+    Properties:
+      Bucket: !Ref ImagesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyPublicAccess
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${ImagesBucket}/*"
+            Condition:
+              StringNotEquals:
+                "aws:PrincipalServiceName": "lambda.amazonaws.com"
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: 
+              - !Sub "${ImagesBucket}/*"
+              - !Ref ImagesBucket
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
 
   TradesTable:
     Type: AWS::DynamoDB::Table
@@ -596,6 +630,31 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/generate-upload-url/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+  GetImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-image/app.handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: "/images/{imageId}"
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-image/app.ts
         Minify: true
         Target: es2020
         Sourcemap: true

@@ -2,7 +2,6 @@ import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { makeLogger } from '../../shared/logger';
 import { errorFromException, envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { normalizePotentialKey } from '../../shared/s3';
@@ -33,14 +32,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Remove accountIds field (legacy) - each trade has only one accountId
   if (item.accountIds) delete item.accountIds;
   if (Array.isArray(item.images)) {
-      item.images = await Promise.all(item.images.map(async (im: any) => {
+      item.images = item.images.map((im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
         if (keyCandidate) {
-          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
-          return { ...im, key: keyCandidate, url };
+          // Return image ID instead of signed URL
+          return { ...im, id: keyCandidate, key: keyCandidate };
         }
-        return im;
-      }));
+        return { ...im, id: im.id || im.key || '' };
+      });
     }
     log.info('Trade fetched', { tradeId });
     return envelope({ statusCode: 200, data: { trade: item }, message: 'Trade retrieved' });

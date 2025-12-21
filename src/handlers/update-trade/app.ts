@@ -3,7 +3,6 @@ import { ddb } from '../../shared/dynamo';
 import { GetCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { makeLogger } from '../../shared/logger';
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { errorFromException, envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { v4 as uuid } from 'uuid';
 import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
@@ -260,14 +259,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Remove accountIds field (legacy) - each trade has only one accountId
   if (saved.accountIds) delete saved.accountIds;
     if (Array.isArray(saved.images)) {
-      saved.images = await Promise.all(saved.images.map(async (im: any) => {
+      saved.images = saved.images.map((im: any) => {
         const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
         if (keyCandidate) {
-          const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
-          return { ...im, key: keyCandidate, url };
+          // Return image ID instead of signed URL
+          return { ...im, id: keyCandidate, key: keyCandidate };
         }
-        return im;
-      }));
+        return { ...im, id: im.id || im.key || '' };
+      });
     }
     
     // Process images for additional trades and return all trades
@@ -276,14 +275,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Remove accountIds field (legacy) - each trade has only one accountId
       if (ct.accountIds) delete ct.accountIds;
       if (Array.isArray(ct.images)) {
-        ct.images = await Promise.all(ct.images.map(async (im: any) => {
+        ct.images = ct.images.map((im: any) => {
           const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
           if (keyCandidate) {
-            const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: IMAGES_BUCKET, Key: keyCandidate }), { expiresIn: 3600 });
-            return { ...im, key: keyCandidate, url };
+            // Return image ID instead of signed URL
+            return { ...im, id: keyCandidate, key: keyCandidate };
           }
-          return im;
-        }));
+          return { ...im, id: im.id || im.key || '' };
+        });
       }
       allTrades.push(ct);
     }
