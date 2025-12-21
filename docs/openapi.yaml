@@ -423,6 +423,7 @@ paths:
               required: [text]
               properties:
                 text: { type: string }
+                isTradingNotes: { type: boolean, default: false }
       responses:
         '200':
           description: Enhanced text

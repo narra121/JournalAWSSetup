@@ -4,11 +4,15 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const MODEL_ID = 'google/gemini-2.0-flash-lite-001';
 
-const SYSTEM_PROMPT = `You are an expert trading journal assistant. Your task is to enhance the following text (trade note or image description). Improve grammar, clarity, and flow, but CRITICALLY, you must preserve the user's first-person narrative and the original emotional state (whether frustration, excitement, calm, or regret). Do not sanitize the emotion or make it sound overly formal. The goal is for the user to read this later and vividly recall their mindset and feelings at that moment.
-
-After enhancing the text, add a double line break and append ONE short, powerful, and contextually relevant motivational quote (e.g., on discipline, patience, resilience, or humility).
-
-Return ONLY the enhanced text followed by the quote. No conversational filler.`;
+const getSystemPrompt = (isTradingNotes: boolean) => {
+  const basePrompt = `You are an expert trading journal assistant. Your task is to enhance the following text (trade note or image description). Improve grammar, clarity, and flow, but CRITICALLY, you must preserve the user's first-person narrative and the original emotional state (whether frustration, excitement, calm, or regret). Do not sanitize the emotion or make it sound overly formal. The goal is for the user to read this later and vividly recall their mindset and feelings at that moment.`;
+  
+  const motivationalPrompt = isTradingNotes 
+    ? `\n\nAfter enhancing the text, add a double line break and append ONE short, powerful, and contextually relevant motivational quote (e.g., on discipline, patience, resilience, or humility).`
+    : '';
+  
+  return basePrompt + motivationalPrompt + `\n\nReturn ONLY the enhanced text${isTradingNotes ? ' followed by the quote' : ''}. No conversational filler.`;
+};
 
 // Configurable upstream request timeout (ms) for Gemini fetch; default 30000 (30s)
 const REQUEST_TIMEOUT_MS = (() => {
@@ -51,7 +55,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const { text } = body;
+    const { text, isTradingNotes = false } = body;
     if (!text || typeof text !== 'string' || !text.trim()) {
       return envelope({ 
         statusCode: 400, 
@@ -78,7 +82,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           "messages": [
             {
               "role": "system",
-              "content": SYSTEM_PROMPT
+              "content": getSystemPrompt(isTradingNotes)
             },
             {
               "role": "user",
