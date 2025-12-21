@@ -149,7 +149,7 @@ Resources:
             Effect: Deny
             Principal: "*"
             Action: "s3:GetObject"
-            Resource: !Sub "${ImagesBucket}/*"
+            Resource: !Sub "arn:aws:s3:::${ImagesBucket}/*"
             Condition:
               StringNotEquals:
                 "aws:PrincipalServiceName": "lambda.amazonaws.com"
@@ -158,8 +158,8 @@ Resources:
             Principal: "*"
             Action: "s3:*"
             Resource: 
-              - !Sub "${ImagesBucket}/*"
-              - !Ref ImagesBucket
+              - !Sub "arn:aws:s3:::${ImagesBucket}/*"
+              - !Sub "arn:aws:s3:::${ImagesBucket}"
             Condition:
               Bool:
                 "aws:SecureTransport": "false"
