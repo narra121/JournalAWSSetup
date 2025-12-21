@@ -1109,6 +1109,44 @@ Resources:
         Target: es2020
         Sourcemap: true
 
+  EnhanceTextFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/enhance-text/app.handler
+      AutoPublishAlias: live
+      Description: Enhance text (notes, descriptions) using Gemini model
+      Timeout: 60
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/enhance-text
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/enhance-text/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
   # Account Management Functions
   ListAccountsFunction:
     Type: AWS::Serverless::Function

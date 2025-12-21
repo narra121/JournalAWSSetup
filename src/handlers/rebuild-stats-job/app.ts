@@ -23,6 +23,9 @@ export const handler = async () => {
     let tradeCount = trades.length;
     let realizedPnL = 0, wins = 0, losses = 0, bestWin = 0, worstLoss = 0, sumWinPnL = 0, sumLossPnL = 0;
     for (const t of trades) {
+      // Skip unmapped trades (no account or accountId = -1)
+      if (!t.accountId || t.accountId === '-1' || t.accountId === -1) continue;
+
       if (t.entryPrice != null && t.exitPrice != null && t.quantity != null) {
         const pnl = t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity;
         realizedPnL += pnl;

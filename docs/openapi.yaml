@@ -410,3 +410,30 @@ paths:
       tags: [Auth]
       responses:
         '200': { description: Signed out, content: { application/json: { schema: { $ref: '#/components/schemas/Envelope' } } } }
+  /enhance-text:
+    post:
+      summary: Enhance text using AI
+      tags: [AI]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        '200':
+          description: Enhanced text
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          enhancedText: { type: string }

@@ -238,5 +238,7 @@ async function getAllUserTrades(userId: string) {
     })
   );
 
-  return result.Items || [];
+  const trades = result.Items || [];
+  // Filter out unmapped trades
+  return trades.filter((t: any) => t.accountId && t.accountId !== '-1' && t.accountId !== -1);
 }

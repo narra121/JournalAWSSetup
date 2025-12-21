@@ -40,6 +40,9 @@ async function rebuildStats(userId: string) {
     const items = resp.Items || [];
     tradeCount += items.length;
     for (const it of items) {
+      // Skip unmapped trades (no account or accountId = -1)
+      if (!it.accountId || it.accountId === '-1' || it.accountId === -1) continue;
+
       const pnl = calcPnL(it);
       if (pnl !== undefined && pnl !== null) {
         realizedPnL += pnl;
@@ -80,6 +83,13 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
         if (exitExists) {
           await rebuildStats(userId);
         } else {
+          // Check if unmapped
+          const accountId = newImage?.accountId?.S || newImage?.accountId?.N;
+          if (!accountId || accountId === '-1' || accountId === -1) {
+             // Skip unmapped trade
+             continue;
+          }
+
           // Minimal fast path: increment tradeCount only
           const current = await ddb.send(new GetCommand({ TableName: STATS_TABLE, Key: { userId } }));
           const stats = current.Item || { userId, tradeCount: 0, realizedPnL: 0, wins: 0, losses: 0, bestWin: 0, worstLoss: 0, sumWinPnL: 0, sumLossPnL: 0 };
