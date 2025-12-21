@@ -1,5 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const MODEL_ID = 'google/gemini-2.0-flash-001';
 
@@ -94,13 +95,9 @@ async function getApiKey(): Promise<string> {
   return v;
 }
 
-function response(statusCode: number, body: any) {
-  return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-}
-
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    if (!event.body) return response(400, { error: { code: 'BadRequest', message: 'Missing body' }, data: null, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS } });
+    if (!event.body) return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Missing body' }, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS }, message: 'Missing body' });
     
     let images: string[] = [];
     try {
@@ -112,15 +109,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         images = parsed.images;
       }
     } catch {
-      return response(400, { error: { code: 'BadJSON', message: 'Body must be JSON' }, data: null, meta: null });
+      return envelope({ statusCode: 400, error: { code: 'BadJSON', message: 'Body must be JSON' }, message: 'Body must be JSON' });
     }
     
     if (images.length === 0) {
-      return response(400, { error: { code: 'BadRequest', message: 'imageBase64 or images array required' }, data: null, meta: null });
+      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'imageBase64 or images array required' }, message: 'imageBase64 or images array required' });
     }
     
     if (images.length > 3) {
-      return response(400, { error: { code: 'BadRequest', message: 'Maximum 3 images allowed' }, data: null, meta: { maxImages: 3 } });
+      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Maximum 3 images allowed' }, meta: { maxImages: 3 }, message: 'Maximum 3 images allowed' });
     }
 
     const started = Date.now();
@@ -128,7 +125,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     try {
       apiKey = await getApiKey();
     } catch (e: any) {
-      return response(500, { error: { code: 'ConfigError', message: e.message }, data: null, meta: null });
+      return envelope({ statusCode: 500, error: { code: 'ConfigError', message: e.message }, message: e.message });
     }
 
     // Process each image and collect all extracted trades
@@ -212,13 +209,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         
         // If this is the only image and it failed, return error immediately
         if (images.length === 1) {
-          return response(500, { 
+          return envelope({ 
+            statusCode: 500,
             error: { 
               code: isAbort ? 'OpenRouterTimeout' : 'OpenRouterError', 
               message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'OpenRouter API call failed')
             }, 
-            data: null, 
-            meta: { elapsedMs: imageElapsed } 
+            meta: { elapsedMs: imageElapsed },
+            message: 'Extraction failed'
           });
         }
         continue;
@@ -260,30 +258,32 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // If all images failed to process, return error
     const allFailed = processingDetails.every(d => d.skipped === true);
     if (allFailed && processingDetails.length > 0) {
-      return response(500, { 
+      return envelope({ 
+        statusCode: 500,
         error: { 
           code: 'ExtractionFailed', 
           message: 'All images failed to process',
           details: processingDetails
         }, 
-        data: null, 
-        meta: { elapsedMs: elapsed, totalImages: images.length } 
+        meta: { elapsedMs: elapsed, totalImages: images.length },
+        message: 'All images failed to process'
       });
     }
     
-    return response(200, { 
+    return envelope({ 
+      statusCode: 200,
       data: { items: allItems }, 
       meta: { 
         elapsedMs: elapsed, 
         totalImages: images.length,
         totalExtracted: allItems.length,
         processingDetails 
-      }, 
-      error: null 
+      },
+      message: 'Extraction successful'
     });
   } catch (e: any) {
     console.error('ExtractTrades error', e);
-    return response(500, { error: { code: 'InternalError', message: e?.message || 'Unexpected error' }, data: null, meta: null });
+    return envelope({ statusCode: 500, error: { code: 'InternalError', message: e?.message || 'Unexpected error' }, message: 'Internal error' });
   }
 };
 

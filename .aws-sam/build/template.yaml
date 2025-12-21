@@ -222,6 +222,8 @@ Resources:
         AttributeType: S
       - AttributeName: statusOpenDate
         AttributeType: S
+      - AttributeName: outcomeOpenDate
+        AttributeType: S
       - AttributeName: idempotencyKey
         AttributeType: S
       KeySchema:
@@ -251,6 +253,14 @@ Resources:
         - AttributeName: userId
           KeyType: HASH
         - AttributeName: statusOpenDate
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      - IndexName: user-outcome-date-gsi
+        KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: outcomeOpenDate
           KeyType: RANGE
         Projection:
           ProjectionType: ALL
@@ -639,6 +649,14 @@ Resources:
       AutoPublishAlias: live
       DeploymentPreference:
         Type: Canary10Percent5Minutes
+      Environment:
+        Variables:
+          IMAGES_BUCKET:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: ImagesBucket
+            - Ref: ExistingImagesBucketName
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - DynamoDBCrudPolicy:
           TableName:
@@ -676,9 +694,6 @@ Resources:
               Ref: HttpApi
             Path: /v1/trades/{tradeId}
             Method: DELETE
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -697,6 +712,14 @@ Resources:
       DeploymentPreference:
         Type: Canary10Percent5Minutes
       Description: Bulk delete trades
+      Environment:
+        Variables:
+          IMAGES_BUCKET:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: ImagesBucket
+            - Ref: ExistingImagesBucketName
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - DynamoDBCrudPolicy:
           TableName:
@@ -734,9 +757,6 @@ Resources:
               Ref: HttpApi
             Path: /v1/trades/bulk-delete
             Method: POST
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -985,15 +1005,38 @@ Resources:
       CodeUri: AuthConfirmSignUpFunction
       Handler: app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          USER_POOL_ID:
+            Ref: UserPool
+          RULES_TABLE:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: RulesTable
+            - ''
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - Statement:
           Effect: Allow
           Action:
           - cognito-idp:ConfirmSignUp
+          - cognito-idp:AdminGetUser
           Resource:
             Fn::GetAtt:
             - UserPool
             - Arn
+      - Fn::If:
+        - CreateNewDataResources
+        - Statement:
+            Effect: Allow
+            Action:
+            - dynamodb:PutItem
+            - dynamodb:BatchWriteItem
+            Resource:
+              Fn::GetAtt:
+              - RulesTable
+              - Arn
+        - Ref: AWS::NoValue
       Events:
         Api:
           Type: HttpApi
@@ -1004,9 +1047,6 @@ Resources:
             Method: POST
             Auth:
               Authorizer: NONE
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1487,10 +1527,18 @@ Resources:
       CodeUri: CreateAccountFunction
       Handler: app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          GOALS_TABLE:
+            Ref: GoalsTable
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - DynamoDBCrudPolicy:
           TableName:
             Ref: AccountsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: GoalsTable
       Events:
         Api:
           Type: HttpApi
@@ -1499,9 +1547,6 @@ Resources:
               Ref: HttpApi
             Path: /v1/accounts
             Method: POST
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1580,10 +1625,45 @@ Resources:
       CodeUri: DeleteAccountFunction
       Handler: app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          TRADES_TABLE:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: TradesTable
+            - Ref: ExistingTradesTableName
+          IMAGES_BUCKET:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: ImagesBucket
+            - Ref: ExistingImagesBucketName
+          GOALS_TABLE:
+            Ref: GoalsTable
+          RULES_TABLE:
+            Ref: RulesTable
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - DynamoDBCrudPolicy:
           TableName:
             Ref: AccountsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: TradesTable
+            - Ref: ExistingTradesTableName
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: GoalsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: RulesTable
+      - S3CrudPolicy:
+          BucketName:
+            Fn::If:
+            - CreateNewDataResources
+            - Ref: ImagesBucket
+            - Ref: ExistingImagesBucketName
       Events:
         Api:
           Type: HttpApi
@@ -1592,9 +1672,6 @@ Resources:
               Ref: HttpApi
             Path: /v1/accounts/{accountId}
             Method: DELETE
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1611,8 +1688,21 @@ Resources:
       CodeUri: ListGoalsFunction
       Handler: app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          GOALS_TABLE:
+            Ref: GoalsTable
+          ACCOUNTS_TABLE:
+            Ref: AccountsTable
+          NODE_OPTIONS: ' --enable-source-maps'
       Policies:
       - DynamoDBReadPolicy:
+          TableName:
+            Ref: GoalsTable
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: AccountsTable
+      - DynamoDBWritePolicy:
           TableName:
             Ref: GoalsTable
       Events:
@@ -1623,9 +1713,6 @@ Resources:
               Ref: HttpApi
             Path: /v1/goals
             Method: GET
-      Environment:
-        Variables:
-          NODE_OPTIONS: ' --enable-source-maps'
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -1697,6 +1784,47 @@ Resources:
         Sourcemap: true
         Target: es2020
       SamResourceId: ListRulesFunction
+  GetRulesGoalsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: GetRulesGoalsFunction
+      Handler: app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          RULES_TABLE:
+            Ref: RulesTable
+          GOALS_TABLE:
+            Ref: GoalsTable
+          NODE_OPTIONS: ' --enable-source-maps'
+      Policies:
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: RulesTable
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: GoalsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: HttpApi
+            Path: /v1/rules-goals
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+        - src/handlers/get-rules-goals/app.ts
+        Minify: true
+        Sourcemap: true
+        Target: es2020
+      SamResourceId: GetRulesGoalsFunction
   CreateRuleFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -2078,6 +2206,43 @@ Resources:
         Sourcemap: true
         Target: es2020
       SamResourceId: CreateOrderRazorpayFunction
+  GetSubscriptionPlansFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: GetSubscriptionPlansFunction
+      Handler: app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          STAGE_NAME:
+            Ref: StageName
+          NODE_OPTIONS: ' --enable-source-maps'
+      Policies:
+      - Statement:
+          Effect: Allow
+          Action:
+          - ssm:GetParameter
+          Resource:
+            Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${StageName}/razorpay/plan/*
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: HttpApi
+            Path: /v1/subscriptions/plans
+            Method: GET
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+        - src/handlers/get-subscription-plans/app.ts
+        Minify: true
+        Sourcemap: true
+        Target: es2020
+      SamResourceId: GetSubscriptionPlansFunction
   CreateSubscriptionPlanRazorpayFunction:
     Type: AWS::Serverless::Function
     Properties:

@@ -76,13 +76,12 @@ components:
             revenge: { type: boolean }
             overconfidence: { type: boolean }
             patience: { type: boolean }
-        preTradeNotes: { type: [string, 'null'] }
-        postTradeNotes: { type: [string, 'null'] }
+        tradeNotes: { type: [string, 'null'] }
         mistakes: { type: array, items: { type: string } }
         lessons: { type: array, items: { type: string } }
         newsEvents: { type: array, items: { type: string } }
         economicEvents: { type: array, items: { type: string } }
-        status: { type: string, enum: [OPEN, CLOSED, PARTIAL, CANCELLED] }
+        outcome: { type: string, enum: [TP, SL, PARTIAL, BREAKEVEN] }
         tags: { type: array, items: { type: string } }
         images:
           type: array
@@ -134,13 +133,12 @@ components:
             revenge: { type: boolean }
             overconfidence: { type: boolean }
             patience: { type: boolean }
-        preTradeNotes: { type: [string, 'null'], maxLength: 4000 }
-        postTradeNotes: { type: [string, 'null'], maxLength: 4000 }
+        tradeNotes: { type: [string, 'null'], maxLength: 4000 }
         mistakes: { type: array, items: { type: string, maxLength: 64 }, maxItems: 50 }
         lessons: { type: array, items: { type: string, maxLength: 64 }, maxItems: 50 }
         newsEvents: { type: array, items: { type: string, maxLength: 128 }, maxItems: 50 }
         economicEvents: { type: array, items: { type: string, maxLength: 128 }, maxItems: 50 }
-        status: { type: [string, 'null'], enum: [OPEN, CLOSED, PARTIAL, CANCELLED, null] }
+        outcome: { type: [string, 'null'], enum: [TP, SL, PARTIAL, BREAKEVEN, null] }
         tags: { type: array, items: { type: string, maxLength: 32 }, maxItems: 50 }
         images:
           type: array

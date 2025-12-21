@@ -19,6 +19,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.2cc1288e-dc5c-4bf8-8cbb-e7683dfdde3d]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -36,6 +39,9 @@ EntryPoints = ["src/handlers/get-trade/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.0fa04b46-6451-44af-b74a-eb51c8b0892f]
@@ -57,6 +63,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.06d54fc1-0076-41c4-b493-3d96e03685c2]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -74,6 +83,9 @@ EntryPoints = ["src/handlers/update-trade/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.00a3e07a-1f77-430f-9d5b-b2bfd321c6b8]
@@ -95,6 +107,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.0e50f5df-9456-447b-a03f-4d2515572727]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -112,6 +127,9 @@ EntryPoints = ["src/handlers/bulk-delete-trades/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.62d85c5d-e173-4569-9d50-870c1f3b248b]
@@ -133,6 +151,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.caab8e8b-89ad-4a96-b741-750f8233a72e]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -150,6 +171,9 @@ EntryPoints = ["src/handlers/update-stats/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.a1f149d0-96cb-4247-b14b-2199ec95180a]
@@ -171,6 +195,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.b6610d38-013c-411e-9993-aca3a378dd53]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -188,6 +215,9 @@ EntryPoints = ["src/handlers/rebuild-stats-job/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.9d1e2135-1dbe-4dab-a158-8af23e7fc63a]
@@ -209,6 +239,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.1afa4684-1fbc-4f0b-8471-ead0fdc97176]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -226,6 +259,9 @@ EntryPoints = ["src/handlers/auth-confirm-signup/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.1c04c7eb-de11-4b36-863a-f6ab37006305]
@@ -247,6 +283,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.2ad174dd-b30a-4182-9811-a2b486b9f6f1]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -264,6 +303,9 @@ EntryPoints = ["src/handlers/auth-refresh/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.739ffe18-c883-4543-9c73-714b286800b9]
@@ -285,6 +327,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.8341366c-6db8-450b-8566-c351c4d3a169]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -302,6 +347,9 @@ EntryPoints = ["src/handlers/auth-confirm-forgot-password/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.a0e27ecf-6d6f-496e-b4d9-b02e16503a4f]
@@ -323,6 +371,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.d1ce990b-a61e-4398-978a-d113dffd91df]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -340,6 +391,9 @@ EntryPoints = ["src/handlers/auth-export-account/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.1c069a65-4689-4a91-9bc0-94e5527093c2]
@@ -361,6 +415,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.571c7431-3e43-4dff-9983-7c20f4be9680]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -378,6 +435,9 @@ EntryPoints = ["src/handlers/openapi-spec/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.46e9552f-394a-4046-a728-7348e68b5da8]
@@ -399,6 +459,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.aae8a873-bba8-43c5-b51b-bb777cd866ad]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -416,6 +479,9 @@ EntryPoints = ["src/handlers/extract-trades/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.86ca22a1-c2b3-4d75-b083-1d5a83dfad66]
@@ -437,6 +503,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.4f8ee904-9ae7-455f-be45-5027f3674b42]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -454,6 +523,9 @@ EntryPoints = ["src/handlers/create-account/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.0345a3c8-040b-43ae-bbd7-fc202023a3c8]
@@ -475,6 +547,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.23668df9-f095-4ea9-948e-ca850c9037d8]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -492,6 +567,9 @@ EntryPoints = ["src/handlers/update-account-status/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.b2b07292-18f7-403a-93cd-9b882903c0f0]
@@ -513,6 +591,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.a394454e-4bb6-4fea-9ed9-6b6841601aca]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -530,6 +611,9 @@ EntryPoints = ["src/handlers/list-goals/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.650c665f-18f2-4f44-8da8-09d4762240ba]
@@ -551,6 +635,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.bdb637db-54be-4683-b0ec-6650ad085d15]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -568,6 +655,9 @@ EntryPoints = ["src/handlers/list-rules/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.77b1f4ea-f995-4964-a3ad-1a3eec1e8c1d]
@@ -589,6 +679,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.ac57c245-e4ad-48cd-b247-d483d2a4b60a]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -606,6 +699,9 @@ EntryPoints = ["src/handlers/update-rule/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.a71fe223-7892-4f56-85ef-2b606c5441ab]
@@ -627,6 +723,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.f1302524-74f7-4f3b-99a7-715c04b93ed0]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -644,6 +743,9 @@ EntryPoints = ["src/handlers/delete-rule/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.5b19cb62-f3cc-45d5-ab00-3cdc3e5cbf5e]
@@ -665,6 +767,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.abf9c1f7-48de-424b-8858-fe054b9f447f]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -682,6 +787,9 @@ EntryPoints = ["src/handlers/get-user-profile/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.883f64ec-1beb-4061-943d-a38901e25469]
@@ -703,6 +811,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.e49b6c2d-7539-45ac-b2eb-e5a1f870adfe]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -720,6 +831,9 @@ EntryPoints = ["src/handlers/update-user-preferences/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.8d947ae5-e1ab-4e85-b07b-682ebd5d6b2f]
@@ -741,6 +855,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.f5c688e1-18d7-48c0-b86b-875f875ce730]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -758,6 +875,9 @@ EntryPoints = ["src/handlers/get-saved-options/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.48cb10af-5b50-40fd-9a66-092e4fa346ce]
@@ -779,6 +899,9 @@ Target = "es2020"
 Sourcemap = true
 
 
+
+
+
 [function_build_definitions.cb610cb6-0b93-4941-bf51-8541e7fd3a8b]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -796,6 +919,9 @@ EntryPoints = ["src/handlers/export-trades/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 
 [function_build_definitions.315db7d2-f92e-49fc-a4de-5f0394ac575a]
@@ -816,6 +942,9 @@ Minify = true
 Target = "es2020"
 Sourcemap = true
 
+
+
+
 [function_build_definitions.9721345c-d77d-4061-8a9c-59938842c327]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -833,6 +962,9 @@ EntryPoints = ["src/handlers/create-subscription-plan-razorpay/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 [function_build_definitions.9f34e6bc-715d-4cb5-a7c5-3a7ef6a7548c]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
@@ -852,6 +984,9 @@ Minify = true
 Target = "es2020"
 Sourcemap = true
 
+
+
+
 [function_build_definitions.4aa7d431-818c-46b7-b52e-e12b4d6e016c]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -869,6 +1004,9 @@ EntryPoints = ["src/handlers/manage-razorpay-subscription/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
 
 [function_build_definitions.005f152b-5a80-4617-b23a-1f1749c59d58]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
@@ -888,6 +1026,9 @@ Minify = true
 Target = "es2020"
 Sourcemap = true
 
+
+
+
 [function_build_definitions.b48f986a-2875-4ecb-a3cf-282b4b329964]
 codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
 runtime = "nodejs20.x"
@@ -905,5 +1046,48 @@ EntryPoints = ["src/handlers/razorpay-webhook/app.ts"]
 Minify = true
 Target = "es2020"
 Sourcemap = true
+
+
+
+
+[function_build_definitions.a644205d-cb9e-4e7a-80db-f323e06dd4f5]
+codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
+runtime = "nodejs20.x"
+architecture = "x86_64"
+handler = "src/handlers/get-rules-goals/app.handler"
+manifest_hash = ""
+packagetype = "Zip"
+functions = ["GetRulesGoalsFunction"]
+
+[function_build_definitions.a644205d-cb9e-4e7a-80db-f323e06dd4f5.metadata]
+BuildMethod = "esbuild"
+
+[function_build_definitions.a644205d-cb9e-4e7a-80db-f323e06dd4f5.metadata.BuildProperties]
+EntryPoints = ["src/handlers/get-rules-goals/app.ts"]
+Minify = true
+Target = "es2020"
+Sourcemap = true
+
+
+
+[function_build_definitions.2614868a-1f6c-4d4c-b6f4-409c59c5514d]
+codeuri = "C:\\Work\\me\\Trading Journal\\Backend"
+runtime = "nodejs20.x"
+architecture = "x86_64"
+handler = "src/handlers/get-subscription-plans/app.handler"
+manifest_hash = ""
+packagetype = "Zip"
+functions = ["GetSubscriptionPlansFunction"]
+
+[function_build_definitions.2614868a-1f6c-4d4c-b6f4-409c59c5514d.metadata]
+BuildMethod = "esbuild"
+
+[function_build_definitions.2614868a-1f6c-4d4c-b6f4-409c59c5514d.metadata.BuildProperties]
+EntryPoints = ["src/handlers/get-subscription-plans/app.ts"]
+Minify = true
+Target = "es2020"
+Sourcemap = true
+
+
 
 [layer_build_definitions]

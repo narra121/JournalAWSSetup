@@ -64,17 +64,3 @@ export const lambdaHandler = async (
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to create order', error.message);
   }
 };
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        data: null,
-        error: {
-          code: 'ORDER_CREATE_FAILED',
-          message: 'Failed to create order',
-        },
-        meta: null,
-      }),
-    };
-  }
-};

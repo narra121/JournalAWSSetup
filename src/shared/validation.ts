@@ -31,8 +31,11 @@ export function envelope(params: { statusCode: number; data?: any; error?: any; 
   const body: any = {
     success,
     message: message || (success ? 'Success' : (error?.message || 'Error')),
-    data: data ?? null,
   };
+
+  if (success || data !== undefined) {
+    body.data = data ?? null;
+  }
 
   if (!success && error) {
     body.errorCode = error.code;

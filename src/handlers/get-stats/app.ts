@@ -1,6 +1,7 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
 
@@ -8,7 +9,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
   const rc: any = event.requestContext as any;
   const userId = rc?.authorizer?.jwt?.claims?.sub;
-    if (!userId) return resp(401, null, { code: 'UNAUTHORIZED', message: 'Unauthorized' });
+    if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
 
     const result = await ddb.send(new GetCommand({
       TableName: STATS_TABLE,
@@ -21,13 +22,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const avgLoss = base.losses > 0 ? base.sumLossPnL / base.losses : 0; // negative
   const expectancy = (winRate * avgWin) + ((1 - winRate) * avgLoss); // could be negative
   const stats = { ...base, winRate, avgWin, avgLoss, expectancy };
-  return resp(200, { stats }, null);
-  } catch (e) {
+  
+  return envelope({
+      statusCode: 200,
+      data: { stats },
+      message: 'Stats retrieved successfully'
+  });
+  } catch (e: any) {
     console.error(e);
-    return resp(500, null, { code: 'INTERNAL_ERROR', message: 'Internal error' });
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error', e.message);
   }
 };
-
-function resp(statusCode: number, data: any, error: any) {
-  return { statusCode, body: JSON.stringify({ data, error, meta: null }) };
-}

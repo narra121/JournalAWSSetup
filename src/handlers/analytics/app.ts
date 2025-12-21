@@ -2,6 +2,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { makeLogger } from '../../shared/logger';
+import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 type AnalyticsType = 'hourly' | 'daily-win-rate' | 'symbol-distribution' | 'strategy-distribution';
@@ -30,40 +32,17 @@ export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGat
         data = await getStrategyDistribution(userId);
         break;
       default:
-        return {
-          statusCode: 400,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            success: false,
-            error: {
-              code: 'INVALID_TYPE',
-              message: 'Invalid analytics type. Use: hourly, daily-win-rate, symbol-distribution, or strategy-distribution',
-            },
-          }),
-        };
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid analytics type. Use: hourly, daily-win-rate, symbol-distribution, or strategy-distribution');
     }
 
-    return {
+    return envelope({
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        success: true,
-        data,
-      }),
-    };
-  } catch (error) {
+      data,
+      message: 'Analytics retrieved successfully'
+    });
+  } catch (error: any) {
     console.error('Analytics error', { error, userId, type });
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        success: false,
-        error: {
-          code: 'ANALYTICS_ERROR',
-          message: 'Failed to retrieve analytics',
-        },
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve analytics', error.message);
   }
 };
 
