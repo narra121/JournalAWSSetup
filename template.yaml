@@ -136,7 +136,7 @@ Resources:
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
 
-  # Explicit bucket policy to deny all public access
+  # Explicit bucket policy to enforce secure transport only
   ImagesBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Condition: CreateNewDataResources
@@ -145,14 +145,6 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: DenyPublicAccess
-            Effect: Deny
-            Principal: "*"
-            Action: "s3:GetObject"
-            Resource: !Sub "arn:aws:s3:::${ImagesBucket}/*"
-            Condition:
-              StringNotEquals:
-                "aws:PrincipalServiceName": "lambda.amazonaws.com"
           - Sid: DenyInsecureConnections
             Effect: Deny
             Principal: "*"
