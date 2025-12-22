@@ -1243,6 +1243,7 @@ Resources:
       AutoPublishAlias: live
       Environment:
         Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTable
           GOALS_TABLE: !Ref GoalsTable
       Policies:
         - DynamoDBCrudPolicy:
