@@ -376,7 +376,7 @@ Resources:
       Handler: src/handlers/create-trade/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -412,7 +412,7 @@ Resources:
       Handler: src/handlers/get-trade/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -448,7 +448,7 @@ Resources:
       Handler: src/handlers/list-trades/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -484,7 +484,7 @@ Resources:
       Handler: src/handlers/update-trade/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -522,7 +522,7 @@ Resources:
       Handler: src/handlers/delete-trade/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Environment:
         Variables:
           IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
@@ -563,7 +563,7 @@ Resources:
       Handler: src/handlers/bulk-delete-trades/app.handler
       AutoPublishAlias: live
       DeploymentPreference:
-        Type: Canary10Percent5Minutes
+        Type: AllAtOnce
       Description: Bulk delete trades
       Environment:
         Variables:

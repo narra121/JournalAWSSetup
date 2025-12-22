@@ -103,6 +103,7 @@ jobs:
           sam deploy \
             --stack-name tradeflow-dev \
             --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               StageName=tradeflow-dev \
