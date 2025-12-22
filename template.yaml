@@ -804,6 +804,7 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref UserPool
           RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+          SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
       Policies:
         - Statement:
             Effect: Allow
@@ -818,7 +819,9 @@ Resources:
               Action:
                 - dynamodb:PutItem
                 - dynamodb:BatchWriteItem
-              Resource: !GetAtt RulesTable.Arn
+              Resource:
+                - !GetAtt RulesTable.Arn
+                - !GetAtt SavedOptionsTable.Arn
           - !Ref AWS::NoValue
       Events:
         Api:
@@ -1726,6 +1729,9 @@ Resources:
       CodeUri: .
       Handler: src/handlers/get-saved-options/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SavedOptionsTable
@@ -1752,6 +1758,9 @@ Resources:
       CodeUri: .
       Handler: src/handlers/add-saved-option/app.handler
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SavedOptionsTable
@@ -1767,6 +1776,35 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/add-saved-option/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+
+  UpdateSavedOptionsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-saved-options/app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SavedOptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/options
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-saved-options/app.ts
         Minify: true
         Target: es2020
         Sourcemap: true
