@@ -644,7 +644,7 @@ Resources:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
-            Path: "/images/{imageId+}"
+            Path: "/v1/images/{imageId+}"
             Method: GET
             Auth:
               Authorizer: CognitoAuthorizer
