@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { CognitoIdentityProviderClient, SignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
@@ -30,6 +30,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return envelope({ statusCode: 200, data: { user: { id: r.UserSub, name, email } }, message: 'User created. Please check your email for a confirmation code.' });
   } catch (e: any) {
     console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
+    
+    // If user already exists but is not confirmed, resend the confirmation code
+    if (e.name === 'UsernameExistsException') {
+      try {
+        const { email } = JSON.parse(event.body!);
+        await client.send(new ResendConfirmationCodeCommand({ ClientId: CLIENT_ID, Username: email }));
+        return envelope({ 
+          statusCode: 200, 
+          data: { user: { email }, resent: true }, 
+          message: 'Account exists but not verified. Verification code resent to your email.' 
+        });
+      } catch (resendError: any) {
+        console.error('Failed to resend confirmation code', { error: resendError.message });
+        // If resend fails, return the original error
+        return errorResponse(400, 'USER_EXISTS', 'An account with this email already exists. Please login or reset your password.');
+      }
+    }
+    
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e?.message || 'Signup failed');
   }
 };

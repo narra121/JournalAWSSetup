@@ -32,5 +32,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     };
 
     return envelope({ statusCode: 200, data: { IdToken, AccessToken, RefreshToken, ExpiresIn, TokenType, user }, message: 'Login successful' });
-  } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.UNAUTHORIZED, e.message || 'Login failed'); }
+  } catch (e: any) { 
+    console.error(e);
+    
+    // Check if the user's email is not verified
+    if (e.name === 'UserNotConfirmedException') {
+      return errorResponse(403, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in. Check your inbox for the verification code.');
+    }
+    
+    return errorResponse(400, ErrorCodes.UNAUTHORIZED, e.message || 'Login failed'); 
+  }
 };
