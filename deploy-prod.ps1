@@ -1,5 +1,6 @@
 Param(
   [string]$StageName = "prod",
+  [string]$Environment = "prod",
   [string]$ApiVersion = "v1",
   [int]$LogRetentionDays = 14,
   [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey"
@@ -10,6 +11,7 @@ $stackName = "trading-journal-backend-$StageName"
 
 $paramOverrides = @(
   "StageName=$StageName",
+  "Environment=$Environment",
   "ApiVersion=$ApiVersion",
   "GeminiApiKeyParamName=$GeminiApiKeyParamName",
   "LogRetentionDays=$LogRetentionDays",

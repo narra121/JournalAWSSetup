@@ -31,6 +31,11 @@ Parameters:
     Default: prod
     Description: Deployment stage (lowercase) used in resource names.
     AllowedPattern: '^[a-z0-9-]+$'
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Environment name (dev or prod) used for SSM parameter paths and configuration.
   ApiVersion:
     Type: String
     Default: v1
@@ -1846,13 +1851,13 @@ Resources:
       AutoPublishAlias: live
       Environment:
         Variables:
-          STAGE_NAME: !Ref StageName
+          STAGE_NAME: !Ref Environment
       Policies:
         - Statement:
             Effect: Allow
             Action:
               - ssm:GetParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${StageName}/razorpay/plan/*"
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${Environment}/razorpay/plan/*"
       Events:
         Api:
           Type: HttpApi
