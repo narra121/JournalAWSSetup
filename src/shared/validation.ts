@@ -59,7 +59,9 @@ export enum ErrorCodes {
   NOT_FOUND = 'TRADE_NOT_FOUND',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
-  ITEM_TOO_LARGE = 'ITEM_TOO_LARGE'
+  ITEM_TOO_LARGE = 'ITEM_TOO_LARGE',
+  EMAIL_NOT_VERIFIED = 'EMAIL_NOT_VERIFIED',
+  USER_EXISTS = 'USER_EXISTS'
 }
 
 export function errorResponse(statusCode: number, code: ErrorCodes, message: string, details?: any) {

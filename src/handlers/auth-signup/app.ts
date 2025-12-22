@@ -44,7 +44,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       } catch (resendError: any) {
         console.error('Failed to resend confirmation code', { error: resendError.message });
         // If resend fails, return the original error
-        return errorResponse(400, 'USER_EXISTS', 'An account with this email already exists. Please login or reset your password.');
+        return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please login or reset your password.');
       }
     }
     

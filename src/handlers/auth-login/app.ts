@@ -37,7 +37,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     
     // Check if the user's email is not verified
     if (e.name === 'UserNotConfirmedException') {
-      return errorResponse(403, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in. Check your inbox for the verification code.');
+      return errorResponse(403, ErrorCodes.EMAIL_NOT_VERIFIED, 'Please verify your email before logging in. Check your inbox for the verification code.');
     }
     
     return errorResponse(400, ErrorCodes.UNAUTHORIZED, e.message || 'Login failed'); 
