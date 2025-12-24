@@ -92,6 +92,18 @@ jobs:
             --type "SecureString" \
             --overwrite \
             --region $AWS_REGION
+      
+      - name: Store Razorpay Webhook Secret in SSM
+        env:
+          RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
+        run: |
+          aws ssm put-parameter \
+            --name "/tradeflow/razorpayWebhookSecret" \
+            --value "${RAZORPAY_WEBHOOK_SECRET}" \
+            --type "SecureString" \
+            --overwrite \
+            --region $AWS_REGION
+      
       - name: Validate SAM (dev)
         run: sam validate --region $AWS_REGION
       - name: Deploy to Dev
@@ -110,6 +122,7 @@ jobs:
               ApiVersion=v1 \
               LogRetentionDays=7 \
               GeminiApiKeyParamName=/tradeflow/geminiApiKey \
+              RazorpayWebhookSecretParamName=/tradeflow/razorpayWebhookSecret \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \

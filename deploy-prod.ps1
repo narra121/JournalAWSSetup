@@ -3,7 +3,8 @@ Param(
   [string]$Environment = "prod",
   [string]$ApiVersion = "v1",
   [int]$LogRetentionDays = 14,
-  [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey"
+  [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey",
+  [string]$RazorpayWebhookSecretParamName = "/tradeflow/razorpayWebhookSecret"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,7 @@ $paramOverrides = @(
   "Environment=$Environment",
   "ApiVersion=$ApiVersion",
   "GeminiApiKeyParamName=$GeminiApiKeyParamName",
+  "RazorpayWebhookSecretParamName=$RazorpayWebhookSecretParamName",
   "LogRetentionDays=$LogRetentionDays",
   "UseExistingResources=false"
 )

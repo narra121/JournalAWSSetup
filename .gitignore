@@ -1,2 +1,5 @@
 node_modules
 test-extract-local.js
+
+# GitHub secrets configuration
+set-github-secrets.ps1

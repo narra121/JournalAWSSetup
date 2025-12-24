@@ -4,13 +4,14 @@ Param(
   [string]$Environment = "dev",
   [string]$ApiVersion = "v1",
   [int]$LogRetentionDays = 7,
-  [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey"
+  [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey",
+  [string]$RazorpayWebhookSecretParamName = "/tradeflow/razorpayWebhookSecret"
 )
 
 $ErrorActionPreference = 'Stop'
 $stackName = "trading-journal-backend-$StageName"
 
-$paramOverrides = "StageName=$StageName Environment=$Environment ApiVersion=$ApiVersion GeminiApiKeyParamName=$GeminiApiKeyParamName LogRetentionDays=$LogRetentionDays UseExistingResources=false"
+$paramOverrides = "StageName=$StageName Environment=$Environment ApiVersion=$ApiVersion GeminiApiKeyParamName=$GeminiApiKeyParamName RazorpayWebhookSecretParamName=$RazorpayWebhookSecretParamName LogRetentionDays=$LogRetentionDays UseExistingResources=false"
 
 Write-Host "Deploying..." -ForegroundColor Cyan
 sam deploy `

@@ -49,6 +49,10 @@ Parameters:
     Type: String
     Default: /tradeflow/geminiApiKey
     Description: Name of SSM SecureString parameter storing the Gemini API key.
+  RazorpayWebhookSecretParamName:
+    Type: String
+    Default: /tradeflow/razorpayWebhookSecret
+    Description: Name of SSM SecureString parameter storing the Razorpay webhook secret.
   UseExistingResources:
     Type: String
     Default: "false"
@@ -2011,11 +2015,13 @@ Resources:
       AutoPublishAlias: live
       Environment:
         Variables:
-          RAZORPAY_WEBHOOK_SECRET: !Ref RazorpayWebhookSecret
+          RAZORPAY_WEBHOOK_SECRET_PARAM: !Ref RazorpayWebhookSecretParamName
           SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref RazorpayWebhookSecretParamName
       Events:
         Api:
           Type: HttpApi
