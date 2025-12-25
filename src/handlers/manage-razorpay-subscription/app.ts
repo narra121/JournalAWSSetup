@@ -241,16 +241,34 @@ export const handler = async (
         return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
       }
 
+      // Check if already cancelled or scheduled for cancellation
+      if (result.Item.status === 'cancellation_requested') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is already scheduled for cancellation');
+      }
+
+      if (result.Item.status === 'cancelled') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is already cancelled');
+      }
+
       const subscriptionId = result.Item.subscriptionId;
 
       // Cancel in Razorpay
-      if (cancelAtCycleEnd) {
-        // @ts-ignore - Razorpay types may be incorrect
-        await razorpay.subscriptions.cancel(subscriptionId, {
-          cancel_at_cycle_end: 1,
-        });
-      } else {
-        await razorpay.subscriptions.cancel(subscriptionId);
+      try {
+        if (cancelAtCycleEnd) {
+          // @ts-ignore - Razorpay types may be incorrect
+          await razorpay.subscriptions.cancel(subscriptionId, {
+            cancel_at_cycle_end: 1,
+          });
+        } else {
+          await razorpay.subscriptions.cancel(subscriptionId);
+        }
+      } catch (error: any) {
+        console.error('Razorpay cancellation error:', error);
+        // If Razorpay returns an error, return a more specific error message
+        if (error.statusCode === 400 && error.error?.description) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, error.error.description);
+        }
+        throw error;
       }
 
       // Update status in DynamoDB
