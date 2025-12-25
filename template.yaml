@@ -1967,6 +1967,12 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /v1/subscriptions
             Method: PUT
+        UndoCancellation:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: PATCH
         CancelSubscription:
           Type: HttpApi
           Properties:

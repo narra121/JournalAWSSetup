@@ -166,7 +166,64 @@ export const handler = async (
         });
       }
     }
+    // PATCH: Undo cancellation (reactivate subscription scheduled for cancellation)
+    if (method === 'PATCH') {
+      const body = JSON.parse(event.body || '{}');
+      const { action } = body;
 
+      if (action !== 'undo_cancellation') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid action. Must be "undo_cancellation"');
+      }
+
+      // Get subscription from DB
+      const result = await docClient.send(
+        new GetCommand({
+          TableName: SUBSCRIPTIONS_TABLE,
+          Key: { userId },
+        })
+      );
+
+      if (!result.Item || !result.Item.subscriptionId) {
+        return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
+      }
+
+      if (result.Item.status !== 'cancellation_requested') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is not scheduled for cancellation');
+      }
+
+      const subscriptionId = result.Item.subscriptionId;
+
+      // Fetch current status from Razorpay
+      const razorpaySubscription = await razorpay.subscriptions.fetch(subscriptionId);
+
+      // Verify subscription is still active in Razorpay
+      if (razorpaySubscription.status !== 'active') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is no longer active in Razorpay');
+      }
+
+      // Update status in DynamoDB back to active
+      await docClient.send(
+        new UpdateCommand({
+          TableName: SUBSCRIPTIONS_TABLE,
+          Key: { userId },
+          UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt REMOVE cancelAt',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':status': 'active',
+            ':updatedAt': new Date().toISOString(),
+          },
+        })
+      );
+
+      return envelope({
+        statusCode: 200,
+        data: {
+          message: 'Cancellation undone. Your subscription will continue and you will be charged on the next billing date.',
+          subscriptionId,
+          status: 'active',
+        }
+      });
+    }
     // DELETE: Cancel subscription
     if (method === 'DELETE') {
       const body = JSON.parse(event.body || '{}');
