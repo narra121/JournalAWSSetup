@@ -318,6 +318,11 @@ export const handler = async (
         return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is already cancelled');
       }
 
+      // Cannot cancel pending payment subscriptions
+      if (result.Item.status === 'created') {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Cannot cancel a subscription that has not started billing. Please wait for the first payment to complete.');
+      }
+
       const subscriptionId = result.Item.subscriptionId;
 
       // Cancel in Razorpay
