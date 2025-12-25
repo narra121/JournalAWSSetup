@@ -59,24 +59,58 @@ export const handler = async (
         try {
           const razorpaySubscription = await razorpay.subscriptions.fetch(subscriptionId);
           
+          // Also fetch all subscriptions to check if user has multiple
+          // Razorpay API returns subscriptions sorted by created_at DESC by default
+          let latestSubscription = razorpaySubscription;
+          try {
+            const allSubscriptions = await razorpay.subscriptions.all({
+              count: 10, // Get last 10 subscriptions
+            });
+            
+            // Filter subscriptions by userId in notes and find latest active/created one
+            const userSubscriptions = allSubscriptions.items.filter((sub: any) => 
+              sub.notes?.userId === userId
+            );
+            
+            if (userSubscriptions.length > 0) {
+              // Find the most recent non-cancelled subscription
+              const activeSubscription = userSubscriptions.find((sub: any) => 
+                ['active', 'authenticated', 'created', 'halted', 'paused'].includes(sub.status)
+              );
+              
+              if (activeSubscription && activeSubscription.id !== subscriptionId) {
+                console.log(`Found newer subscription ${activeSubscription.id}, updating DB from ${subscriptionId}`);
+                latestSubscription = activeSubscription;
+              }
+            }
+          } catch (error) {
+            console.log('Could not fetch all subscriptions, using current one:', error);
+          }
+          
           // Determine the correct status:
           // - If DB shows cancellation_requested and Razorpay shows active, keep cancellation_requested
           // - Otherwise, use Razorpay's status as source of truth
-          let status = razorpaySubscription.status;
-          if (result.Item.status === 'cancellation_requested' && razorpaySubscription.status === 'active') {
+          let status = latestSubscription.status;
+          if (result.Item.status === 'cancellation_requested' && 
+              latestSubscription.id === subscriptionId && 
+              latestSubscription.status === 'active') {
             status = 'cancellation_requested';
           }
           
-          // Update DB with latest Razorpay data if status changed
-          if (status !== result.Item.status) {
+          // Update DB with latest subscription data if subscription ID or status changed
+          if (latestSubscription.id !== subscriptionId || status !== result.Item.status) {
             await docClient.send(
               new UpdateCommand({
                 TableName: SUBSCRIPTIONS_TABLE,
                 Key: { userId },
-                UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
+                UpdateExpression: 'SET subscriptionId = :subscriptionId, planId = :planId, #status = :status, paidCount = :paidCount, remainingCount = :remainingCount, updatedAt = :updatedAt',
                 ExpressionAttributeNames: { '#status': 'status' },
                 ExpressionAttributeValues: {
+                  ':subscriptionId': latestSubscription.id,
+                  ':planId': latestSubscription.plan_id,
                   ':status': status,
+                  ':paidCount': latestSubscription.paid_count || 0,
+                  ':remainingCount': latestSubscription.remaining_count,
                   ':updatedAt': new Date().toISOString(),
                 },
               })
@@ -87,20 +121,27 @@ export const handler = async (
             statusCode: 200,
             data: {
               ...result.Item,
+              subscriptionId: latestSubscription.id,
+              planId: latestSubscription.plan_id,
               status, // Use synchronized status
-              paidCount: razorpaySubscription.paid_count || result.Item.paidCount,
-              remainingCount: razorpaySubscription.remaining_count,
-              currentStart: razorpaySubscription.current_start ? new Date(razorpaySubscription.current_start * 1000).toISOString() : result.Item.currentStart,
-              currentEnd: razorpaySubscription.current_end ? new Date(razorpaySubscription.current_end * 1000).toISOString() : result.Item.currentEnd,
-              chargeAt: razorpaySubscription.charge_at ? new Date(razorpaySubscription.charge_at * 1000).toISOString() : result.Item.chargeAt,
+              paidCount: latestSubscription.paid_count || 0,
+              remainingCount: latestSubscription.remaining_count,
+              totalCount: latestSubscription.total_count,
+              authAttempts: latestSubscription.auth_attempts || 0,
+              quantity: latestSubscription.quantity,
+              currentStart: latestSubscription.current_start ? new Date(latestSubscription.current_start * 1000).toISOString() : null,
+              currentEnd: latestSubscription.current_end ? new Date(latestSubscription.current_end * 1000).toISOString() : null,
+              chargeAt: latestSubscription.charge_at ? new Date(latestSubscription.charge_at * 1000).toISOString() : null,
+              startAt: latestSubscription.start_at ? new Date(latestSubscription.start_at * 1000).toISOString() : null,
+              endAt: latestSubscription.end_at ? new Date(latestSubscription.end_at * 1000).toISOString() : null,
               razorpayDetails: {
-                status: razorpaySubscription.status,
-                paidCount: razorpaySubscription.paid_count,
-                remainingCount: razorpaySubscription.remaining_count,
-                currentStart: razorpaySubscription.current_start,
-                currentEnd: razorpaySubscription.current_end,
-                chargeAt: razorpaySubscription.charge_at,
-                endedAt: razorpaySubscription.ended_at,
+                status: latestSubscription.status,
+                paidCount: latestSubscription.paid_count,
+                remainingCount: latestSubscription.remaining_count,
+                currentStart: latestSubscription.current_start,
+                currentEnd: latestSubscription.current_end,
+                chargeAt: latestSubscription.charge_at,
+                endedAt: latestSubscription.ended_at,
               },
             }
           });
