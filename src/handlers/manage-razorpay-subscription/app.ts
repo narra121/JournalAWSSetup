@@ -59,16 +59,40 @@ export const handler = async (
         try {
           const razorpaySubscription = await razorpay.subscriptions.fetch(subscriptionId);
           
-          // Preserve cancellation_requested status from DB if set
-          const status = result.Item.status === 'cancellation_requested' 
-            ? 'cancellation_requested' 
-            : razorpaySubscription.status;
+          // Determine the correct status:
+          // - If DB shows cancellation_requested and Razorpay shows active, keep cancellation_requested
+          // - Otherwise, use Razorpay's status as source of truth
+          let status = razorpaySubscription.status;
+          if (result.Item.status === 'cancellation_requested' && razorpaySubscription.status === 'active') {
+            status = 'cancellation_requested';
+          }
+          
+          // Update DB with latest Razorpay data if status changed
+          if (status !== result.Item.status) {
+            await docClient.send(
+              new UpdateCommand({
+                TableName: SUBSCRIPTIONS_TABLE,
+                Key: { userId },
+                UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: {
+                  ':status': status,
+                  ':updatedAt': new Date().toISOString(),
+                },
+              })
+            );
+          }
           
           return envelope({
             statusCode: 200,
             data: {
               ...result.Item,
-              status, // Use preserved status
+              status, // Use synchronized status
+              paidCount: razorpaySubscription.paid_count || result.Item.paidCount,
+              remainingCount: razorpaySubscription.remaining_count,
+              currentStart: razorpaySubscription.current_start ? new Date(razorpaySubscription.current_start * 1000).toISOString() : result.Item.currentStart,
+              currentEnd: razorpaySubscription.current_end ? new Date(razorpaySubscription.current_end * 1000).toISOString() : result.Item.currentEnd,
+              chargeAt: razorpaySubscription.charge_at ? new Date(razorpaySubscription.charge_at * 1000).toISOString() : result.Item.chargeAt,
               razorpayDetails: {
                 status: razorpaySubscription.status,
                 paidCount: razorpaySubscription.paid_count,
