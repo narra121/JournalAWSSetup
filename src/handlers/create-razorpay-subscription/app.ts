@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 let razorpay: Razorpay | null = null;
@@ -36,6 +36,26 @@ export const handler = async (
     const userId = event.requestContext?.authorizer?.jwt?.claims?.sub;
     if (!userId) {
       return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+    }
+
+    // Check if user already has an active subscription
+    const existingSubscription = await docClient.send(
+      new GetCommand({
+        TableName: SUBSCRIPTIONS_TABLE,
+        Key: { userId },
+      })
+    );
+
+    if (existingSubscription.Item) {
+      const status = existingSubscription.Item.status;
+      // Block if user has active, authenticated, or pending subscription
+      if (['active', 'authenticated', 'created', 'cancellation_requested'].includes(status)) {
+        return errorResponse(
+          400, 
+          ErrorCodes.VALIDATION_ERROR, 
+          `You already have a ${status} subscription. Please manage your existing subscription instead of creating a new one.`
+        );
+      }
     }
 
     const body = JSON.parse(event.body || '{}');
