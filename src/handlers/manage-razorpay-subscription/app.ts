@@ -59,10 +59,16 @@ export const handler = async (
         try {
           const razorpaySubscription = await razorpay.subscriptions.fetch(subscriptionId);
           
+          // Preserve cancellation_requested status from DB if set
+          const status = result.Item.status === 'cancellation_requested' 
+            ? 'cancellation_requested' 
+            : razorpaySubscription.status;
+          
           return envelope({
             statusCode: 200,
             data: {
               ...result.Item,
+              status, // Use preserved status
               razorpayDetails: {
                 status: razorpaySubscription.status,
                 paidCount: razorpaySubscription.paid_count,
