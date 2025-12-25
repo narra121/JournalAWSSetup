@@ -48,8 +48,26 @@ export const handler = async (
 
     if (existingSubscription.Item) {
       const status = existingSubscription.Item.status;
-      // Block if user has active, authenticated, or pending subscription
-      if (['active', 'authenticated', 'created', 'cancellation_requested'].includes(status)) {
+      
+      // If user has a pending payment subscription, return the existing payment link
+      if (status === 'created') {
+        console.log('User has pending payment subscription, returning existing payment link');
+        return envelope({
+          statusCode: 200,
+          data: {
+            subscriptionId: existingSubscription.Item.subscriptionId,
+            planId: existingSubscription.Item.planId,
+            status: existingSubscription.Item.status,
+            shortUrl: existingSubscription.Item.paymentLink,
+            paymentLink: existingSubscription.Item.paymentLink,
+            authAttempts: existingSubscription.Item.authAttempts || 0,
+          },
+          message: 'Using existing pending subscription'
+        });
+      }
+      
+      // Block if user has active, authenticated, or cancellation_requested subscription
+      if (['active', 'authenticated', 'cancellation_requested'].includes(status)) {
         return errorResponse(
           400, 
           ErrorCodes.VALIDATION_ERROR, 
@@ -101,7 +119,7 @@ export const handler = async (
 
     console.log('Subscription created:', subscription);
 
-    // Store initial subscription record in DynamoDB
+    // Store initial subscription record in DynamoDB with payment link
     await docClient.send(
       new PutCommand({
         TableName: SUBSCRIPTIONS_TABLE,
@@ -119,6 +137,8 @@ export const handler = async (
           currentEnd: subscription.current_end || null,
           paidCount: subscription.paid_count || 0,
           remainingCount: subscription.remaining_count || null,
+          paymentLink: subscription.short_url, // Save payment link for reuse
+          authAttempts: subscription.auth_attempts || 0,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         },
