@@ -1,5 +1,8 @@
 node_modules
 test-extract-local.js
 
+# Build output
+.aws-sam/
+
 # GitHub secrets configuration
 set-github-secrets.ps1
