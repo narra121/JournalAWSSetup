@@ -121,6 +121,12 @@ Legend: `[x]` = Complete / shipped, `[~]` = Partial / needs refinement, `[ ]` = 
 - [ ] ML Insights (anomaly detection on PnL / psychology patterns)
 - [ ] Public Demo Sandbox Environment
 
+## 15. Payments & Subscriptions
+- [x] Razorpay Integration (Checkout Flow)
+- [ ] Refactor to Payment Link Flow (Hosted)
+- [ ] Subscription Management (Pause/Resume/Cancel)
+- [ ] Webhook Handling (Recurring Payments)
+
 ---
 ## Snapshot Summary
 Completed: Core CRUD, extended schema, image lifecycle, stats (baseline), custom auth endpoints, TypeScript build, docs.

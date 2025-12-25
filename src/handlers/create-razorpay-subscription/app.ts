@@ -102,7 +102,8 @@ export const handler = async (
         subscriptionId: subscription.id,
         planId: subscription.plan_id,
         status: subscription.status,
-        shortUrl: subscription.short_url, // Payment link for customer
+        shortUrl: subscription.short_url,
+        paymentLink: subscription.short_url, // Explicitly return as paymentLink per refactor plan
         authAttempts: subscription.auth_attempts,
       },
       message: 'Subscription created successfully'

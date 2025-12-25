@@ -187,10 +187,11 @@ export const handler = async (
         new UpdateCommand({
           TableName: SUBSCRIPTIONS_TABLE,
           Key: { userId },
-          UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
+          UpdateExpression: 'SET #status = :status, cancelAt = :cancelAt, updatedAt = :updatedAt',
           ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {
-            ':status': cancelAtCycleEnd ? 'cancelling' : 'cancelled',
+            ':status': cancelAtCycleEnd ? 'cancellation_requested' : 'cancelled',
+            ':cancelAt': cancelAtCycleEnd ? 'cycle_end' : 'immediate',
             ':updatedAt': new Date().toISOString(),
           },
         })
@@ -199,8 +200,9 @@ export const handler = async (
       return envelope({
         statusCode: 200,
         data: {
+          status: cancelAtCycleEnd ? 'cancellation_requested' : 'cancelled',
           message: cancelAtCycleEnd
-            ? 'Subscription will be cancelled at end of billing cycle'
+            ? 'Your subscription will remain active until the end of the current billing period.'
             : 'Subscription cancelled immediately',
           subscriptionId,
         }
