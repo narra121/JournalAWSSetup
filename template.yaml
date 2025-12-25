@@ -2026,8 +2026,11 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
-        - SSMParameterReadPolicy:
-            ParameterName: !Ref RazorpayWebhookSecretParamName
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RazorpayWebhookSecretParamName}"
       Events:
         Api:
           Type: HttpApi
