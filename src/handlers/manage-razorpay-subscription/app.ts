@@ -90,7 +90,7 @@ export const handler = async (
           // Determine the correct status:
           // - If DB shows cancellation_requested and Razorpay shows active, keep cancellation_requested
           // - Otherwise, use Razorpay's status as source of truth
-          let status = latestSubscription.status;
+          let status: string = latestSubscription.status;
           if (result.Item.status === 'cancellation_requested' && 
               latestSubscription.id === subscriptionId && 
               latestSubscription.status === 'active') {
