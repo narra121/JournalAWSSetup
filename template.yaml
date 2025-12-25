@@ -2040,7 +2040,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
-        Format: esm
+        Format: cjs
         EntryPoints:
           - src/handlers/razorpay-webhook/app.ts
         Minify: true
