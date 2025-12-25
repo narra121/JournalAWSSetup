@@ -2,10 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
+let razorpay: Razorpay | null = null;
 
 interface CreateOrderPayload {
   amount: number;
@@ -13,10 +10,21 @@ interface CreateOrderPayload {
   notes?: Record<string, string>;
 }
 
-export const lambdaHandler = async (
+export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {
+    if (!razorpay) {
+      if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+        console.error('Missing Razorpay credentials');
+        return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Server configuration error');
+      }
+      razorpay = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+      });
+    }
+
     console.log('Creating Razorpay order', { event });
 
     // Parse request body

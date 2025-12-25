@@ -87,14 +87,46 @@ interface RazorpayWebhookPayload {
   created_at: number;
 }
 
-export const lambdaHandler = async (
+export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {
     console.log('Received Razorpay webhook', JSON.stringify(event, null, 2));
 
-    const webhookSignature = event.headers['x-razorpay-signature'] || '';
+    // Handle case-insensitive headers (API Gateway normalizes to lowercase)
+    const webhookSignature = event.headers['x-razorpay-signature'] || event.headers['X-Razorpay-Signature'] || '';
+    
+    if (!webhookSignature) {
+      console.error('Missing webhook signature header');
+      return {
+        statusCode: 400,
+        body: JSON.stringify({
+          data: null,
+          error: {
+            code: 'MISSING_SIGNATURE',
+            message: 'Missing webhook signature',
+          },
+          meta: null,
+        }),
+      };
+    }
+
     const webhookSecret = await getWebhookSecret();
+    
+    if (!webhookSecret) {
+      console.error('Missing webhook secret');
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
+          data: null,
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Server configuration error',
+          },
+          meta: null,
+        }),
+      };
+    }
 
     // Verify webhook signature
     const expectedSignature = crypto

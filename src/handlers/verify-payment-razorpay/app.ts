@@ -13,7 +13,7 @@ interface VerifyPaymentPayload {
   razorpay_signature: string;
 }
 
-export const lambdaHandler = async (
+export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {

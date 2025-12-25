@@ -4,10 +4,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
+let razorpay: Razorpay | null = null;
 
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
@@ -23,6 +20,17 @@ export const handler = async (
   console.log('Event:', JSON.stringify(event, null, 2));
 
   try {
+    if (!razorpay) {
+      if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+        console.error('Missing Razorpay credentials');
+        return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Server configuration error');
+      }
+      razorpay = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+      });
+    }
+
     // Get userId from Cognito authorizer
     const userId = event.requestContext?.authorizer?.jwt?.claims?.sub;
     if (!userId) {

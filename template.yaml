@@ -1840,6 +1840,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/create-order-razorpay/app.ts
         Minify: true
@@ -1874,6 +1875,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/get-subscription-plans/app.ts
         Minify: true
@@ -1900,6 +1902,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/create-subscription-plan-razorpay/app.ts
         Minify: true
@@ -1930,6 +1933,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/create-razorpay-subscription/app.ts
         Minify: true
@@ -1972,6 +1976,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/manage-razorpay-subscription/app.ts
         Minify: true
@@ -2001,6 +2006,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/verify-payment-razorpay/app.ts
         Minify: true
@@ -2034,6 +2040,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: esm
         EntryPoints:
           - src/handlers/razorpay-webhook/app.ts
         Minify: true

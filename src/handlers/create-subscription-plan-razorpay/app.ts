@@ -2,10 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
+let razorpay: Razorpay | null = null;
 
 /**
  * Create a Razorpay subscription plan
@@ -17,6 +14,17 @@ export const handler = async (
   console.log('Event:', JSON.stringify(event, null, 2));
 
   try {
+    if (!razorpay) {
+      if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+        console.error('Missing Razorpay credentials');
+        return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Server configuration error');
+      }
+      razorpay = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+      });
+    }
+
     const body = JSON.parse(event.body || '{}');
     const { name, amount, currency = 'INR', period, interval = 1, description } = body;
 
