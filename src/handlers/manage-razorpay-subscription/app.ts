@@ -103,7 +103,7 @@ export const handler = async (
               new UpdateCommand({
                 TableName: SUBSCRIPTIONS_TABLE,
                 Key: { userId },
-                UpdateExpression: 'SET subscriptionId = :subscriptionId, planId = :planId, #status = :status, paidCount = :paidCount, remainingCount = :remainingCount, updatedAt = :updatedAt',
+                UpdateExpression: 'SET subscriptionId = :subscriptionId, planId = :planId, #status = :status, paidCount = :paidCount, remainingCount = :remainingCount, paymentLink = :paymentLink, updatedAt = :updatedAt',
                 ExpressionAttributeNames: { '#status': 'status' },
                 ExpressionAttributeValues: {
                   ':subscriptionId': latestSubscription.id,
@@ -111,6 +111,7 @@ export const handler = async (
                   ':status': status,
                   ':paidCount': latestSubscription.paid_count || 0,
                   ':remainingCount': latestSubscription.remaining_count,
+                  ':paymentLink': latestSubscription.short_url,
                   ':updatedAt': new Date().toISOString(),
                 },
               })
@@ -128,6 +129,8 @@ export const handler = async (
               remainingCount: latestSubscription.remaining_count,
               totalCount: latestSubscription.total_count,
               authAttempts: latestSubscription.auth_attempts || 0,
+              paymentLink: latestSubscription.short_url,
+              shortUrl: latestSubscription.short_url,
               quantity: latestSubscription.quantity,
               currentStart: latestSubscription.current_start ? new Date(latestSubscription.current_start * 1000).toISOString() : null,
               currentEnd: latestSubscription.current_end ? new Date(latestSubscription.current_end * 1000).toISOString() : null,
