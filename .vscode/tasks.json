@@ -28,13 +28,13 @@
 		{
 			"label": "Deploy Dev Stack",
 			"type": "shell",
-			"command": "npm run deploy:dev",
+			"command": "bun run deploy:dev",
 			"group": "none"
 		},
 		{
 			"label": "Deploy Prod Stack",
 			"type": "shell",
-			"command": "npm run deploy:prod",
+			"command": "bun run deploy:prod",
 			"group": "none"
 		},
 		{

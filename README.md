@@ -1,80 +1,173 @@
-# Serverless Trading Journal – High-Level Flow
+# TradeFlow Backend
 
-This documentation captures a complete, programmatic AWS backend plan using Infrastructure as Code (AWS SAM), with Cognito-authenticated API Gateway + Lambda, DynamoDB, and S3. A frontend can be wired via AWS Amplify.
+Serverless trading journal API built with AWS SAM. Lambda + DynamoDB + Cognito + S3 + API Gateway.
 
-Use the phase guides for hands-on steps. Each phase is a separate, detailed markdown file.
-
-## Architecture (conceptual)
+## Architecture
 
 ```
-+----------------+      +-------------------+      +---------------------+      +------------------------+      +------------------+
-|   Web Browser  |----->|   AWS Amplify     |----->|  Amazon API Gateway |----->|     AWS Lambda         |----->| Amazon DynamoDB  |
-| (React/Vue/etc)|      | (UI & Auth Logic) |      | (Cognito Authorizer)|      | (Business Logic)       |      |   (Trades Table) |
-+----------------+      +-------------------+      +---------------------+      +------------------------+      +------------------+
-       |                        |                            |                          |                             |
-       |                        |                            |                          |   (Streams)                 |
-       +------------------------|----------------------------|--------------------------|-----------------------------+
-                                |                            |                          |                             |
-                       +--------------------+                |                      +------------------------+      +-------------------+
-                       |  Amazon Cognito    |                |                      |  updateStats Lambda    |----->|  DynamoDB         |
-                       |   (User Pools)     |                |                      |  (Triggered by Stream) |      | (TradeStats Table)|
-                       +--------------------+                |                      +------------------------+      +-------------------+
-                                                             |
-                                                     +---------------------------+      +------------------+
-                                                     | generateUploadUrl Lambda  |----->|    Amazon S3     |
-                                                     | (Presigned URL Generator) |      |  (Image Storage) |
-                                                     +---------------------------+      +------------------+
+Browser -> API Gateway (Cognito JWT) -> Lambda handlers -> DynamoDB / S3
+                                                       -> DynamoDB Streams -> UpdateStats Lambda -> TradeStats + Account Balances
+                                                       -> EventBridge (6h)  -> RebuildStats Lambda
 ```
 
-## Quick Start
+**Resources**: 47 Lambda handlers, 8 DynamoDB tables, 1 S3 bucket, Cognito User Pool, Razorpay integration, Gemini AI (text enhance + trade extraction).
 
-For detailed setup and deployment instructions, refer to:
-- **Roadmap** - Development phases: [docs/roadmap.md](docs/roadmap.md)
-- **Runbook** - Deployment procedures: [docs/runbook.md](docs/runbook.md)
-- **YAML Reference** - SAM template guide: [docs/yaml.md](docs/yaml.md)
+## Prerequisites
 
-## Documentation
+- [AWS CLI](https://aws.amazon.com/cli/) v2+
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) v1.120+
+- [Bun](https://bun.sh)
+- AWS credentials configured (`aws configure`)
+- [Razorpay](https://dashboard.razorpay.com/) account (test + live keys)
+- [Google Gemini API key](https://aistudio.google.com/apikey)
 
-### Complete Application Context
-- **Copilot Context** - Comprehensive API & UI reference: [../COPILOT_CONTEXT.md](../COPILOT_CONTEXT.md)
-- **Trades API** - Detailed trade endpoints: [docs/api/trades.md](docs/api/trades.md)
-- **Roadmap** - Feature roadmap: [docs/roadmap.md](docs/roadmap.md)
-- **Runbook** - Operational guide: [docs/runbook.md](docs/runbook.md)
+## Local Development
 
-### Migration & Updates
-- **Backend Updates Summary** - Complete changelog of new features: [BACKEND_UPDATES_SUMMARY.md](BACKEND_UPDATES_SUMMARY.md)
-- **Migration Guide** - Step-by-step upgrade instructions: [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)
+```bash
+bun install
+sam build --parallel --cached
+sam local start-api --port 3001
+```
 
-### Quick Start
+## Deploy
 
-1. **New Deployment**:
-   ```bash
-   sam build
-   sam deploy --guided
-   ```
+### Dev (automatic on push to main)
 
-2. **Check Available Endpoints**:
-   ```bash
-   sam list stack-outputs --stack-name trading-journal-backend-prod
-   ```
+```bash
+# Manual deploy
+sam build --parallel --cached
+sam deploy --stack-name tradeflow-dev --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+  --parameter-overrides StageName=tradeflow-dev ApiVersion=v1 LogRetentionDays=7 \
+  RazorpayKeyId=rzp_test_xxx RazorpayKeySecret=xxx RazorpayWebhookSecret=xxx
+```
 
-3. **Test New Features**:
-   - Accounts: `/v1/accounts`
-   - Goals & Rules: `/v1/goals`, `/v1/rules`
-   - Analytics: `/v1/analytics/hourly`, `/v1/analytics/daily-win-rate`
-   - User Profile: `/v1/user/profile`
-   - Export: `/v1/export/trades?format=csv`
+### Prod (manual trigger in GitHub Actions)
 
-## What's New
+Go to Actions -> "Deploy to Production (Manual)" -> Run workflow -> type `deploy-to-production`.
 
-### Latest Update (December 2024)
-✅ **26 new Lambda functions** supporting enhanced UI
-✅ **6 new DynamoDB tables** (Accounts, Goals, Rules, Preferences, Options, Subscriptions)
-✅ **Enhanced trade model** with `accountIds` and `brokenRuleIds`
-✅ **Analytics endpoints** for hourly, daily, symbol, and strategy analysis
-✅ **User preferences** and profile management
-✅ **Subscription** management (payment integration pending)
-✅ **Export functionality** (CSV/JSON)
+### SSM Parameters (one-time)
 
-See [BACKEND_UPDATES_SUMMARY.md](BACKEND_UPDATES_SUMMARY.md) for complete details.
+```bash
+aws ssm put-parameter --name "/tradeflow/geminiApiKey" --value "YOUR_KEY" --type SecureString --overwrite
+aws ssm put-parameter --name "/tradeflow/razorpayWebhookSecret" --value "YOUR_SECRET" --type SecureString --overwrite
+```
 
+### GitHub Secrets (for CI/CD)
+
+| Secret | Description |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | IAM access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key |
+| `GEMINI_API_KEY` | Google Gemini API key |
+| `RAZORPAY_KEY_ID_DEV` / `_PROD` | Razorpay key IDs |
+| `RAZORPAY_KEY_SECRET_DEV` / `_PROD` | Razorpay key secrets |
+| `RAZORPAY_WEBHOOK_SECRET_DEV` / `_PROD` | Razorpay webhook secrets |
+
+### Get Stack Outputs
+
+```bash
+aws cloudformation describe-stacks --stack-name tradeflow-dev --query "Stacks[0].Outputs" --output table
+```
+
+## API Endpoints
+
+All endpoints prefixed with `/v1`. Auth required unless noted.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/auth/signup` | Sign up (public) |
+| POST | `/auth/confirm-signup` | Confirm email (public) |
+| POST | `/auth/login` | Login (public) |
+| POST | `/auth/refresh` | Refresh token (public) |
+| POST | `/auth/forgot-password` | Forgot password (public) |
+| POST | `/auth/confirm-forgot-password` | Reset password (public) |
+| POST | `/trades` | Create trade(s) |
+| GET | `/trades` | List trades (paginated, filterable) |
+| PUT | `/trades/{tradeId}` | Update trade |
+| DELETE | `/trades/{tradeId}` | Delete trade |
+| POST | `/trades/bulk-delete` | Bulk delete trades |
+| POST | `/trades/extract` | Extract trades from image (AI) |
+| GET | `/images/{imageId+}` | Get trade image |
+| POST | `/enhance-text` | AI text enhancement |
+| GET | `/accounts` | List accounts |
+| POST | `/accounts` | Create account |
+| PUT | `/accounts/{accountId}` | Update account |
+| PUT | `/accounts/{accountId}/status` | Update account status |
+| DELETE | `/accounts/{accountId}` | Delete account + trades + goals |
+| GET | `/rules-goals` | Get rules and goals |
+| PUT | `/goals/{goalId}` | Update goal |
+| GET | `/rules` | List rules |
+| POST | `/rules` | Create rule |
+| PUT | `/rules/{ruleId}` | Update rule |
+| PUT | `/rules/{ruleId}/toggle` | Toggle rule |
+| DELETE | `/rules/{ruleId}` | Delete rule |
+| GET | `/analytics/hourly-stats` | Hourly performance |
+| GET | `/analytics/daily-win-rate` | Daily win rate |
+| GET | `/analytics/symbol-distribution` | Symbol breakdown |
+| GET | `/analytics/strategy-distribution` | Strategy breakdown |
+| GET | `/user/profile` | Get profile |
+| PUT | `/user/profile` | Update profile |
+| PUT | `/user/preferences` | Update preferences |
+| PUT | `/user/notifications` | Update notifications |
+| GET | `/options` | Get saved dropdown options |
+| PUT | `/options` | Update saved options |
+| GET | `/subscriptions/plans` | Get subscription plans (public) |
+| POST | `/subscriptions` | Create subscription |
+| GET/PUT/PATCH/DELETE | `/subscriptions` | Manage subscription |
+| POST | `/payments/create-order` | Create Razorpay order |
+| POST | `/payments/verify` | Verify payment |
+| POST | `/payments/webhook` | Razorpay webhook (public) |
+
+## DynamoDB Tables
+
+| Table | Keys | Purpose |
+|-------|------|---------|
+| Trades | `userId` (PK), `tradeId` (SK) | Trade records, DynamoDB Streams enabled |
+| TradeStats | `userId` (PK) | Aggregated user statistics |
+| Accounts | `userId` (PK), `accountId` (SK) | Trading accounts with balance tracking |
+| Goals | `userId` (PK), `goalId` (SK) | Trading goals |
+| Rules | `userId` (PK), `ruleId` (SK) | Trading rules |
+| UserPreferences | `userId` (PK) | User settings |
+| SavedOptions | `userId` (PK) | Saved dropdown options |
+| Subscriptions | `userId` (PK) | Subscription records |
+| AuthRateLimit | `key` (PK) | Rate limiting with TTL |
+
+## Project Structure
+
+```
+src/
+  handlers/       # 47 Lambda handlers (one per endpoint)
+  shared/         # Shared utilities (dynamo, s3, validation, logger)
+  schemas/        # JSON Schema validation files
+template.yaml     # SAM infrastructure-as-code
+scripts/          # Subscription plan initialization
+events/           # Sample Lambda test events
+deploy-*.ps1      # PowerShell deployment scripts
+```
+
+## Useful Commands
+
+```bash
+bun run build          # sam build
+bun run validate       # sam validate
+bun run logs:dev       # Tail Lambda logs
+bun run status:dev     # Stack status
+bun run outputs:dev    # Stack outputs
+bun run url:dev        # API URL
+```
+
+## Razorpay Webhook Setup
+
+After deployment, configure the webhook in [Razorpay Dashboard](https://dashboard.razorpay.com/):
+
+1. Go to Settings -> Webhooks -> Add New
+2. URL: `{ApiBaseUrl}/payments/webhook`
+3. Events: `subscription.activated`, `subscription.charged`, `subscription.completed`, `subscription.cancelled`, `subscription.paused`, `subscription.resumed`, `payment.captured`
+4. Secret: Use the webhook secret stored in SSM
+
+## Further Reference
+
+- [docs/openapi.yaml](docs/openapi.yaml) - OpenAPI 3.0 spec
+- [docs/yaml.md](docs/yaml.md) - SAM template reference
+- [docs/runbook.md](docs/runbook.md) - Operations runbook
+- [docs/roadmap.md](docs/roadmap.md) - Feature roadmap

@@ -128,10 +128,11 @@ async function getDailyWinRate(userId: string) {
   return {
     dailyWinRate: dailyData,
     totalDays: dailyData.length,
-    overallWinRate:
-      dailyData.reduce((sum, day) => sum + day.wins, 0) /
-      dailyData.reduce((sum, day) => sum + day.count, 0) *
-      100,
+    overallWinRate: (() => {
+      const totalCount = dailyData.reduce((sum, day) => sum + day.count, 0);
+      if (totalCount === 0) return 0;
+      return (dailyData.reduce((sum, day) => sum + day.wins, 0) / totalCount) * 100;
+    })(),
   };
 }
 

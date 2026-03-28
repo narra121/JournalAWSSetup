@@ -10,8 +10,8 @@
     "cleanup:prod": "aws cloudformation delete-stack --stack-name trading-journal-backend-prod",
     "wait:dev": "aws cloudformation wait stack-delete-complete --stack-name trading-journal-backend-dev",
     "wait:prod": "aws cloudformation wait stack-delete-complete --stack-name trading-journal-backend-prod",
-    "redeploy:dev": "npm run cleanup:dev && npm run wait:dev && npm run deploy:dev",
-    "redeploy:prod": "npm run cleanup:prod && npm run wait:prod && npm run deploy:prod",
+    "redeploy:dev": "bun run cleanup:dev && bun run wait:dev && bun run deploy:dev",
+    "redeploy:prod": "bun run cleanup:prod && bun run wait:prod && bun run deploy:prod",
     "status:dev": "aws cloudformation describe-stacks --stack-name trading-journal-backend-dev --query \"Stacks[0].{StackStatus:StackStatus,LastUpdated:LastUpdatedTime}\"",
     "status:prod": "aws cloudformation describe-stacks --stack-name trading-journal-backend-prod --query \"Stacks[0].{StackStatus:StackStatus,LastUpdated:LastUpdatedTime}\"",
     "outputs:dev": "aws cloudformation describe-stacks --stack-name trading-journal-backend-dev --query \"Stacks[0].Outputs\"",
@@ -20,7 +20,7 @@
     "url:prod": "aws cloudformation describe-stacks --stack-name trading-journal-backend-prod --query \"Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue\" --output text",
     "logs:dev": "sam logs --stack-name trading-journal-backend-dev --tail",
     "logs:prod": "sam logs --stack-name trading-journal-backend-prod --tail",
-    "build": "sam build",
+    "build": "sam build --parallel --cached",
     "validate": "sam validate",
     "local": "sam local start-api --port 3001"
   },
@@ -41,6 +41,7 @@
   "devDependencies": {
     "@types/aws-lambda": "^8.10.134",
     "@types/node": "^20.11.0",
+    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
     "esbuild": "^0.21.5",

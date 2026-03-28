@@ -55,7 +55,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ReturnValues: 'ALL_NEW'
     }));
 
-    log.info('rule toggled', { ruleId, enabled: !currentEnabled });
+    log.info('rule toggled', { ruleId, completed: newCompleted });
     
     return envelope({ statusCode: 200, data: { rule: result.Attributes } });
   } catch (error: any) {

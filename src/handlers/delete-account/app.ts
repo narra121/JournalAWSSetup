@@ -8,7 +8,6 @@ import { removeImagesForTrade } from '../../shared/images';
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
-const RULES_TABLE = process.env.RULES_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rc: any = event.requestContext as any;
@@ -153,74 +152,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
-    // Delete all rules associated with this user (rules are not account-specific, but delete on account deletion)
-    log.info('fetching rules for user', { userId });
-    
-    let rulesToDelete: { ruleId: string }[] = [];
-    lastEvaluatedKey = undefined;
-    
-    do {
-      const queryResult = await ddb.send(new QueryCommand({
-        TableName: RULES_TABLE,
-        KeyConditionExpression: 'userId = :userId',
-        ExpressionAttributeValues: {
-          ':userId': userId,
-        },
-        ProjectionExpression: 'ruleId',
-        ExclusiveStartKey: lastEvaluatedKey,
-      }));
-      
-      if (queryResult.Items && queryResult.Items.length > 0) {
-        rulesToDelete.push(...queryResult.Items as { ruleId: string }[]);
-      }
-      
-      lastEvaluatedKey = queryResult.LastEvaluatedKey;
-    } while (lastEvaluatedKey);
-    
-    log.info('found rules to delete', { count: rulesToDelete.length });
-    
-    // Delete rules in batches of 25
-    if (rulesToDelete.length > 0) {
-      const batchSize = 25;
-      for (let i = 0; i < rulesToDelete.length; i += batchSize) {
-        const batch = rulesToDelete.slice(i, i + batchSize);
-        
-        await ddb.send(new BatchWriteCommand({
-          RequestItems: {
-            [RULES_TABLE]: batch.map(rule => ({
-              DeleteRequest: {
-                Key: { userId, ruleId: rule.ruleId }
-              }
-            }))
-          }
-        }));
-        
-        log.info('deleted rule batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
-      }
-    }
-
     // Delete the account
     await ddb.send(new DeleteCommand({
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId }
     }));
 
-    log.info('account and all associated data deleted', { 
-      accountId, 
+    log.info('account and all associated data deleted', {
+      accountId,
       tradesDeleted: tradesToDelete.length,
       goalsDeleted: goalsToDelete.length,
-      rulesDeleted: rulesToDelete.length
     });
-    
-    return envelope({ 
-      statusCode: 200, 
+
+    return envelope({
+      statusCode: 200,
       message: 'Account deleted successfully',
-      data: { 
-        account: accountToDelete, // Return deleted account for frontend cache optimization
+      data: {
+        account: accountToDelete,
         tradesDeleted: tradesToDelete.length,
         goalsDeleted: goalsToDelete.length,
-        rulesDeleted: rulesToDelete.length
-      } 
+      }
     });
   } catch (error: any) {
     log.error('failed to delete account', { error: error.message });

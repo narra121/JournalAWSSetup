@@ -414,42 +414,6 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: true
-  GetTradeFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/get-trade/app.handler
-      AutoPublishAlias: live
-      DeploymentPreference:
-        Type: AllAtOnce
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:ListBucket
-            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:GetObject
-            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/trades/{tradeId}
-            Method: GET
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/get-trade/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
   ListTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -607,31 +571,6 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: true
-  GenerateUploadUrlFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/generate-upload-url/app.handler
-      Policies:
-        - S3WritePolicy:
-            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: "/upload-url"
-            Method: GET
-            Auth:
-              Authorizer: CognitoAuthorizer
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/generate-upload-url/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
   GetImageFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -668,6 +607,8 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt StatsDLQ.Arn
@@ -714,33 +655,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
-  GetStatsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/get-stats/app.handler
-      AutoPublishAlias: live
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/stats
-            Method: GET
-            Auth:
-              Authorizer: CognitoAuthorizer
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/get-stats/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
   RebuildAllStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -753,6 +667,8 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
       Events:
         ScheduledEvent:
           Type: Schedule
@@ -988,154 +904,6 @@ Resources:
         Target: es2020
         Sourcemap: true
 
-  AuthDeleteAccountFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/auth-delete-account/app.handler
-      AutoPublishAlias: live
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:ListBucket
-            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:DeleteObject
-              - s3:DeleteObjectVersion
-              - s3:GetObject
-            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
-        - Statement:
-            Effect: Allow
-            Action:
-              - cognito-idp:AdminDeleteUser
-            Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/auth/account
-            Method: DELETE
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/auth-delete-account/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
-  AuthExportAccountFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/auth-export-account/app.handler
-      AutoPublishAlias: live
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/auth/export
-            Method: GET
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/auth-export-account/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
-  AuthGlobalSignOutFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/auth-global-signout/app.handler
-      AutoPublishAlias: live
-      Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - cognito-idp:AdminUserGlobalSignOut
-            Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/auth/logout-all
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/auth-global-signout/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
-  OpenApiSpecFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/openapi-spec/app.handler
-      AutoPublishAlias: live
-      Description: Serve OpenAPI specification (public)
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/openapi.yaml
-            Method: GET
-            Auth:
-              Authorizer: NONE
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/openapi-spec/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
-  OpenApiDocsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/openapi-docs/app.handler
-      AutoPublishAlias: live
-      Description: Serve Swagger UI HTML (public)
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/docs
-            Method: GET
-            Auth:
-              Authorizer: NONE
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/openapi-docs/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
   ExtractTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1368,40 +1136,6 @@ Resources:
         Sourcemap: true
 
   # Goals and Rules Functions
-  ListGoalsFunction:
-    Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/list-goals/app.handler
-      AutoPublishAlias: live
-      Environment:
-        Variables:
-          GOALS_TABLE: !Ref GoalsTable
-          ACCOUNTS_TABLE: !Ref AccountsTable
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref GoalsTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref AccountsTable
-        - DynamoDBWritePolicy:
-            TableName: !Ref GoalsTable
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/goals
-            Method: GET
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/list-goals/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
   UpdateGoalFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -1761,35 +1495,6 @@ Resources:
         Target: es2020
         Sourcemap: true
 
-  AddSavedOptionFunction:
-    Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/add-saved-option/app.handler
-      AutoPublishAlias: live
-      Environment:
-        Variables:
-          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref SavedOptionsTable
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/options/{category}
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/add-saved-option/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
   UpdateSavedOptionsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -1878,33 +1583,6 @@ Resources:
         Format: cjs
         EntryPoints:
           - src/handlers/get-subscription-plans/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
-  CreateSubscriptionPlanRazorpayFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/create-subscription-plan-razorpay/app.handler
-      AutoPublishAlias: live
-      Environment:
-        Variables:
-          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/subscriptions/plans
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        Format: cjs
-        EntryPoints:
-          - src/handlers/create-subscription-plan-razorpay/app.ts
         Minify: true
         Target: es2020
         Sourcemap: true
@@ -2057,33 +1735,6 @@ Resources:
         Sourcemap: true
 
   # Export Function
-  ExportTradesFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/export-trades/app.handler
-      AutoPublishAlias: live
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/export/trades
-            Method: GET
-            Auth:
-              Authorizer: CognitoAuthorizer
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/export-trades/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
-
 Outputs:
   ApiBaseUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"

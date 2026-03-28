@@ -23,10 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -36,11 +33,18 @@ jobs:
         with:
           path: |
             **/node_modules
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/package.json') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lockb', '**/package.json') }}
           restore-keys: |
-            npm-${{ runner.os }}-
+            bun-${{ runner.os }}-
+      - name: Cache SAM build
+        uses: actions/cache@v4
+        with:
+          path: .aws-sam/cache
+          key: sam-build-${{ runner.os }}-${{ hashFiles('src/**/*.ts', 'template.yaml') }}
+          restore-keys: |
+            sam-build-${{ runner.os }}-
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
       - name: Validate SAM template
         run: sam validate --region $AWS_REGION
       - name: Configure AWS credentials
@@ -52,11 +56,11 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
       - name: Install esbuild globally for SAM
-        run: npm install -g esbuild@latest
+        run: bun install -g esbuild@latest
       - name: Ensure esbuild present
-        run: npx esbuild --version
+        run: bunx esbuild --version
       - name: SAM Build
-        run: sam build
+        run: sam build --parallel --cached
       - name: Upload SAM build artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -77,7 +77,7 @@ Legend: `[x]` = Complete / shipped, `[~]` = Partial / needs refinement, `[ ]` = 
 - [ ] Load / Soak Tests (baseline latency, error rate under load)
 - [ ] Mutation Testing / Coverage Thresholds
 - [ ] Pre-Commit Hooks (lint, typecheck, tests)
-- [ ] Security Dependency Scans in CI (npm audit, osv scanner)
+- [ ] Security Dependency Scans in CI (bun audit, osv scanner)
 
 ## 9. Deployment & DevOps
 - [x] SAM Infrastructure as Code

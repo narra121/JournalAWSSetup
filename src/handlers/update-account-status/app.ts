@@ -73,7 +73,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ReturnValues: 'ALL_NEW'
     }));
 
-    log.info('account status updated', { accountId, status });
+    log.info('account status updated', { accountId, status: data.status });
     
     return envelope({ statusCode: 200, data: { account: result.Attributes }, message: 'Account status updated' });
   } catch (error: any) {
