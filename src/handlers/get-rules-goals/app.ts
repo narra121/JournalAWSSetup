@@ -5,6 +5,7 @@ import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { v4 as uuid } from 'uuid';
 import { batchWritePutAll } from '../../shared/batchWrite';
+import { getUserId } from '../../shared/auth';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -43,9 +44,7 @@ async function ensureDefaultRules(userId: string, existingRules: any[]): Promise
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
   log.info('get-rules-goals invoked');

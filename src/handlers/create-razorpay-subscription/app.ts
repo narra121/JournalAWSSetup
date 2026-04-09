@@ -3,6 +3,7 @@ import Razorpay from 'razorpay';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
 
 let razorpay: Razorpay | null = null;
 
@@ -33,7 +34,7 @@ export const handler = async (
     }
 
     // Get userId from Cognito authorizer
-    const userId = event.requestContext?.authorizer?.jwt?.claims?.sub;
+    const userId = getUserId(event);
     if (!userId) {
       return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }

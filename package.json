@@ -22,7 +22,10 @@
     "logs:prod": "sam logs --stack-name trading-journal-backend-prod --tail",
     "build": "sam build --parallel --cached",
     "validate": "sam validate",
-    "local": "sam local start-api --port 3001"
+    "local": "sam local start-api --port 3001 --env-vars env-local.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.634.0",
@@ -44,6 +47,8 @@
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
+    "aws-sdk-client-mock": "^4.1.0",
+    "aws-sdk-client-mock-jest": "^4.1.0",
     "esbuild": "^0.21.5",
     "eslint": "^8.57.0",
     "ts-node": "^10.9.2",

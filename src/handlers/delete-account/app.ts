@@ -4,15 +4,14 @@ import { DeleteCommand, GetCommand, QueryCommand, BatchWriteCommand } from '@aws
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { removeImagesForTrade } from '../../shared/images';
+import { getUserId } from '../../shared/auth';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
   const accountId = event.pathParameters?.accountId;

@@ -6,14 +6,14 @@ import { S3Client, PutObjectCommand, DeleteObjectsCommand, GetObjectCommand } fr
 import { errorFromException, envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { v4 as uuid } from 'uuid';
 import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
+import { getUserId } from '../../shared/auth';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const userId = rc?.authorizer?.jwt?.claims?.sub;
+  const userId = getUserId(event);
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
   try {

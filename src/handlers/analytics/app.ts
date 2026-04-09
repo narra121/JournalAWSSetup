@@ -3,17 +3,20 @@ import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { makeLogger } from '../../shared/logger';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 type AnalyticsType = 'hourly' | 'daily-win-rate' | 'symbol-distribution' | 'strategy-distribution';
 
 export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const userId = event.requestContext.authorizer?.jwt.claims.sub as string;
+  const userId = getUserId(event);
   const type = (event.queryStringParameters?.type || 'hourly') as AnalyticsType;
   const logger = makeLogger({ requestId: event.requestContext.requestId, userId });
-  
-  console.log('Analytics request', { userId, type });
+
+  if (!userId) {
+    return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
+  }
 
   try {
     let data: any;

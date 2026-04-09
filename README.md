@@ -23,10 +23,45 @@ Browser -> API Gateway (Cognito JWT) -> Lambda handlers -> DynamoDB / S3
 
 ## Local Development
 
-```bash
+### Prerequisites
+
+1. **Docker Desktop** installed and running ([download](https://www.docker.com/products/docker-desktop/))
+2. **AWS CLI** configured with valid credentials:
+   ```powershell
+   aws configure
+   # Access Key ID, Secret Access Key, region: us-east-1
+   aws sts get-caller-identity   # verify it works
+   ```
+3. **SAM CLI** installed ([install guide](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html))
+
+### Setup (one-time)
+
+```powershell
 bun install
-sam build --parallel --cached
-sam local start-api --port 3001
+```
+
+Edit `env-local.json` with your deployed dev resource names. Get them from:
+```powershell
+aws cloudformation describe-stacks --stack-name tradeflow-dev --query "Stacks[0].Outputs" --output table
+```
+
+### Run backend locally
+
+```powershell
+sam build --parallel --cached        # first build is slow (~5-10 min on Windows)
+sam local start-api --port 3001 --env-vars env-local.json
+```
+
+API available at `http://127.0.0.1:3001`. Lambda code runs in Docker containers locally but connects to **real AWS services** (DynamoDB, S3, Cognito).
+
+After code changes, re-run `sam build` before restarting.
+
+### Run with frontend
+
+In a second terminal:
+```powershell
+cd ..\TradeFlow
+bun run dev:local                    # http://localhost:8080, API proxied to localhost:3001
 ```
 
 ## Deploy

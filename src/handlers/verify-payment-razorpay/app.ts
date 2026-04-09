@@ -5,6 +5,8 @@ import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
+import { getUserId } from '../../shared/auth';
+
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 
 interface VerifyPaymentPayload {
@@ -43,7 +45,7 @@ export const handler = async (
     }
 
     // Get user ID from authorizer
-    const userId = event.requestContext.authorizer?.claims?.sub;
+    const userId = getUserId(event);
     if (!userId) {
       return {
         statusCode: 401,

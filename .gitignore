@@ -1,8 +1,14 @@
 node_modules
+env-local.json
 test-extract-local.js
 
 # Build output
 .aws-sam/
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
 
 # GitHub secrets configuration
 set-github-secrets.ps1

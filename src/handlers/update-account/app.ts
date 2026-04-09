@@ -3,6 +3,7 @@ import { ddb } from '../../shared/dynamo';
 import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { getUserId } from '../../shared/auth';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
@@ -21,9 +22,7 @@ const accountUpdateSchema = {
 };
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
   const accountId = event.pathParameters?.accountId;

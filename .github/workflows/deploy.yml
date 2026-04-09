@@ -1,11 +1,14 @@
 name: Deploy AWS SAM Application
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
     branches:
       - main
 
-# Prevent overlapping deploys to same branchs
+# Prevent overlapping deploys to same branch
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
@@ -21,6 +24,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

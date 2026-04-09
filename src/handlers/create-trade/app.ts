@@ -7,6 +7,7 @@ import { normalizePotentialKey } from '../../shared/s3';
 import { tradeCreateSchema } from '../../schemas';
 import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { getUserId } from '../../shared/auth';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -14,9 +15,7 @@ const s3 = new S3Client({});
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    const rc: any = event.requestContext as any;
-    const claims = rc?.authorizer?.jwt?.claims || {};
-    const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   log.info('create-trade invoked', { hasAuth: !!userId, isBulk: false });
   if (!userId) { log.warn('unauthorized request'); return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized'); }

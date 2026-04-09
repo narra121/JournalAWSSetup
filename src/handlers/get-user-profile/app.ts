@@ -4,14 +4,13 @@ import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProviderClient, GetUserCommand, UpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { getUserId } from '../../shared/auth';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 const cognito = new CognitoIdentityProviderClient({});
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const accessToken = event.headers?.authorization || event.headers?.Authorization || '';
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -24,8 +23,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   try {
     // Get user info from Cognito
-    let userName = claims.email || '';
-    let userEmail = claims.email || '';
+    let userName = '';
+    let userEmail = '';
     
     try {
       if (accessToken) {

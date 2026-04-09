@@ -3,13 +3,12 @@ import { ddb } from '../../shared/dynamo';
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { getUserId } from '../../shared/auth';
 
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
   log.info('get-saved-options invoked');

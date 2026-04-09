@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { batchWritePutAll } from '../../shared/batchWrite';
+import { getUserId } from '../../shared/auth';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -73,9 +74,7 @@ const accountSchema = {
 };
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const rc: any = event.requestContext as any;
-  const claims = rc?.authorizer?.jwt?.claims || {};
-  const userId = claims.sub;
+  const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
   log.info('create-account invoked');

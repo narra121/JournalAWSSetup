@@ -5,13 +5,14 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { makeLogger } from '../../shared/logger';
 import { normalizePotentialKey } from '../../shared/s3';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  const userId = (event.requestContext as any)?.authorizer?.jwt?.claims?.sub;
+  const userId = getUserId(event);
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
   try {

@@ -1,6 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Razorpay from 'razorpay';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
 
 let razorpay: Razorpay | null = null;
 
@@ -37,7 +38,7 @@ export const handler = async (
     }
 
     // Get user ID from authorizer
-    const userId = event.requestContext.authorizer?.claims?.sub;
+    const userId = getUserId(event);
     if (!userId) {
       return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
     }
