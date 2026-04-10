@@ -181,4 +181,118 @@ describe('update-goal handler', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
+
+  // ── Additional coverage ─────────────────────────────────────
+
+  it('returns 401 when authorization token is malformed', async () => {
+    const event = makeEvent('goal-1', { target: 10000 });
+    event.headers = { authorization: 'Bearer not-a-jwt' };
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('updates title field successfully', async () => {
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingGoal, title: 'New title', updatedAt: '2024-06-16T00:00:00Z' },
+    });
+
+    const res = await handler(makeEvent('goal-1', { title: 'New title' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.goal.title).toBe('New title');
+  });
+
+  it('updates description field successfully', async () => {
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingGoal, description: 'Updated desc', updatedAt: '2024-06-16T00:00:00Z' },
+    });
+
+    const res = await handler(makeEvent('goal-1', { description: 'Updated desc' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.goal.description).toBe('Updated desc');
+  });
+
+  it('updates period field successfully', async () => {
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingGoal, period: 'weekly', updatedAt: '2024-06-16T00:00:00Z' },
+    });
+
+    const res = await handler(makeEvent('goal-1', { period: 'weekly' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.goal.period).toBe('weekly');
+  });
+
+  it('updates multiple allowed fields at once', async () => {
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingGoal, title: 'Big Goal', target: 20000, period: 'yearly', updatedAt: '2024-06-16T00:00:00Z' },
+    });
+
+    const res = await handler(makeEvent('goal-1', { title: 'Big Goal', target: 20000, period: 'yearly' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.goal.title).toBe('Big Goal');
+    expect(body.data.goal.target).toBe(20000);
+    expect(body.data.goal.period).toBe('yearly');
+  });
+
+  it('sends correct Key to GetCommand and UpdateCommand', async () => {
+    await handler(makeEvent('goal-1', { target: 8000 }), {} as any, () => {});
+
+    const getCalls = ddbMock.commandCalls(GetCommand);
+    expect(getCalls).toHaveLength(1);
+    expect(getCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', goalId: 'goal-1' });
+
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', goalId: 'goal-1' });
+  });
+
+  it('returns success message on update', async () => {
+    const res = await handler(makeEvent('goal-1', { target: 10000 }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Goal updated successfully');
+  });
+
+  it('returns 500 when DynamoDB throws ProvisionedThroughputExceededException on Get', async () => {
+    const awsError = new Error('Throughput exceeded');
+    awsError.name = 'ProvisionedThroughputExceededException';
+    ddbMock.on(GetCommand).rejects(awsError);
+
+    const res = await handler(makeEvent('goal-1', { target: 10000 }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('does not call UpdateCommand when goal is not found', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    await handler(makeEvent('nonexistent', { target: 10000 }), {} as any, () => {});
+
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('returns 400 when body is empty string', async () => {
+    const event = makeEvent('goal-1', { target: 10000 });
+    event.body = '';
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
 });

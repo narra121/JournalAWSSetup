@@ -128,4 +128,96 @@ describe('cancel-subscription handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── Already cancelled ──────────────────────────────────────
+
+  it('cancels an already-cancelled subscription (handler does not guard against re-cancel)', async () => {
+    const cancelledSub = { ...existingSubscription, status: 'cancelled' };
+    ddbMock.on(GetCommand).resolves({ Item: cancelledSub });
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...cancelledSub, updatedAt: '2024-12-17T00:00:00.000Z' },
+    });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.subscription.status).toBe('cancelled');
+  });
+
+  // ── Auth edge cases ────────────────────────────────────────
+
+  it('returns 401 when token is malformed (no sub claim)', async () => {
+    const badHeader = btoa(JSON.stringify({ alg: 'RS256' }));
+    const badPayload = btoa(JSON.stringify({ iss: 'bad' }));
+    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when authorization header has empty Bearer token', async () => {
+    const event = makeEvent({ headers: { authorization: 'Bearer ' } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Response shape ─────────────────────────────────────────
+
+  it('response body contains message "Subscription cancelled"', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingSubscription });
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingSubscription, status: 'cancelled', updatedAt: '2024-12-16T00:00:00.000Z' },
+    });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Subscription cancelled');
+  });
+
+  it('returns 404 with correct error code when subscription is missing', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Subscription not found');
+  });
+
+  // ── DynamoDB conditional failures ──────────────────────────
+
+  it('returns 500 when DynamoDB GetCommand returns network error', async () => {
+    const networkError = new Error('Network error');
+    (networkError as any).name = 'TimeoutError';
+    ddbMock.on(GetCommand).rejects(networkError);
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+    expect(body.message).toBe('Failed to cancel subscription');
+  });
+
+  it('returns subscription with updatedAt timestamp after cancellation', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingSubscription });
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...existingSubscription, status: 'cancelled', updatedAt: '2024-12-20T10:30:00.000Z' },
+    });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.subscription.updatedAt).toBe('2024-12-20T10:30:00.000Z');
+    expect(body.data.subscription.updatedAt).not.toBe(existingSubscription.updatedAt);
+  });
 });

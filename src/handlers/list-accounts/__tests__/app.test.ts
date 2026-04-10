@@ -126,4 +126,119 @@ describe('list-accounts handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  it('returns 500 with correct message when DynamoDB query fails', async () => {
+    ddbMock.on(QueryCommand).rejects(new Error('Throughput exceeded'));
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Failed to retrieve accounts');
+  });
+
+  // ── Auth edge cases ────────────────────────────────────────
+
+  it('returns 401 when token is malformed (no sub claim)', async () => {
+    const badHeader = btoa(JSON.stringify({ alg: 'RS256' }));
+    const badPayload = btoa(JSON.stringify({ iss: 'bad' }));
+    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Balance calculations ───────────────────────────────────
+
+  it('handles accounts with zero balance and zero initialBalance', async () => {
+    const items = [
+      { userId: 'user-1', accountId: 'acc-1', balance: 0, initialBalance: 0 },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.totalBalance).toBe(0);
+    expect(body.data.totalPnl).toBe(0);
+  });
+
+  it('handles accounts with missing balance and initialBalance fields', async () => {
+    const items = [
+      { userId: 'user-1', accountId: 'acc-1', name: 'Empty Account' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // balance||0 = 0, initialBalance||0 = 0 => pnl = 0
+    expect(body.data.totalBalance).toBe(0);
+    expect(body.data.totalPnl).toBe(0);
+    expect(body.data.accounts).toHaveLength(1);
+  });
+
+  it('handles accounts with negative PnL (loss exceeds initial balance)', async () => {
+    const items = [
+      { userId: 'user-1', accountId: 'acc-1', balance: 2000, initialBalance: 10000 },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.totalBalance).toBe(2000);
+    expect(body.data.totalPnl).toBe(-8000);
+  });
+
+  // ── Multiple accounts with different statuses ──────────────
+
+  it('returns accounts with different statuses (active, breached, passed)', async () => {
+    const items = [
+      { userId: 'user-1', accountId: 'acc-1', name: 'Active', status: 'active', balance: 12000, initialBalance: 10000 },
+      { userId: 'user-1', accountId: 'acc-2', name: 'Breached', status: 'breached', balance: 4000, initialBalance: 10000 },
+      { userId: 'user-1', accountId: 'acc-3', name: 'Passed', status: 'passed', balance: 15000, initialBalance: 10000 },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.accounts).toHaveLength(3);
+    expect(body.data.accounts[0].status).toBe('active');
+    expect(body.data.accounts[1].status).toBe('breached');
+    expect(body.data.accounts[2].status).toBe('passed');
+    expect(body.data.totalBalance).toBe(31000);
+    expect(body.data.totalPnl).toBe(1000); // 2000 - 6000 + 5000
+  });
+
+  // ── Response shape ─────────────────────────────────────────
+
+  it('response body contains success true and message "Accounts retrieved"', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.message).toBe('Accounts retrieved');
+  });
+
+  it('handles DynamoDB returning undefined Items (treated as empty)', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: undefined });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.accounts).toEqual([]);
+    expect(body.data.totalBalance).toBe(0);
+    expect(body.data.totalPnl).toBe(0);
+  });
 });

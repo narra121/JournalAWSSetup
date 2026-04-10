@@ -44,8 +44,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.info('Filter settings', { shouldFilterByAccount, accountId });
     
     const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
-    const nextToken = query.nextToken ? Buffer.from(query.nextToken, 'base64').toString('utf-8') : undefined;
-    let exclusiveStartKey = nextToken ? JSON.parse(nextToken) : undefined;
+    const cursor = query.cursor || query.nextToken;
+    let exclusiveStartKey: Record<string, any> | undefined;
+    if (cursor) {
+      try {
+        exclusiveStartKey = JSON.parse(Buffer.from(cursor, 'base64').toString());
+      } catch {
+        log.warn('Invalid cursor format');
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid cursor format');
+      }
+    }
 
     let command;
     if (startDate && endDate) {
@@ -122,9 +130,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         }
       }));
     }
-    const newNextToken = result.LastEvaluatedKey ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') : undefined;
-  log.info('Trades listed', { count: items.length, hasMore: !!newNextToken });
-  return envelope({ statusCode: 200, data: { trades: items, nextToken: newNextToken }, message: 'Trades retrieved' });
+    const nextCursor = result.LastEvaluatedKey
+      ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64')
+      : null;
+    const hasMore = !!result.LastEvaluatedKey;
+
+    log.info('Trades listed', { count: items.length, hasMore });
+    return envelope({
+      statusCode: 200,
+      data: {
+        trades: items,
+        pagination: {
+          nextCursor,
+          hasMore,
+          limit,
+        },
+        // Keep nextToken for backward compatibility
+        nextToken: nextCursor ?? undefined,
+      },
+      message: 'Trades retrieved',
+    });
   } catch (e) {
   log.error('list-trades failed', { error: (e as any)?.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error');

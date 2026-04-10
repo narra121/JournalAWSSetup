@@ -129,4 +129,97 @@ describe('update-user-profile handler', () => {
     const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(0);
   });
+
+  // ── Auth edge cases ─────────────────────────────────────────
+
+  it('returns 401 when authorization header has invalid JWT', async () => {
+    const event = makeEvent({ name: 'New Name' });
+    event.headers = { authorization: 'Bearer not.a.valid.jwt' };
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Name / email updates individually ───────────────────────
+
+  it('updates only name in Cognito when only name provided', async () => {
+    const res = await handler(makeEvent({ name: 'Only Name' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(1);
+    const attrs = cognitoCalls[0].args[0].input.UserAttributes;
+    expect(attrs).toHaveLength(1);
+    expect(attrs![0].Name).toBe('name');
+    expect(attrs![0].Value).toBe('Only Name');
+  });
+
+  it('updates only email in Cognito when only email provided', async () => {
+    const res = await handler(makeEvent({ email: 'newemail@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(1);
+    const attrs = cognitoCalls[0].args[0].input.UserAttributes;
+    expect(attrs).toHaveLength(1);
+    expect(attrs![0].Name).toBe('email');
+    expect(attrs![0].Value).toBe('newemail@example.com');
+  });
+
+  // ── Special characters / long values ────────────────────────
+
+  it('handles special characters in name', async () => {
+    const specialName = "O'Brien-Smith Jr. III";
+    const res = await handler(makeEvent({ name: specialName }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(1);
+    expect(cognitoCalls[0].args[0].input.UserAttributes![0].Value).toBe(specialName);
+  });
+
+  it('handles unicode characters in name', async () => {
+    const unicodeName = 'Tester';
+    const res = await handler(makeEvent({ name: unicodeName }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+  });
+
+  it('handles very long name by passing it to Cognito', async () => {
+    const longName = 'A'.repeat(500);
+    const res = await handler(makeEvent({ name: longName }), {} as any, () => {}) as any;
+
+    // Handler passes it to Cognito which would reject or accept
+    expect(res.statusCode).toBe(200);
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(1);
+    expect(cognitoCalls[0].args[0].input.UserAttributes![0].Value).toBe(longName);
+  });
+
+  // ── Empty object body ───────────────────────────────────────
+
+  it('handles empty object body gracefully', async () => {
+    const res = await handler(makeEvent({}), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // No Cognito calls since no name or email
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(0);
+  });
+
+  it('strips Bearer prefix from access token before sending to Cognito', async () => {
+    const res = await handler(makeEvent({ name: 'Test' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    expect(cognitoCalls).toHaveLength(1);
+    const accessToken = cognitoCalls[0].args[0].input.AccessToken;
+    expect(accessToken).not.toContain('Bearer');
+  });
 });

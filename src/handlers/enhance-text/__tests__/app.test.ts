@@ -176,4 +176,227 @@ describe('enhance-text handler', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
+
+  // ── Very long input text ───────────────────────────────────
+
+  it('handles very long input text (>10000 chars) without crashing', async () => {
+    const longText = 'A'.repeat(15000);
+    mockFetchSuccess('Enhanced version of a long text.');
+
+    const res = await handler(makeEvent({ text: longText }), {} as any) as any;
+
+    // Should either succeed (forward to API) or reject with validation error
+    expect([200, 400, 502]).toContain(res.statusCode);
+    const body = JSON.parse(res.body);
+    expect(body).toBeDefined();
+  });
+
+  it('handles extremely long input text (>100000 chars) without crashing', async () => {
+    const veryLongText = 'B'.repeat(100000);
+    mockFetchSuccess('Enhanced version.');
+
+    const res = await handler(makeEvent({ text: veryLongText }), {} as any) as any;
+
+    // Must not crash; should either succeed or return a controlled error
+    expect([200, 400, 413, 500, 502]).toContain(res.statusCode);
+    const body = JSON.parse(res.body);
+    expect(body).toBeDefined();
+  });
+
+  // ── Input with HTML/script tags ────────────────────────────
+
+  it('handles input with <script> tags safely', async () => {
+    const xssText = '<script>alert("xss")</script> I traded well today';
+    mockFetchSuccess('Enhanced: I traded well today.');
+
+    const res = await handler(makeEvent({ text: xssText }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // Verify the text was forwarded to the API (check fetch was called with the text)
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchCallBody.messages[1].content).toBe(xssText);
+  });
+
+  it('handles input with HTML event handlers safely', async () => {
+    const xssText = '<img src=x onerror=alert(1)> Good trade';
+    mockFetchSuccess('Enhanced: Good trade.');
+
+    const res = await handler(makeEvent({ text: xssText }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.enhancedText).toBeDefined();
+  });
+
+  // ── OpenRouter API returns malformed JSON ──────────────────
+
+  it('returns 500 when OpenRouter API returns malformed JSON', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); },
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  // ── OpenRouter API returns empty/null response structures ──
+
+  it('returns 502 when AI response has no choices array', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 502 when AI response has empty choices array', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [] }),
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 502 when AI response choice has null message', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: null }] }),
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 502 when AI response content is whitespace-only', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '   \n\t  ' } }],
+      }),
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    // The handler trims the content — whitespace-only becomes empty string
+    expect(res.statusCode).toBe(502);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('BadGateway');
+  });
+
+  // ── Missing text field ─────────────────────────────────────
+
+  it('returns 400 when text field is null', async () => {
+    const res = await handler(makeEvent({ text: null }), {} as any) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 400 when text field is a number', async () => {
+    const res = await handler(makeEvent({ text: 12345 }), {} as any) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 400 when text field is an object', async () => {
+    const res = await handler(makeEvent({ text: { nested: 'value' } }), {} as any) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 400 when text field is a boolean', async () => {
+    const res = await handler(makeEvent({ text: true }), {} as any) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  // ── isTradingNotes flag ────────────────────────────────────
+
+  it('includes motivational prompt when isTradingNotes is true', async () => {
+    mockFetchSuccess('Enhanced text with quote.\n\n"Stay disciplined."');
+
+    const res = await handler(
+      makeEvent({ text: 'My trade notes', isTradingNotes: true }),
+      {} as any,
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    // Verify the system prompt includes motivational quote instruction
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const systemPrompt = fetchCallBody.messages[0].content;
+    expect(systemPrompt).toContain('motivational quote');
+  });
+
+  it('does not include motivational prompt when isTradingNotes is false', async () => {
+    mockFetchSuccess('Enhanced text.');
+
+    const res = await handler(
+      makeEvent({ text: 'Image description', isTradingNotes: false }),
+      {} as any,
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const systemPrompt = fetchCallBody.messages[0].content;
+    expect(systemPrompt).not.toContain('motivational quote');
+  });
+
+  // ── Error response does not leak API keys ──────────────────
+
+  it('does not expose API key in error responses', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => 'Invalid API key: test-api-key-123',
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    const body = JSON.parse(res.body);
+    const bodyStr = JSON.stringify(body);
+    // Response should not contain the actual API key
+    expect(bodyStr).not.toContain('test-api-key-123');
+  });
+
+  // ── Fetch network error ────────────────────────────────────
+
+  it('returns 500 when fetch throws a network error', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
 });

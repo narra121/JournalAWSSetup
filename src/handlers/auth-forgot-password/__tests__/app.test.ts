@@ -78,4 +78,111 @@ describe('auth-forgot-password handler', () => {
 
     expect(res.statusCode).toBe(400);
   });
+
+  // ── Email not found (should not leak user existence) ────────
+
+  it('returns error without leaking whether the email exists in Cognito', async () => {
+    const error = new Error('Username/client id combination not found.');
+    (error as any).name = 'UserNotFoundException';
+    cognitoMock.on(ForgotPasswordCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'unknown@example.com' }), {} as any, () => {}) as any;
+
+    // Handler returns 400, but message comes from Cognito - it should NOT be 200 pretending success
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  // ── Empty / invalid email ───────────────────────────────────
+
+  it('returns 400 when email is empty string', async () => {
+    const res = await handler(makeEvent({ email: '' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 when email is null', async () => {
+    const res = await handler(makeEvent({ email: null }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  // ── Cognito API failures ────────────────────────────────────
+
+  it('returns 400 when Cognito throws InternalErrorException', async () => {
+    cognitoMock.on(ForgotPasswordCommand).rejects(new Error('InternalErrorException'));
+
+    const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('returns 400 when Cognito throws LimitExceededException', async () => {
+    const error = new Error('Attempt limit exceeded, please try after some time.');
+    (error as any).name = 'LimitExceededException';
+    cognitoMock.on(ForgotPasswordCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  // ── Rate limiting details ───────────────────────────────────
+
+  it('includes retryAfter in rate limit response', async () => {
+    const futureEpoch = Math.floor(Date.now() / 1000) + 600;
+    ddbMock.on(GetCommand).resolves({ Item: { key: 'forgot:test@example.com', count: 5, ttl: futureEpoch } });
+
+    const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.message).toContain('Too many attempts');
+  });
+
+  // ── Already confirmed / unverified users ────────────────────
+
+  it('handles already confirmed user requesting reset', async () => {
+    cognitoMock.on(ForgotPasswordCommand).resolves({
+      CodeDeliveryDetails: { Destination: 'c***@example.com' },
+    });
+
+    const res = await handler(makeEvent({ email: 'confirmed@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.message).toContain('c***@example.com');
+  });
+
+  it('returns error when unverified user requests reset', async () => {
+    const error = new Error('Cannot reset password for the user as there is no registered/verified email');
+    (error as any).name = 'InvalidParameterException';
+    cognitoMock.on(ForgotPasswordCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'unverified@example.com' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+  });
+
+  it('returns 400 when body is not valid JSON', async () => {
+    const event = makeEvent({ email: 'test@example.com' });
+    event.body = '{not-valid-json';
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
 });

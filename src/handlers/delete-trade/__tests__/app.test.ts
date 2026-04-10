@@ -194,4 +194,61 @@ describe('delete-trade handler', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
+
+  // ── S3 image cleanup ───────────────────────────────────────
+
+  it('deletes multiple S3 images when trade has several images', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
+    ddbMock.on(DeleteCommand).resolves({});
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [
+        { Key: 'images/user-1/trade-abc/img1.jpg' },
+        { Key: 'images/user-1/trade-abc/img2.png' },
+        { Key: 'images/user-1/trade-abc/img3.webp' },
+      ],
+      IsTruncated: false,
+    });
+
+    await handler(makeEvent('trade-abc'), {} as any, () => {});
+
+    const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].args[0].input.Delete?.Objects).toHaveLength(3);
+  });
+
+  it('handles S3 pagination when trade has many images', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
+    ddbMock.on(DeleteCommand).resolves({});
+    s3Mock.on(ListObjectsV2Command)
+      .resolvesOnce({
+        Contents: [{ Key: 'images/user-1/trade-abc/img1.jpg' }],
+        IsTruncated: true,
+        NextContinuationToken: 'token1',
+      })
+      .resolvesOnce({
+        Contents: [{ Key: 'images/user-1/trade-abc/img2.jpg' }],
+        IsTruncated: false,
+      });
+
+    await handler(makeEvent('trade-abc'), {} as any, () => {});
+
+    const listCalls = s3Mock.commandCalls(ListObjectsV2Command);
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls[1].args[0].input.ContinuationToken).toBe('token1');
+
+    const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
+    expect(deleteCalls).toHaveLength(2);
+  });
+
+  it('still deletes trade even when S3 has no images', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
+    ddbMock.on(DeleteCommand).resolves({});
+    s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
+
+    const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
+    expect(deleteCalls).toHaveLength(0);
+  });
 });

@@ -118,4 +118,115 @@ describe('get-subscription handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  it('returns 500 with correct message when DynamoDB times out', async () => {
+    const timeoutError = new Error('Request timed out');
+    (timeoutError as any).name = 'TimeoutError';
+    ddbMock.on(GetCommand).rejects(timeoutError);
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Failed to retrieve subscription');
+  });
+
+  // ── Subscription status variations ─────────────────────────
+
+  it('returns subscription with cancelled status', async () => {
+    const cancelledSub = { ...existingSubscription, status: 'cancelled' };
+    ddbMock.on(GetCommand).resolves({ Item: cancelledSub });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.subscription.status).toBe('cancelled');
+  });
+
+  it('returns subscription with expired status', async () => {
+    const expiredSub = {
+      ...existingSubscription,
+      status: 'expired',
+      nextBillingDate: '2024-01-01T00:00:00.000Z',
+    };
+    ddbMock.on(GetCommand).resolves({ Item: expiredSub });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.subscription.status).toBe('expired');
+    expect(body.data.subscription.nextBillingDate).toBe('2024-01-01T00:00:00.000Z');
+  });
+
+  // ── Auth edge cases ────────────────────────────────────────
+
+  it('returns 401 when token is malformed (no sub claim)', async () => {
+    const badHeader = btoa(JSON.stringify({ alg: 'RS256' }));
+    const badPayload = btoa(JSON.stringify({ iss: 'bad' }));
+    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when authorization header has empty Bearer token', async () => {
+    const event = makeEvent({ headers: { authorization: 'Bearer ' } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Subscription with all fields ──────────────────────────
+
+  it('returns subscription with all optional fields populated', async () => {
+    const fullSub = {
+      ...existingSubscription,
+      razorpaySubscriptionId: 'sub_abc123',
+      razorpayPaymentId: 'pay_xyz789',
+      planId: 'plan_premium',
+      startDate: '2024-12-15T00:00:00.000Z',
+      endDate: '2025-12-15T00:00:00.000Z',
+    };
+    ddbMock.on(GetCommand).resolves({ Item: fullSub });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.subscription.razorpaySubscriptionId).toBe('sub_abc123');
+    expect(body.data.subscription.razorpayPaymentId).toBe('pay_xyz789');
+    expect(body.data.subscription.planId).toBe('plan_premium');
+    expect(body.data.subscription.startDate).toBe('2024-12-15T00:00:00.000Z');
+    expect(body.data.subscription.endDate).toBe('2025-12-15T00:00:00.000Z');
+  });
+
+  it('returns subscription with minimal fields (only userId and status)', async () => {
+    const minimalSub = { userId: 'user-1', status: 'active' };
+    ddbMock.on(GetCommand).resolves({ Item: minimalSub });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.subscription.userId).toBe('user-1');
+    expect(body.data.subscription.status).toBe('active');
+    expect(body.data.subscription.plan).toBeUndefined();
+  });
+
+  // ── Response shape ─────────────────────────────────────────
+
+  it('response envelope message is "Subscription retrieved" on success', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingSubscription });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Subscription retrieved');
+  });
 });

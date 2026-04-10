@@ -157,4 +157,71 @@ describe('update-user-preferences handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── Additional DynamoDB failure ─────────────────────────────
+
+  it('returns 500 when DynamoDB PutCommand fails', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...existingPreferences } });
+    ddbMock.on(PutCommand).rejects(new Error('DynamoDB write error'));
+
+    const res = await handler(makeEvent({ darkMode: true }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  // ── Auth edge cases ─────────────────────────────────────────
+
+  it('returns 401 when authorization header has invalid JWT', async () => {
+    const event = makeEvent({ darkMode: true });
+    event.headers = { authorization: 'Bearer not.a.valid.jwt' };
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    // getUserId would fail to extract sub from malformed JWT
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Empty / minimal payloads ────────────────────────────────
+
+  it('handles empty preferences object gracefully', async () => {
+    const res = await handler(makeEvent({}), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // Existing preferences remain unchanged
+    expect(body.data.preferences.darkMode).toBe(false);
+    expect(body.data.preferences.currency).toBe('USD');
+  });
+
+  it('sets updatedAt timestamp on every update', async () => {
+    const res = await handler(makeEvent({ darkMode: true }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.updatedAt).toBeDefined();
+    // Should be a valid ISO string
+    expect(new Date(body.data.preferences.updatedAt).toISOString()).toBe(body.data.preferences.updatedAt);
+  });
+
+  it('handles only currency update', async () => {
+    const res = await handler(makeEvent({ currency: 'INR' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.currency).toBe('INR');
+    expect(body.data.preferences.darkMode).toBe(false); // unchanged
+  });
+
+  it('handles only timezone update', async () => {
+    const res = await handler(makeEvent({ timezone: 'Asia/Kolkata' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.timezone).toBe('Asia/Kolkata');
+    expect(body.data.preferences.currency).toBe('USD'); // unchanged
+  });
 });

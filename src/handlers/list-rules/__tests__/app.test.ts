@@ -102,4 +102,132 @@ describe('list-rules handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── Additional coverage ─────────────────────────────────────
+
+  it('returns rules with correct structure when Items is undefined', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: undefined });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.rules).toEqual([]);
+  });
+
+  it('returns multiple rules preserving all fields', async () => {
+    const items = [
+      { userId: 'user-1', ruleId: 'r1', rule: 'Rule A', completed: false, isActive: true, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+      { userId: 'user-1', ruleId: 'r2', rule: 'Rule B', completed: true, isActive: false, createdAt: '2024-01-02T00:00:00Z', updatedAt: '2024-01-02T00:00:00Z' },
+      { userId: 'user-1', ruleId: 'r3', rule: 'Rule C', completed: false, isActive: true, createdAt: '2024-01-03T00:00:00Z', updatedAt: '2024-01-03T00:00:00Z' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rules).toHaveLength(3);
+    expect(body.data.rules[0].ruleId).toBe('r1');
+    expect(body.data.rules[1].ruleId).toBe('r2');
+    expect(body.data.rules[2].ruleId).toBe('r3');
+    expect(body.data.rules[1].completed).toBe(true);
+    expect(body.data.rules[1].isActive).toBe(false);
+  });
+
+  it('queries DynamoDB with the correct userId from JWT', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const event = makeEvent({
+      headers: { authorization: `Bearer ${makeJwt('user-42')}` },
+    });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    expect(queryCalls).toHaveLength(1);
+    expect(queryCalls[0].args[0].input.ExpressionAttributeValues).toEqual({ ':userId': 'user-42' });
+  });
+
+  it('does not return rules belonging to a different user', async () => {
+    // Only user-1's rules should be queried; the mock verifies the userId filter
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      expect(input.ExpressionAttributeValues[':userId']).toBe('user-1');
+      return { Items: [{ userId: 'user-1', ruleId: 'r1', rule: 'My rule' }] };
+    });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rules).toHaveLength(1);
+    expect(body.data.rules[0].userId).toBe('user-1');
+  });
+
+  it('returns 500 when DynamoDB QueryCommand throws a specific AWS error', async () => {
+    const awsError = new Error('Throughput exceeded');
+    awsError.name = 'ProvisionedThroughputExceededException';
+    ddbMock.on(QueryCommand).rejects(awsError);
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('handles rules with missing optional fields gracefully', async () => {
+    const items = [
+      { userId: 'user-1', ruleId: 'r1', rule: 'Minimal rule' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rules).toHaveLength(1);
+    expect(body.data.rules[0].rule).toBe('Minimal rule');
+    expect(body.data.rules[0].completed).toBeUndefined();
+    expect(body.data.rules[0].isActive).toBeUndefined();
+  });
+
+  it('returns 401 when authorization token is malformed', async () => {
+    const event = makeEvent({ headers: { authorization: 'Bearer not-a-jwt' } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('handles a large result set', async () => {
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      userId: 'user-1',
+      ruleId: `r${i}`,
+      rule: `Rule number ${i}`,
+      completed: i % 2 === 0,
+      isActive: true,
+    }));
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rules).toHaveLength(100);
+  });
+
+  it('response body includes success message', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Rules retrieved');
+  });
 });

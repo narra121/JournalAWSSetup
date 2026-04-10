@@ -135,4 +135,99 @@ describe('toggle-rule handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── Additional coverage ─────────────────────────────────────
+
+  it('returns 500 when DynamoDB UpdateCommand fails after successful Get', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...existingRule, completed: false } });
+    ddbMock.on(UpdateCommand).rejects(new Error('Update failed'));
+
+    const res = await handler(makeEvent('rule-1'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('returns 401 when authorization token is malformed', async () => {
+    const event = makeEvent('rule-1', { headers: { authorization: 'Bearer not-a-jwt' } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 400 when pathParameters is undefined', async () => {
+    const event = makeEvent(undefined);
+    event.pathParameters = undefined as any;
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  it('sends correct UpdateCommand with toggled completed value', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...existingRule, completed: false } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingRule, completed: true } });
+
+    await handler(makeEvent('rule-1'), {} as any, () => {});
+
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':completed']).toBe(true);
+  });
+
+  it('sends correct Key to GetCommand and UpdateCommand', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...existingRule, completed: true } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingRule, completed: false } });
+
+    await handler(makeEvent('rule-1'), {} as any, () => {});
+
+    const getCalls = ddbMock.commandCalls(GetCommand);
+    expect(getCalls).toHaveLength(1);
+    expect(getCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', ruleId: 'rule-1' });
+
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', ruleId: 'rule-1' });
+  });
+
+  it('does not call UpdateCommand when rule is not found', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    await handler(makeEvent('nonexistent'), {} as any, () => {});
+
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('returns 500 when DynamoDB throws ProvisionedThroughputExceededException', async () => {
+    const awsError = new Error('Throughput exceeded');
+    awsError.name = 'ProvisionedThroughputExceededException';
+    ddbMock.on(GetCommand).rejects(awsError);
+
+    const res = await handler(makeEvent('rule-1'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('returns the updated rule attributes in the response', async () => {
+    const updatedRule = { ...existingRule, completed: true, updatedAt: '2024-06-16T00:00:00Z' };
+    ddbMock.on(GetCommand).resolves({ Item: { ...existingRule, completed: false } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: updatedRule });
+
+    const res = await handler(makeEvent('rule-1'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rule.ruleId).toBe('rule-1');
+    expect(body.data.rule.completed).toBe(true);
+    expect(body.data.rule.updatedAt).toBe('2024-06-16T00:00:00Z');
+  });
 });

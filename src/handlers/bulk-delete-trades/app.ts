@@ -45,9 +45,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
-    // Remove associated images (best-effort; sequential to limit S3 calls)
-    for (const tid of ids) {
-      try { await removeImagesForTrade(userId, tid); } catch { /* ignore */ }
+    // Parallel image deletion in batches of 10
+    const IMG_BATCH = 10;
+    for (let i = 0; i < ids.length; i += IMG_BATCH) {
+      await Promise.allSettled(
+        ids.slice(i, i + IMG_BATCH).map(tid => removeImagesForTrade(userId, tid))
+      );
     }
 
     return envelope({ statusCode: 200, data: { deletedRequested: ids.length, errors }, message: 'Trades deleted' });

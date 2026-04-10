@@ -157,4 +157,172 @@ describe('get-subscription-plans handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── No plans available ─────────────────────────────────────
+
+  it('returns empty plans array when all SSM parameters are not found', async () => {
+    const notFoundError = new Error('Parameter not found');
+    (notFoundError as any).name = 'ParameterNotFound';
+
+    ssmMock.on(GetParameterCommand).rejects(notFoundError);
+
+    const res = await handler(makeEvent()) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.plans).toEqual([]);
+  });
+
+  it('returns empty plans array when SSM parameters have null values', async () => {
+    ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: undefined } });
+
+    const res = await handler(makeEvent()) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.plans).toEqual([]);
+  });
+
+  // ── Plan data validation ───────────────────────────────────
+
+  it('all plans have INR currency', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .resolves({ Parameter: { Value: 'plan_by' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .resolves({ Parameter: { Value: 'plan_pm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .resolves({ Parameter: { Value: 'plan_py' } });
+
+    const res = await handler(makeEvent()) as any;
+    const body = JSON.parse(res.body);
+
+    for (const plan of body.data.plans) {
+      expect(plan.currency).toBe('INR');
+    }
+  });
+
+  it('all plans have interval set to 1', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .resolves({ Parameter: { Value: 'plan_by' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .resolves({ Parameter: { Value: 'plan_pm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .resolves({ Parameter: { Value: 'plan_py' } });
+
+    const res = await handler(makeEvent()) as any;
+    const body = JSON.parse(res.body);
+
+    for (const plan of body.data.plans) {
+      expect(plan.interval).toBe(1);
+    }
+  });
+
+  it('yearly plans include savings and monthlyEquivalent fields', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .resolves({ Parameter: { Value: 'plan_by' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .resolves({ Parameter: { Value: 'plan_pm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .resolves({ Parameter: { Value: 'plan_py' } });
+
+    const res = await handler(makeEvent()) as any;
+    const body = JSON.parse(res.body);
+    const plans = body.data.plans;
+
+    const basicYearly = plans.find((p: any) => p.tier === 'basic' && p.period === 'yearly');
+    expect(basicYearly.savings).toBe('17%');
+    expect(basicYearly.monthlyEquivalent).toBe(99);
+
+    const proYearly = plans.find((p: any) => p.tier === 'pro' && p.period === 'yearly');
+    expect(proYearly.savings).toBe('17%');
+    expect(proYearly.monthlyEquivalent).toBe(299);
+  });
+
+  it('monthly plans do not include savings field', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .resolves({ Parameter: { Value: 'plan_by' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .resolves({ Parameter: { Value: 'plan_pm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .resolves({ Parameter: { Value: 'plan_py' } });
+
+    const res = await handler(makeEvent()) as any;
+    const body = JSON.parse(res.body);
+    const plans = body.data.plans;
+
+    const basicMonthly = plans.find((p: any) => p.tier === 'basic' && p.period === 'monthly');
+    expect(basicMonthly.savings).toBeUndefined();
+    expect(basicMonthly.monthlyEquivalent).toBeUndefined();
+
+    const proMonthly = plans.find((p: any) => p.tier === 'pro' && p.period === 'monthly');
+    expect(proMonthly.savings).toBeUndefined();
+    expect(proMonthly.monthlyEquivalent).toBeUndefined();
+  });
+
+  // ── Response shape ─────────────────────────────────────────
+
+  it('response message is "Subscription plans retrieved" on success', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    const notFoundError = new Error('Parameter not found');
+    (notFoundError as any).name = 'ParameterNotFound';
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .rejects(notFoundError);
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .rejects(notFoundError);
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .rejects(notFoundError);
+
+    const res = await handler(makeEvent()) as any;
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Subscription plans retrieved');
+  });
+
+  it('returns 500 with error message when SSM throws AccessDeniedException', async () => {
+    const accessError = new Error('Access denied');
+    (accessError as any).name = 'AccessDeniedException';
+
+    ssmMock.on(GetParameterCommand).rejects(accessError);
+
+    const res = await handler(makeEvent()) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+    expect(body.message).toBe('Failed to fetch subscription plans');
+  });
+
+  // ── Partial plan availability ──────────────────────────────
+
+  it('returns only basic plans when pro plans are not found', async () => {
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+      .resolves({ Parameter: { Value: 'plan_bm' } });
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+      .resolves({ Parameter: { Value: 'plan_by' } });
+
+    const notFoundError = new Error('Parameter not found');
+    (notFoundError as any).name = 'ParameterNotFound';
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+      .rejects(notFoundError);
+    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+      .rejects(notFoundError);
+
+    const res = await handler(makeEvent()) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.plans).toHaveLength(2);
+    expect(body.data.plans.every((p: any) => p.tier === 'basic')).toBe(true);
+  });
 });

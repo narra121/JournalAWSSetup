@@ -124,4 +124,106 @@ describe('delete-rule handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // ── Additional coverage ─────────────────────────────────────
+
+  it('returns 500 when DynamoDB DeleteCommand fails after successful Get', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(DeleteCommand).rejects(new Error('Delete failed'));
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('returns 401 when authorization token is malformed', async () => {
+    const event = makeEvent('rule-abc', { headers: { authorization: 'Bearer not-a-jwt' } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 400 when pathParameters is undefined', async () => {
+    const event = makeEvent(undefined);
+    event.pathParameters = undefined as any;
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns the full deleted rule object in response data', async () => {
+    const fullRule = {
+      ...existingRule,
+      rule: 'Always use stop loss',
+      ruleId: 'rule-xyz',
+      completed: true,
+      isActive: false,
+    };
+    ddbMock.on(GetCommand).resolves({ Item: fullRule });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    const res = await handler(makeEvent('rule-xyz'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.rule.ruleId).toBe('rule-xyz');
+    expect(body.data.rule.rule).toBe('Always use stop loss');
+    expect(body.data.rule.completed).toBe(true);
+    expect(body.data.rule.isActive).toBe(false);
+  });
+
+  it('sends correct Key to GetCommand and DeleteCommand', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    await handler(makeEvent('rule-abc'), {} as any, () => {});
+
+    const getCalls = ddbMock.commandCalls(GetCommand);
+    expect(getCalls).toHaveLength(1);
+    expect(getCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', ruleId: 'rule-abc' });
+
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', ruleId: 'rule-abc' });
+  });
+
+  it('returns success message on delete', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Rule deleted successfully');
+  });
+
+  it('returns 500 when DynamoDB throws ProvisionedThroughputExceededException', async () => {
+    const awsError = new Error('Throughput exceeded');
+    awsError.name = 'ProvisionedThroughputExceededException';
+    ddbMock.on(GetCommand).rejects(awsError);
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('does not call DeleteCommand when rule is not found', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    await handler(makeEvent('nonexistent'), {} as any, () => {});
+
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(0);
+  });
 });

@@ -1,28 +1,38 @@
 import { DynamoDBStreamHandler, DynamoDBStreamEvent } from 'aws-lambda';
+import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { computeDailyRecord } from '../../shared/stats-aggregator';
+import { extractDate, calcPnL } from '../../shared/utils/pnl';
 
-const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
+const TRADES_TABLE = process.env.TRADES_TABLE!;
+const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
-// Revised stats processor: idempotent full rebuild strategy for MODIFY and REMOVE events and any INSERT arriving closed.
-// This ensures accurate realizedPnL, wins/losses, best/worst after exitPrice edits or deletions.
-// Trade count = total trades for user. Closed trades contribute PnL.
-// Also updates account balances based on trade PnL.
+// ---------------------------------------------------------------------------
+// Query helpers
+// ---------------------------------------------------------------------------
 
-const calcPnL = (item: any) => {
-  // Use the stored pnl field if available (frontend pre-calculates this)
-  if (item.pnl != null && typeof item.pnl === 'number') return item.pnl;
-  // Fallback: calculate from prices
-  const entry = item.entryPrice;
-  const exit = item.exitPrice;
-  const qty = item.quantity;
-  const side = item.side;
-  if (entry == null || exit == null || qty == null || side == null) return undefined;
-  if (side === 'BUY') return (exit - entry) * qty;
-  if (side === 'SELL') return (entry - exit) * qty;
-  return undefined;
-};
+/**
+ * Fetch all trades for a given (userId, accountId, date) from the GSI.
+ */
+async function queryTradesForDay(userId: string, accountId: string, date: string): Promise<any[]> {
+  const result = await ddb.send(new QueryCommand({
+    TableName: TRADES_TABLE,
+    IndexName: 'trades-by-date-gsi',
+    KeyConditionExpression: 'userId = :u AND begins_with(openDate, :d)',
+    FilterExpression: 'accountId = :a',
+    ExpressionAttributeValues: { ':u': userId, ':d': date, ':a': accountId },
+  }));
+  return result.Items || [];
+}
+
+// ---------------------------------------------------------------------------
+// Legacy full-rebuild for dual-write to old STATS_TABLE + account balances
+// ---------------------------------------------------------------------------
+
+/** Fields needed by calcPnL + accountId for per-account aggregation */
+const STATS_PROJECTION = 'pnl, side, entryPrice, exitPrice, quantity, accountId';
 
 async function rebuildStats(userId: string) {
   let lastEvaluatedKey: any = undefined;
@@ -40,10 +50,11 @@ async function rebuildStats(userId: string) {
 
   do {
     const resp = await ddb.send(new QueryCommand({
-      TableName: process.env.TRADES_TABLE!,
+      TableName: TRADES_TABLE,
       KeyConditionExpression: 'userId = :u',
       ExpressionAttributeValues: { ':u': userId },
-      ExclusiveStartKey: lastEvaluatedKey
+      ProjectionExpression: STATS_PROJECTION,
+      ExclusiveStartKey: lastEvaluatedKey,
     }));
     const items = resp.Items || [];
     tradeCount += items.length;
@@ -64,19 +75,12 @@ async function rebuildStats(userId: string) {
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
 
-  const stats = {
-    userId,
-    tradeCount,
-    realizedPnL,
-    wins,
-    losses,
-    bestWin,
-    worstLoss,
-    sumWinPnL,
-    sumLossPnL,
-    lastUpdated: new Date().toISOString()
-  };
-  await ddb.send(new PutCommand({ TableName: STATS_TABLE, Item: stats }));
+  if (tradeCount > 10_000) {
+    console.warn(
+      `[rebuildStats] userId=${userId} has ${tradeCount} trades — ` +
+      'consider migrating to incremental stats to avoid high read consumption',
+    );
+  }
 
   // Update each account's balance = initialBalance + totalPnL from trades
   await updateAccountBalances(userId, accountPnL);
@@ -101,30 +105,110 @@ async function updateAccountBalances(userId: string, accountPnL: Record<string, 
         Key: { userId, accountId },
         UpdateExpression: 'SET #balance = :balance, #updatedAt = :updatedAt',
         ExpressionAttributeNames: { '#balance': 'balance', '#updatedAt': 'updatedAt' },
-        ExpressionAttributeValues: { ':balance': Math.round(newBalance * 100) / 100, ':updatedAt': new Date().toISOString() },
+        ExpressionAttributeValues: {
+          ':balance': Math.round(newBalance * 100) / 100,
+          ':updatedAt': new Date().toISOString(),
+        },
       }));
     } catch (e) {
       console.error(`Failed to update balance for account ${accountId}`, e);
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent) => {
   const failures: { itemIdentifier: string }[] = [];
-  for (const record of event.Records) {
-    if (!record.dynamodb) continue;
-    const newImage = record.dynamodb.NewImage;
-    const oldImage = record.dynamodb.OldImage;
-    const imageRef = (newImage || oldImage);
-    const userId = imageRef?.userId?.S;
-    if (!userId) continue;
-    try {
-      // Full rebuild on any trade change (INSERT/MODIFY/REMOVE)
-      // This recalculates stats AND updates account balances
+
+  try {
+    // 1. Detect affected (userId, accountId, date) tuples from stream records
+    // Map<"userId#accountId", Set<date>>
+    const affectedDays = new Map<string, Set<string>>();
+
+    for (const record of event.Records) {
+      if (!record.dynamodb) continue;
+
+      const newImage = record.dynamodb.NewImage
+        ? unmarshall(record.dynamodb.NewImage as Record<string, any>)
+        : null;
+      const oldImage = record.dynamodb.OldImage
+        ? unmarshall(record.dynamodb.OldImage as Record<string, any>)
+        : null;
+      const userId = newImage?.userId || oldImage?.userId;
+      if (!userId) continue;
+
+      // From NEW image (INSERT or MODIFY)
+      if (newImage?.accountId && newImage.accountId !== '-1' && String(newImage.accountId) !== '-1') {
+        const date = extractDate(newImage.openDate);
+        if (date) {
+          const key = `${userId}#${newImage.accountId}`;
+          if (!affectedDays.has(key)) affectedDays.set(key, new Set());
+          affectedDays.get(key)!.add(date);
+        }
+      }
+
+      // From OLD image (MODIFY date/account change, or REMOVE)
+      if (oldImage?.accountId && oldImage.accountId !== '-1' && String(oldImage.accountId) !== '-1') {
+        const date = extractDate(oldImage.openDate);
+        if (date) {
+          const key = `${userId}#${oldImage.accountId}`;
+          if (!affectedDays.has(key)) affectedDays.set(key, new Set());
+          affectedDays.get(key)!.add(date);
+        }
+      }
+    }
+
+    // 2. Rebuild only the affected daily records in DailyStatsTable
+    const affectedAccountIds = new Set<string>(); // for account balance update
+
+    for (const [userAccKey, dates] of affectedDays) {
+      const [userId, accountId] = userAccKey.split('#', 2);
+      affectedAccountIds.add(userAccKey); // track for balance update
+
+      for (const date of dates) {
+        // Query all trades for this user on this date with this accountId
+        const trades = await queryTradesForDay(userId, accountId, date);
+
+        if (trades.length === 0) {
+          // Delete daily stats record — no trades left for this day
+          await ddb.send(new DeleteCommand({
+            TableName: DAILY_STATS_TABLE,
+            Key: { userId, sk: `${accountId}#${date}` },
+          }));
+        } else {
+          const record = computeDailyRecord(userId, accountId, date, trades);
+          if (record) {
+            await ddb.send(new PutCommand({
+              TableName: DAILY_STATS_TABLE,
+              Item: record,
+            }));
+          }
+        }
+      }
+    }
+
+    // 3. Dual-write: rebuild old stats table + account balances per affected user
+    const affectedUserIds = new Set<string>();
+    for (const userAccKey of affectedDays.keys()) {
+      const [userId] = userAccKey.split('#', 2);
+      affectedUserIds.add(userId);
+    }
+
+    for (const userId of affectedUserIds) {
       await rebuildStats(userId);
-    } catch (e) {
-      console.error('Failed processing record', e);
-      if (record.eventID) failures.push({ itemIdentifier: record.eventID });
+    }
+  } catch (e) {
+    console.error('Failed processing stream event', e);
+    // Mark all records as failed so they are retried
+    for (const record of event.Records) {
+      if (record.eventID) {
+        failures.push({ itemIdentifier: record.eventID });
+      }
     }
   }
+
   return { batchItemFailures: failures };
 };

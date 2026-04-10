@@ -1,74 +1,184 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { computeDailyRecord } from '../../shared/stats-aggregator';
+import { extractDate } from '../../shared/utils/pnl';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
+const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
-// Periodic job: rebuild stats and account balances for every user.
-export const handler = async () => {
+const MAX_USERS = 1000;
+
+// ---------------------------------------------------------------------------
+// Step 1: Find users with recent daily-stats changes (last 24 h)
+// ---------------------------------------------------------------------------
+async function getRecentlyChangedUserIds(): Promise<string[]> {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const userIds = new Set<string>();
   let lastEvaluatedKey: any = undefined;
-  const userBuckets: Record<string, any[]> = {};
+
   do {
-    const resp: any = await ddb.send(new ScanCommand({ TableName: TRADES_TABLE, ExclusiveStartKey: lastEvaluatedKey, ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl', ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' } }));
-    const items = resp.Items || [];
-    for (const it of items) {
-      const uid = it.userId;
-      (userBuckets[uid] ||= []).push(it);
+    const resp: any = await ddb.send(new ScanCommand({
+      TableName: DAILY_STATS_TABLE,
+      ExclusiveStartKey: lastEvaluatedKey,
+      ProjectionExpression: 'userId',
+      FilterExpression: 'lastUpdated >= :cutoff',
+      ExpressionAttributeValues: { ':cutoff': cutoff },
+    }));
+    for (const item of resp.Items || []) {
+      userIds.add(item.userId);
     }
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
 
-  for (const [userId, trades] of Object.entries(userBuckets)) {
-    let tradeCount = trades.length;
-    let realizedPnL = 0, wins = 0, losses = 0, bestWin = 0, worstLoss = 0, sumWinPnL = 0, sumLossPnL = 0;
-    const accountPnL: Record<string, number> = {};
+  return [...userIds];
+}
 
-    for (const t of trades) {
-      const accountId = t.accountId;
-      if (!accountId || accountId === '-1' || accountId === -1) continue;
+// ---------------------------------------------------------------------------
+// Step 2: Rebuild stats for a single user (trades query + stats + balances + daily stats)
+// ---------------------------------------------------------------------------
+async function rebuildForUser(userId: string): Promise<void> {
+  // Fetch all trades for this user
+  let lastEvaluatedKey: any = undefined;
+  const trades: any[] = [];
+  do {
+    const resp: any = await ddb.send(new QueryCommand({
+      TableName: TRADES_TABLE,
+      KeyConditionExpression: 'userId = :u',
+      ExpressionAttributeValues: { ':u': userId },
+      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition',
+      ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' },
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+    trades.push(...(resp.Items || []));
+    lastEvaluatedKey = resp.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
 
-      // Use stored pnl if available, fallback to calculation from prices
-      const pnl = (t.pnl != null && typeof t.pnl === 'number')
-        ? t.pnl
-        : (t.entryPrice != null && t.exitPrice != null && t.quantity != null)
-          ? (t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity)
-          : null;
-      if (pnl != null) {
-        realizedPnL += pnl;
-        if (pnl > 0) { wins++; sumWinPnL += pnl; if (pnl > bestWin) bestWin = pnl; }
-        else if (pnl < 0) { losses++; sumLossPnL += pnl; if (pnl < worstLoss) worstLoss = pnl; }
-        accountPnL[accountId] = (accountPnL[accountId] || 0) + pnl;
-      }
-    }
+  let tradeCount = trades.length;
+  let realizedPnL = 0, wins = 0, losses = 0, bestWin = 0, worstLoss = 0, sumWinPnL = 0, sumLossPnL = 0;
+  const accountPnL: Record<string, number> = {};
 
-    await ddb.send(new PutCommand({ TableName: STATS_TABLE, Item: { userId, tradeCount, realizedPnL, wins, losses, bestWin, worstLoss, sumWinPnL, sumLossPnL, lastUpdated: new Date().toISOString(), source: 'periodic-job' } }));
+  for (const t of trades) {
+    const accountId = t.accountId;
+    if (!accountId || accountId === '-1' || accountId === -1) continue;
 
-    // Update account balances = initialBalance + totalPnL from trades
-    for (const [accountId, totalPnL] of Object.entries(accountPnL)) {
-      try {
-        const accountResp = await ddb.send(new GetCommand({
-          TableName: ACCOUNTS_TABLE,
-          Key: { userId, accountId },
-          ProjectionExpression: 'initialBalance',
-        }));
-        if (!accountResp.Item) continue;
-
-        const initialBalance = accountResp.Item.initialBalance || 0;
-        const newBalance = Math.round((initialBalance + totalPnL) * 100) / 100;
-
-        await ddb.send(new UpdateCommand({
-          TableName: ACCOUNTS_TABLE,
-          Key: { userId, accountId },
-          UpdateExpression: 'SET #balance = :balance, #updatedAt = :updatedAt',
-          ExpressionAttributeNames: { '#balance': 'balance', '#updatedAt': 'updatedAt' },
-          ExpressionAttributeValues: { ':balance': newBalance, ':updatedAt': new Date().toISOString() },
-        }));
-      } catch (e) {
-        console.error(`Failed to update balance for account ${accountId}`, e);
-      }
+    // Use stored pnl if available, fallback to calculation from prices
+    const pnl = (t.pnl != null && typeof t.pnl === 'number')
+      ? t.pnl
+      : (t.entryPrice != null && t.exitPrice != null && t.quantity != null)
+        ? (t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity)
+        : null;
+    if (pnl != null) {
+      realizedPnL += pnl;
+      if (pnl > 0) { wins++; sumWinPnL += pnl; if (pnl > bestWin) bestWin = pnl; }
+      else if (pnl < 0) { losses++; sumLossPnL += pnl; if (pnl < worstLoss) worstLoss = pnl; }
+      accountPnL[accountId] = (accountPnL[accountId] || 0) + pnl;
     }
   }
-  return { rebuiltUsers: Object.keys(userBuckets).length };
+
+  // Dual-write: old stats table
+  await ddb.send(new PutCommand({ TableName: STATS_TABLE, Item: { userId, tradeCount, realizedPnL, wins, losses, bestWin, worstLoss, sumWinPnL, sumLossPnL, lastUpdated: new Date().toISOString(), source: 'periodic-job' } }));
+
+  // Update account balances = initialBalance + totalPnL from trades
+  for (const [accountId, totalPnL] of Object.entries(accountPnL)) {
+    try {
+      const accountResp = await ddb.send(new GetCommand({
+        TableName: ACCOUNTS_TABLE,
+        Key: { userId, accountId },
+        ProjectionExpression: 'initialBalance',
+      }));
+      if (!accountResp.Item) continue;
+
+      const initialBalance = accountResp.Item.initialBalance || 0;
+      const newBalance = Math.round((initialBalance + totalPnL) * 100) / 100;
+
+      await ddb.send(new UpdateCommand({
+        TableName: ACCOUNTS_TABLE,
+        Key: { userId, accountId },
+        UpdateExpression: 'SET #balance = :balance, #updatedAt = :updatedAt',
+        ExpressionAttributeNames: { '#balance': 'balance', '#updatedAt': 'updatedAt' },
+        ExpressionAttributeValues: { ':balance': newBalance, ':updatedAt': new Date().toISOString() },
+      }));
+    } catch (e) {
+      console.error(`Failed to update balance for account ${accountId}`, e);
+    }
+  }
+
+  // --- Rebuild DailyStatsTable ---
+  // Group trades by (userId, accountId, date)
+  const dailyGroups = new Map<string, any[]>();
+  for (const t of trades) {
+    const accountId = t.accountId;
+    if (!accountId || accountId === '-1' || accountId === -1) continue;
+    const date = extractDate(t.openDate);
+    if (!date) continue;
+    const key = `${accountId}#${date}`;
+    const group = dailyGroups.get(key);
+    if (group) { group.push(t); } else { dailyGroups.set(key, [t]); }
+  }
+
+  // Compute and write daily records
+  const newSkSet = new Set<string>();
+  for (const [key, groupTrades] of dailyGroups) {
+    const [accountId, date] = key.split('#');
+    const record = computeDailyRecord(userId, accountId, date, groupTrades);
+    if (record) {
+      newSkSet.add(record.sk);
+      await ddb.send(new PutCommand({ TableName: DAILY_STATS_TABLE, Item: record }));
+    }
+  }
+
+  // Orphan cleanup: delete daily stats records that no longer have trades
+  let dailyLastKey: any = undefined;
+  do {
+    const queryResp: any = await ddb.send(new QueryCommand({
+      TableName: DAILY_STATS_TABLE,
+      KeyConditionExpression: 'userId = :uid',
+      ExpressionAttributeValues: { ':uid': userId },
+      ProjectionExpression: 'userId, sk',
+      ExclusiveStartKey: dailyLastKey,
+    }));
+    const existingItems = queryResp.Items || [];
+    for (const item of existingItems) {
+      if (!newSkSet.has(item.sk)) {
+        await ddb.send(new DeleteCommand({
+          TableName: DAILY_STATS_TABLE,
+          Key: { userId: item.userId, sk: item.sk },
+        }));
+      }
+    }
+    dailyLastKey = queryResp.LastEvaluatedKey;
+  } while (dailyLastKey);
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+// Periodic job: rebuild stats, account balances, and daily stats for users
+// with recent changes (last 24 hours).
+export const handler = async () => {
+  console.log('rebuild-stats-job started', { timestamp: new Date().toISOString() });
+
+  // Find users with recent daily-stats changes
+  const recentUserIds = await getRecentlyChangedUserIds();
+
+  if (recentUserIds.length === 0) {
+    return { rebuiltUsers: 0, skipped: 'no recent changes' };
+  }
+
+  // Safeguard: cap at MAX_USERS to prevent runaway costs
+  let userIds = recentUserIds;
+  if (userIds.length > MAX_USERS) {
+    console.warn(`rebuild-stats-job: ${userIds.length} users need rebuilding, capping at ${MAX_USERS}`);
+    userIds = userIds.slice(0, MAX_USERS);
+  }
+
+  for (const userId of userIds) {
+    await rebuildForUser(userId);
+  }
+
+  return { rebuiltUsers: userIds.length };
 };

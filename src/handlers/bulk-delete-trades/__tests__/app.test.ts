@@ -135,4 +135,32 @@ describe('bulk-delete-trades handler', () => {
     const listCalls = s3Mock.commandCalls(ListObjectsV2Command);
     expect(listCalls).toHaveLength(2);
   });
+
+  it('deletes S3 images for each trade even when one S3 deletion fails', async () => {
+    // S3 fails for first trade but succeeds for second
+    s3Mock.on(ListObjectsV2Command)
+      .resolvesOnce({ Contents: [{ Key: 'img1' }], IsTruncated: false }) // t1 list
+      .resolvesOnce({ Contents: [{ Key: 'img2' }], IsTruncated: false }); // t2 list
+    s3Mock.on(DeleteObjectsCommand)
+      .rejectsOnce(new Error('S3 error'))
+      .resolvesOnce({});
+
+    const res = await handler(makeEvent({ tradeIds: ['t1', 't2'] }), {} as any, () => {}) as any;
+
+    // Should still succeed (best-effort image cleanup)
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.deletedRequested).toBe(2);
+  });
+
+  it('uses correct S3 prefix per trade for image cleanup', async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
+
+    await handler(makeEvent({ tradeIds: ['trade-1', 'trade-2'] }), {} as any, () => {});
+
+    const listCalls = s3Mock.commandCalls(ListObjectsV2Command);
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls[0].args[0].input.Prefix).toBe('images/user-1/trade-1/');
+    expect(listCalls[1].args[0].input.Prefix).toBe('images/user-1/trade-2/');
+  });
 });

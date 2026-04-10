@@ -146,4 +146,127 @@ describe('get-user-profile handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  it('returns 500 with correct error message when DynamoDB fails', async () => {
+    ddbMock.on(GetCommand).rejects(new Error('DynamoDB timeout'));
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('Failed to retrieve user profile');
+  });
+
+  // ── Auth edge cases ────────────────────────────────────────
+
+  it('returns 401 when token is malformed (no sub claim)', async () => {
+    const badHeader = btoa(JSON.stringify({ alg: 'RS256' }));
+    const badPayload = btoa(JSON.stringify({ iss: 'bad' }));
+    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } });
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Profile with all fields populated ──────────────────────
+
+  it('returns profile with all custom preferences populated', async () => {
+    const fullPrefs = {
+      userId: 'user-1',
+      darkMode: true,
+      currency: 'INR',
+      timezone: 'Asia/Kolkata',
+      language: 'hi',
+      dateFormat: 'DD/MM/YYYY',
+      notifications: {
+        tradeReminders: true,
+        weeklyReport: false,
+        goalAlerts: true,
+        emailDigest: true,
+      },
+    };
+    ddbMock.on(GetCommand).resolves({ Item: fullPrefs });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.user.preferences.currency).toBe('INR');
+    expect(body.data.user.preferences.timezone).toBe('Asia/Kolkata');
+    expect(body.data.user.preferences.language).toBe('hi');
+    expect(body.data.user.preferences.dateFormat).toBe('DD/MM/YYYY');
+    expect(body.data.user.preferences.notifications.emailDigest).toBe(true);
+  });
+
+  // ── Cognito user info ──────────────────────────────────────
+
+  it('returns empty name and email when Cognito has no name/email attributes', async () => {
+    cognitoMock.on(GetUserCommand).resolves({
+      UserAttributes: [
+        { Name: 'phone_number', Value: '+1234567890' },
+      ],
+      Username: 'user-1',
+    });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.user.name).toBe('');
+    expect(body.data.user.email).toBe('');
+  });
+
+  it('returns empty name and email when authorization header has no token (empty Bearer)', async () => {
+    const event = makeEvent({ headers: { authorization: 'Bearer ' } });
+    // getUserId will return undefined for empty bearer => 401
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Response shape ─────────────────────────────────────────
+
+  it('response contains message "User profile retrieved" on success', async () => {
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message).toBe('User profile retrieved');
+  });
+
+  it('user object always includes id field matching userId', async () => {
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.user.id).toBe('user-1');
+  });
+
+  // ── Cognito with different user ────────────────────────────
+
+  it('returns Cognito user data for a different user', async () => {
+    cognitoMock.on(GetUserCommand).resolves({
+      UserAttributes: [
+        { Name: 'name', Value: 'Jane Doe' },
+        { Name: 'email', Value: 'jane@example.com' },
+      ],
+      Username: 'user-2',
+    });
+
+    const event = makeEvent({
+      headers: { authorization: `Bearer ${makeJwt('user-2')}` },
+    } as any);
+
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.user.name).toBe('Jane Doe');
+    expect(body.data.user.email).toBe('jane@example.com');
+    expect(body.data.user.id).toBe('user-2');
+  });
 });

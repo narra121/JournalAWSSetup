@@ -232,17 +232,23 @@ async function getStrategyDistribution(userId: string) {
  * Helper to get all trades for a user
  */
 async function getAllUserTrades(userId: string) {
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: TRADES_TABLE,
-      KeyConditionExpression: 'userId = :userId',
-      ExpressionAttributeValues: {
-        ':userId': userId,
-      },
-    })
-  );
-
-  const trades = result.Items || [];
+  const trades: any[] = [];
+  let lastKey: any;
+  do {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: TRADES_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: {
+          ':userId': userId,
+        },
+        ProjectionExpression: 'tradeId, pnl, openDate, symbol, setupType, accountId',
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    trades.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
   // Filter out unmapped trades
   return trades.filter((t: any) => t.accountId && t.accountId !== '-1' && t.accountId !== -1);
 }

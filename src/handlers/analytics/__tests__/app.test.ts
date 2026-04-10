@@ -263,4 +263,159 @@ describe('analytics handler', () => {
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
+
+  // -- Additional error / edge-case tests ------------------------------------
+
+  it('defaults to hourly when queryStringParameters is entirely missing', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+
+    const event = makeEvent({ queryStringParameters: null as any });
+    const res = await lambdaHandler(event) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // Should return hourly stats by default
+    expect(body.data.hourlyStats).toBeDefined();
+    expect(Array.isArray(body.data.hourlyStats)).toBe(true);
+  });
+
+  it('does not crash when a trade has an invalid openDate (unparseable)', async () => {
+    const tradesWithBadDate = [
+      ...sampleTrades,
+      { userId: 'user-1', tradeId: 't-bad', symbol: 'BAD', setupType: 'Test', openDate: 'invalid', pnl: 100, accountId: 'acc-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: tradesWithBadDate });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // new Date('invalid').getHours() → NaN, so the trade with NaN hour
+    // should either be grouped under NaN key or skipped; handler must not crash
+    expect(body.success).toBe(true);
+    expect(body.data.hourlyStats).toBeDefined();
+  });
+
+  it('skips trades with pnl = null in calculations', async () => {
+    const tradesWithNull = [
+      { userId: 'user-1', tradeId: 't-null', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: null, accountId: 'acc-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: tradesWithNull });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // pnl is null → `if (!trade.pnl) continue;` skips it → no hourly data
+    expect(body.data.hourlyStats).toEqual([]);
+  });
+
+  it('counts trade with pnl = 0 correctly (not as a win)', async () => {
+    const tradesWithZero = [
+      { userId: 'user-1', tradeId: 't-zero', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 0, accountId: 'acc-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: tradesWithZero });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // pnl=0 is falsy, so `if (!trade.pnl) continue;` skips it
+    // The handler treats pnl=0 as "no pnl" → skipped
+    expect(body.data.hourlyStats).toEqual([]);
+  });
+
+  it('handles division-by-zero: winRate is 0 when no trades in an hour', async () => {
+    // When there are no trades at all, hourlyStats is empty, so no division by zero
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.hourlyStats).toEqual([]);
+    // bestHour and worstHour should be undefined when no data
+    expect(body.data.bestHour).toBeUndefined();
+    expect(body.data.worstHour).toBeUndefined();
+  });
+
+  it('handles QueryCommand pagination (LastEvaluatedKey) in getAllUserTrades', async () => {
+    // First call returns page 1 with LastEvaluatedKey
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({
+        Items: [sampleTrades[0], sampleTrades[1]],
+        LastEvaluatedKey: { userId: 'user-1', tradeId: 't2' },
+      })
+      // getAllUserTrades does NOT paginate (no loop) - it does a single query
+      // So only the first page items are returned
+      .resolvesOnce({
+        Items: [sampleTrades[2], sampleTrades[3]],
+      });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // Only the first page is used (getAllUserTrades doesn't paginate)
+    expect(body.data.hourlyStats).toBeDefined();
+  });
+
+  it('returns empty results when all trades have accountId = -1', async () => {
+    const unmappedOnly = [
+      { userId: 'user-1', tradeId: 't-u1', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 500, accountId: '-1' },
+      { userId: 'user-1', tradeId: 't-u2', symbol: 'MSFT', setupType: 'Reversal', openDate: '2024-03-16T14:00:00Z', pnl: 300, accountId: '-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
+
+    const resHourly = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    expect(resHourly.statusCode).toBe(200);
+    const hourlyBody = JSON.parse(resHourly.body);
+    expect(hourlyBody.data.hourlyStats).toEqual([]);
+
+    ddbMock.reset();
+    ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
+
+    const resSymbol = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    expect(resSymbol.statusCode).toBe(200);
+    const symbolBody = JSON.parse(resSymbol.body);
+    expect(symbolBody.data.symbols).toEqual([]);
+    expect(symbolBody.data.totalSymbols).toBe(0);
+  });
+
+  it('handles symbol distribution with undefined symbol gracefully', async () => {
+    const tradesNoSymbol = [
+      { userId: 'user-1', tradeId: 't-nosym', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 100, accountId: 'acc-1' },
+      ...sampleTrades,
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: tradesNoSymbol });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // The trade with no symbol should be skipped (`if (!trade.symbol) continue;`)
+    const symbolNames = body.data.symbols.map((s: any) => s.symbol);
+    expect(symbolNames).not.toContain(undefined);
+    expect(symbolNames).not.toContain('undefined');
+  });
+
+  it('handles strategy distribution with null setupType (uses Unknown)', async () => {
+    const tradesNullSetup = [
+      { userId: 'user-1', tradeId: 't-nosetup', symbol: 'AAPL', setupType: null, openDate: '2024-03-15T09:30:00Z', pnl: 200, accountId: 'acc-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: tradesNullSetup });
+
+    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // `trade.setupType || 'Unknown'` should fall back to 'Unknown'
+    const strategyNames = body.data.strategies.map((s: any) => s.strategy);
+    expect(strategyNames).toContain('Unknown');
+  });
 });

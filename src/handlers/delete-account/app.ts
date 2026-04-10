@@ -10,6 +10,24 @@ const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 
+async function queryItemsForAccount(tableName: string, keyField: string, userId: string, accountId: string) {
+  const items: any[] = [];
+  let lastKey: any;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'userId = :userId',
+      FilterExpression: 'accountId = :accountId',
+      ExpressionAttributeValues: { ':userId': userId, ':accountId': accountId },
+      ProjectionExpression: keyField,
+      ExclusiveStartKey: lastKey,
+    }));
+    if (result.Items?.length) items.push(...result.Items);
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
@@ -42,33 +60,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Store account for response
     const accountToDelete = existing.Item;
 
-    // Delete all trades associated with this account
-    log.info('fetching trades for account deletion', { accountId });
-    
-    let tradesToDelete: { tradeId: string }[] = [];
-    let lastEvaluatedKey: any = undefined;
-    
-    do {
-      const queryResult = await ddb.send(new QueryCommand({
-        TableName: TRADES_TABLE,
-        KeyConditionExpression: 'userId = :userId',
-        FilterExpression: 'accountId = :accountId',
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':accountId': accountId,
-        },
-        ProjectionExpression: 'tradeId',
-        ExclusiveStartKey: lastEvaluatedKey,
-      }));
-      
-      if (queryResult.Items && queryResult.Items.length > 0) {
-        tradesToDelete.push(...queryResult.Items as { tradeId: string }[]);
-      }
-      
-      lastEvaluatedKey = queryResult.LastEvaluatedKey;
-    } while (lastEvaluatedKey);
-    
-    log.info('found trades to delete', { count: tradesToDelete.length, accountId });
+    // Query trades and goals in parallel
+    log.info('fetching trades and goals for account deletion', { accountId });
+
+    const [tradesToDelete, goalsToDelete] = await Promise.all([
+      queryItemsForAccount(TRADES_TABLE, 'tradeId', userId, accountId),
+      queryItemsForAccount(GOALS_TABLE, 'goalId', userId, accountId),
+    ]) as [{ tradeId: string }[], { goalId: string }[]];
+
+    log.info('found items to delete', { trades: tradesToDelete.length, goals: goalsToDelete.length, accountId });
     
     // Delete images for each trade
     if (tradesToDelete.length > 0) {
@@ -103,34 +103,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
-    // Delete all goals associated with this account
-    log.info('fetching goals for account deletion', { accountId });
-    
-    let goalsToDelete: { goalId: string }[] = [];
-    lastEvaluatedKey = undefined;
-    
-    do {
-      const queryResult = await ddb.send(new QueryCommand({
-        TableName: GOALS_TABLE,
-        KeyConditionExpression: 'userId = :userId',
-        FilterExpression: 'accountId = :accountId',
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':accountId': accountId,
-        },
-        ProjectionExpression: 'goalId',
-        ExclusiveStartKey: lastEvaluatedKey,
-      }));
-      
-      if (queryResult.Items && queryResult.Items.length > 0) {
-        goalsToDelete.push(...queryResult.Items as { goalId: string }[]);
-      }
-      
-      lastEvaluatedKey = queryResult.LastEvaluatedKey;
-    } while (lastEvaluatedKey);
-    
-    log.info('found goals to delete', { count: goalsToDelete.length, accountId });
-    
     // Delete goals in batches of 25
     if (goalsToDelete.length > 0) {
       const batchSize = 25;

@@ -141,4 +141,97 @@ describe('auth-login handler', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).errorCode).toBe('UNAUTHORIZED');
   });
+
+  // ── Additional auth failure cases ───────────────────────────
+
+  it('returns 400 UNAUTHORIZED when user is not found', async () => {
+    const error = new Error('User does not exist.');
+    (error as any).name = 'UserNotFoundException';
+    cognitoMock.on(InitiateAuthCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'nonexistent@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 400 when user account is disabled', async () => {
+    const error = new Error('User is disabled.');
+    (error as any).name = 'NotAuthorizedException';
+    cognitoMock.on(InitiateAuthCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'disabled@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 400 when Cognito throws InternalErrorException', async () => {
+    cognitoMock.on(InitiateAuthCommand).rejects(new Error('InternalErrorException'));
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
+
+  // ── Missing individual fields ───────────────────────────────
+
+  it('returns 400 when both email and password are missing', async () => {
+    const res = await handler(makeEvent({}), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 when email is empty string', async () => {
+    const res = await handler(makeEvent({ email: '', password: 'Password1!' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 when password is empty string', async () => {
+    const res = await handler(makeEvent({ email: 'test@example.com', password: '' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+  });
+
+  // ── Successful login details ────────────────────────────────
+
+  it('calls Cognito with USER_PASSWORD_AUTH flow and correct CLIENT_ID', async () => {
+    cognitoMock.on(InitiateAuthCommand).resolves({
+      AuthenticationResult: {
+        IdToken: 'id', AccessToken: 'acc', RefreshToken: 'ref', ExpiresIn: 3600, TokenType: 'Bearer',
+      },
+    });
+    cognitoMock.on(GetUserCommand).resolves({
+      UserAttributes: [{ Name: 'sub', Value: 'u1' }, { Name: 'name', Value: 'N' }, { Name: 'email', Value: 'e@e.com' }],
+    });
+
+    await handler(makeEvent({ email: 'e@e.com', password: 'Password1!' }), {} as any, () => {});
+
+    const calls = cognitoMock.commandCalls(InitiateAuthCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0].input.AuthFlow).toBe('USER_PASSWORD_AUTH');
+    expect(calls[0].args[0].input.ClientId).toBe('test-client-id');
+    expect(calls[0].args[0].input.AuthParameters?.USERNAME).toBe('e@e.com');
+  });
+
+  it('returns 400 when body is not valid JSON', async () => {
+    const event = makeEvent({ email: 'test@example.com', password: 'Password1!' });
+    event.body = '{invalid-json';
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('UNAUTHORIZED');
+  });
 });

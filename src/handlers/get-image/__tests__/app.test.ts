@@ -241,4 +241,184 @@ describe('get-image handler', () => {
     const body = JSON.parse(res.body);
     expect(body.error).toContain('Failed to retrieve image');
   });
+
+  // ── Security-focused: path traversal variants ───────────────
+
+  it('rejects imageId = ../../secret/file.jpg (deeper traversal)', async () => {
+    const res = await handler(
+      makeEvent('../../secret/file.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBeDefined();
+  });
+
+  it('rejects imageId with encoded path traversal %2e%2e%2f', async () => {
+    // URL-encoded `../../secret/file.jpg`
+    const res = await handler(
+      makeEvent('%2e%2e/%2e%2e/secret/file.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    // The handler validates path parts count (expects 3 parts) and checks for ..
+    // Even if %2e is not decoded, the path structure is wrong
+    expect(res.statusCode).toBe(400);
+  });
+
+  // ── Security-focused: very long imageId ─────────────────────
+
+  it('handles very long imageId (10000 chars) without crashing', async () => {
+    const longPart = 'a'.repeat(3333);
+    const longImageId = `${longPart}/${longPart}/${longPart}.jpg`;
+    const res = await handler(
+      makeEvent(longImageId),
+      {} as any,
+      () => {},
+    ) as any;
+
+    // Should either return 400 (validation) or attempt S3 get; must not crash
+    expect([200, 400, 404, 500]).toContain(res.statusCode);
+    const body = JSON.parse(res.body);
+    expect(body).toBeDefined();
+  });
+
+  // ── Security-focused: null bytes in imageId ─────────────────
+
+  it('handles imageId with null bytes gracefully', async () => {
+    const res = await handler(
+      makeEvent('acc1/trade1/photo\x00.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    // Should not crash; may fail validation or return error
+    expect([200, 400, 404, 500]).toContain(res.statusCode);
+    const body = JSON.parse(res.body);
+    expect(body).toBeDefined();
+  });
+
+  // ── Security-focused: missing imageId parameter ─────────────
+
+  it('returns 400 when pathParameters is empty object', async () => {
+    const event = makeEvent(undefined);
+    event.pathParameters = {};
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('imageId is required');
+  });
+
+  // ── S3 error variants ──────────────────────────────────────
+
+  it('returns 500 when S3 returns AccessDenied error', async () => {
+    const error = new Error('Access Denied');
+    (error as any).name = 'AccessDenied';
+    s3Mock.on(GetObjectCommand).rejects(error);
+
+    const res = await handler(
+      makeEvent('acc1/trade1/photo.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    // AccessDenied is not NoSuchKey, so falls through to generic 500
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('Failed to retrieve image');
+    // Must not expose "Access Denied" raw error to client
+    expect(body.error).not.toContain('Access Denied');
+  });
+
+  it('returns 404 when S3 GetObject returns null Body', async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: undefined as any,
+      ContentType: 'image/jpeg',
+    });
+
+    const res = await handler(
+      makeEvent('acc1/trade1/photo.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('Image not found');
+  });
+
+  // ── Content-type inference ─────────────────────────────────
+
+  it('infers content type from .png extension when S3 returns octet-stream', async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: createReadableStream('fake-png-data') as any,
+      ContentType: 'application/octet-stream',
+    });
+
+    const res = await handler(
+      makeEvent('acc1/trade1/photo.png'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/png');
+  });
+
+  it('infers content type from .gif extension when S3 returns octet-stream', async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: createReadableStream('fake-gif-data') as any,
+      ContentType: 'application/octet-stream',
+    });
+
+    const res = await handler(
+      makeEvent('acc1/trade1/animation.gif'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/gif');
+  });
+
+  it('infers content type from .webp extension when S3 returns octet-stream', async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: createReadableStream('fake-webp-data') as any,
+      ContentType: 'application/octet-stream',
+    });
+
+    const res = await handler(
+      makeEvent('acc1/trade1/image.webp'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/webp');
+  });
+
+  // ── Security headers ───────────────────────────────────────
+
+  it('includes security headers in successful response', async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: createReadableStream('data') as any,
+      ContentType: 'image/jpeg',
+    });
+
+    const res = await handler(
+      makeEvent('acc1/trade1/photo.jpg'),
+      {} as any,
+      () => {},
+    ) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['X-Content-Type-Options']).toBe('nosniff');
+    expect(res.headers['X-Frame-Options']).toBe('DENY');
+    expect(res.headers['Cache-Control']).toContain('private');
+    expect(res.headers['Referrer-Policy']).toBe('strict-origin-when-cross-origin');
+  });
 });

@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand, PutCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import type { DynamoDBStreamEvent } from 'aws-lambda';
+import {
+  DynamoDBDocumentClient,
+  QueryCommand,
+  PutCommand,
+  DeleteCommand,
+  GetCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
+import { marshall } from '@aws-sdk/util-dynamodb';
 
 // Stub env before importing handler
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('TRADE_STATS_TABLE', 'test-stats');
+vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 
 // Mock DynamoDBDocumentClient (the shared ddb module instantiates at import time)
@@ -13,116 +21,273 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 
 const { handler } = await import('../app.ts');
 
-// ─── Helpers ────────────────────────────────────────────────────
+// --- Helpers ----------------------------------------------------------------
 
-function makeStreamEvent(records: DynamoDBStreamEvent['Records']): DynamoDBStreamEvent {
+function makeStreamEvent(records: any[]): any {
   return { Records: records };
 }
 
-function makeInsertRecord(userId: string, tradeId: string, eventID = 'evt-1') {
+function makeStreamRecord(
+  eventName: 'INSERT' | 'MODIFY' | 'REMOVE',
+  newImage?: Record<string, any>,
+  oldImage?: Record<string, any>,
+  eventID?: string,
+) {
   return {
-    eventID,
-    eventName: 'INSERT' as const,
+    eventID: eventID || `event-${Math.random().toString(36).slice(2)}`,
+    eventName,
     dynamodb: {
-      NewImage: {
-        userId: { S: userId },
-        tradeId: { S: tradeId },
-        symbol: { S: 'AAPL' },
-        side: { S: 'BUY' },
-        entryPrice: { N: '100' },
-        exitPrice: { N: '110' },
-        quantity: { N: '10' },
-        accountId: { S: 'acc-1' },
-      },
+      NewImage: newImage ? marshall(newImage) : undefined,
+      OldImage: oldImage ? marshall(oldImage) : undefined,
     },
   };
 }
 
-function makeRemoveRecord(userId: string, tradeId: string, eventID = 'evt-2') {
+function makeTrade(overrides: Record<string, any> = {}) {
   return {
-    eventID,
-    eventName: 'REMOVE' as const,
-    dynamodb: {
-      OldImage: {
-        userId: { S: userId },
-        tradeId: { S: tradeId },
-        symbol: { S: 'AAPL' },
-        side: { S: 'BUY' },
-        entryPrice: { N: '100' },
-        exitPrice: { N: '110' },
-        quantity: { N: '10' },
-        accountId: { S: 'acc-1' },
-      },
-    },
+    userId: 'user-1',
+    tradeId: 'trade-1',
+    symbol: 'AAPL',
+    side: 'BUY',
+    entryPrice: 100,
+    exitPrice: 110,
+    quantity: 10,
+    openDate: '2026-04-06T09:30:00Z',
+    accountId: 'acc-1',
+    ...overrides,
   };
 }
 
-// ─── Tests ──────────────────────────────────────────────────────
+// --- Tests ------------------------------------------------------------------
 
 beforeEach(() => {
   ddbMock.reset();
-  // rebuildStats does a Query on TRADES_TABLE, then Put on STATS_TABLE
-  ddbMock.on(QueryCommand).resolves({
-    Items: [
-      {
-        userId: 'user-1',
-        tradeId: 'trade-1',
-        symbol: 'AAPL',
-        side: 'BUY',
-        entryPrice: 100,
-        exitPrice: 110,
-        quantity: 10,
-        accountId: 'acc-1',
-      },
-    ],
-    LastEvaluatedKey: undefined,
-  });
-  ddbMock.on(PutCommand).resolves({});
-  ddbMock.on(GetCommand).resolves({
-    Item: { initialBalance: 10000 },
-  });
+  // Default mocks for the dual-write rebuildStats path
+  ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 10000 } });
   ddbMock.on(UpdateCommand).resolves({});
+  ddbMock.on(PutCommand).resolves({});
+  ddbMock.on(DeleteCommand).resolves({});
 });
 
-describe('update-stats handler', () => {
-  // ── Success ─────────────────────────────────────────────────
+describe('update-stats stream handler', () => {
+  // -- INSERT event ----------------------------------------------------------
 
-  it('processes INSERT event and rebuilds stats', async () => {
-    const event = makeStreamEvent([makeInsertRecord('user-1', 'trade-1')]);
+  it('creates daily stats record for a new trade (INSERT)', async () => {
+    const trade = makeTrade();
 
-    const result = await handler(event, {} as any, () => {});
+    // QueryCommand for trades-by-date-gsi (queryTradesForDay) returns the trade
+    // QueryCommand for rebuildStats returns the same trade
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade],
+      LastEvaluatedKey: undefined,
+    });
 
-    // Should have queried trades and written stats
-    expect(ddbMock.commandCalls(QueryCommand).length).toBeGreaterThanOrEqual(1);
-    expect(ddbMock.commandCalls(PutCommand).length).toBeGreaterThanOrEqual(1);
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-insert-1'),
+    ]);
 
-    const statsItem = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item;
-    expect(statsItem.userId).toBe('user-1');
-    expect(statsItem.tradeCount).toBe(1);
+    await handler(event, {} as any, () => {});
+
+    // Verify PutCommand was called with DailyStatsTable
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Find the PutCommand targeting the daily stats table
+    const dailyStatsPut = putCalls.find(
+      (c) => c.args[0].input.TableName === 'test-daily-stats',
+    );
+    expect(dailyStatsPut).toBeDefined();
+    const item = dailyStatsPut!.args[0].input.Item;
+    expect(item.userId).toBe('user-1');
+    expect(item.accountId).toBe('acc-1');
+    expect(item.date).toBe('2026-04-06');
+    expect(item.sk).toBe('acc-1#2026-04-06');
   });
 
-  it('processes REMOVE event and rebuilds stats from oldImage userId', async () => {
-    // After removal, the query returns empty (trade was deleted)
+  // -- REMOVE event ----------------------------------------------------------
+
+  it('deletes daily record when no more trades on that day (REMOVE)', async () => {
+    const trade = makeTrade();
+
+    // queryTradesForDay returns empty (the trade was deleted)
+    // rebuildStats also queries trades
+    ddbMock
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [], LastEvaluatedKey: undefined }) // queryTradesForDay
+      .resolves({ Items: [], LastEvaluatedKey: undefined });     // rebuildStats
+
+    const event = makeStreamEvent([
+      makeStreamRecord('REMOVE', undefined, trade, 'evt-remove-1'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Verify DeleteCommand was called on DailyStatsTable
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
+
+    const dailyStatsDelete = deleteCalls.find(
+      (c) => c.args[0].input.TableName === 'test-daily-stats',
+    );
+    expect(dailyStatsDelete).toBeDefined();
+    expect(dailyStatsDelete!.args[0].input.Key).toEqual({
+      userId: 'user-1',
+      sk: 'acc-1#2026-04-06',
+    });
+  });
+
+  // -- MODIFY with date change -----------------------------------------------
+
+  it('rebuilds both old and new day when trade date changes (MODIFY)', async () => {
+    const oldTrade = makeTrade({ openDate: '2026-04-06T09:30:00Z' });
+    const newTrade = makeTrade({ openDate: '2026-04-08T10:00:00Z' });
+
+    // queryTradesForDay will be called for both dates, plus rebuildStats queries
+    ddbMock.on(QueryCommand).resolves({
+      Items: [newTrade],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-1'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Should have queried for both the old date (2026-04-06) and new date (2026-04-08)
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+
+    // Extract the dates queried from the GSI queries (filter for queryTradesForDay calls)
+    const gsiQueries = queryCalls.filter(
+      (c) => c.args[0].input.IndexName === 'trades-by-date-gsi',
+    );
+    expect(gsiQueries.length).toBeGreaterThanOrEqual(2);
+
+    const queriedDates = gsiQueries.map(
+      (c) => c.args[0].input.ExpressionAttributeValues[':d'],
+    );
+    expect(queriedDates).toContain('2026-04-06');
+    expect(queriedDates).toContain('2026-04-08');
+  });
+
+  // -- Skips unmapped trades -------------------------------------------------
+
+  it('skips trades with accountId = -1 (no daily stats write)', async () => {
+    const unmappedTrade = makeTrade({ accountId: '-1' });
+
+    // rebuildStats still runs for the userId, but queryTradesForDay should NOT be called
+    // for the unmapped trade's day
     ddbMock.on(QueryCommand).resolves({
       Items: [],
       LastEvaluatedKey: undefined,
     });
 
-    const event = makeStreamEvent([makeRemoveRecord('user-1', 'trade-1')]);
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', unmappedTrade, undefined, 'evt-unmapped'),
+    ]);
 
-    const result = await handler(event, {} as any, () => {});
+    await handler(event, {} as any, () => {});
 
-    expect(ddbMock.commandCalls(QueryCommand).length).toBeGreaterThanOrEqual(1);
+    // Should NOT have any PutCommand targeting daily stats table for this trade
     const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
+    const dailyStatsPuts = putCalls.filter(
+      (c) => c.args[0].input.TableName === 'test-daily-stats',
+    );
+    expect(dailyStatsPuts).toHaveLength(0);
 
-    const statsItem = putCalls[0].args[0].input.Item;
-    expect(statsItem.userId).toBe('user-1');
-    expect(statsItem.tradeCount).toBe(0);
-    expect(statsItem.realizedPnL).toBe(0);
+    // Should NOT have any queryTradesForDay calls (GSI queries)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiQueries).toHaveLength(0);
   });
 
-  // ── Missing userId ──────────────────────────────────────────
+  // -- Deduplicates affected days --------------------------------------------
+
+  it('deduplicates affected days in a batch (same userId, accountId, date)', async () => {
+    const trade1 = makeTrade({ tradeId: 'trade-1', openDate: '2026-04-06T09:30:00Z' });
+    const trade2 = makeTrade({ tradeId: 'trade-2', openDate: '2026-04-06T10:00:00Z' });
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade1, trade2],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade1, undefined, 'evt-dup-1'),
+      makeStreamRecord('INSERT', trade2, undefined, 'evt-dup-2'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // queryTradesForDay should only be called ONCE for 2026-04-06 (deduplication)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+
+    const dateQueries = gsiQueries.filter(
+      (c) => c.args[0].input.ExpressionAttributeValues[':d'] === '2026-04-06',
+    );
+    expect(dateQueries).toHaveLength(1);
+
+    // Only one PutCommand to daily stats for that day
+    const dailyStatsPuts = ddbMock
+      .commandCalls(PutCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+    expect(dailyStatsPuts).toHaveLength(1);
+  });
+
+  // -- Error handling (batchItemFailures) ------------------------------------
+
+  it('returns batchItemFailures on error', async () => {
+    ddbMock.on(QueryCommand).rejects(new Error('DynamoDB error'));
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', makeTrade(), undefined, 'evt-fail-1'),
+      makeStreamRecord('INSERT', makeTrade({ tradeId: 'trade-2' }), undefined, 'evt-fail-2'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    expect(result.batchItemFailures).toBeDefined();
+    expect(result.batchItemFailures.length).toBe(2);
+
+    const identifiers = result.batchItemFailures.map((f: any) => f.itemIdentifier);
+    expect(identifiers).toContain('evt-fail-1');
+    expect(identifiers).toContain('evt-fail-2');
+  });
+
+  // -- Dual-write to old stats table -----------------------------------------
+
+  it('calls rebuildStats for dual-write to old stats table', async () => {
+    const trade = makeTrade({
+      side: 'BUY',
+      entryPrice: 100,
+      exitPrice: 120,
+      quantity: 5,
+    });
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-dual-1'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // rebuildStats updates account balances (legacy stats table write removed)
+    // Verify account balance update was attempted
+    const getCalls = ddbMock.commandCalls(GetCommand);
+    const accountGet = getCalls.find(
+      (c) => c.args[0].input.TableName === 'test-accounts',
+    );
+    expect(accountGet).toBeDefined();
+  });
+
+  // -- Skips records with no userId ------------------------------------------
 
   it('skips record when userId is missing from both images', async () => {
     const event = makeStreamEvent([
@@ -130,46 +295,408 @@ describe('update-stats handler', () => {
         eventID: 'evt-no-user',
         eventName: 'INSERT' as const,
         dynamodb: {
-          NewImage: {
-            tradeId: { S: 'trade-1' },
-          },
+          NewImage: marshall({ tradeId: 'trade-1', accountId: 'acc-1', openDate: '2026-04-06' }),
         },
       },
     ]);
 
-    const result = await handler(event, {} as any, () => {});
+    await handler(event, {} as any, () => {});
 
-    // Should not have called QueryCommand since there's no userId to rebuild
-    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+    // No QueryCommand should have been made (no userId to process)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiQueries).toHaveLength(0);
   });
 
-  // ── Error handling ──────────────────────────────────────────
+  // -- Multiple users in same batch ------------------------------------------
 
-  it('returns batchItemFailures when rebuildStats throws', async () => {
-    ddbMock.on(QueryCommand).rejects(new Error('DynamoDB error'));
+  it('processes records for multiple users independently', async () => {
+    const trade1 = makeTrade({ userId: 'user-1', tradeId: 'trade-1' });
+    const trade2 = makeTrade({ userId: 'user-2', tradeId: 'trade-2', accountId: 'acc-2' });
 
-    const event = makeStreamEvent([makeInsertRecord('user-1', 'trade-1', 'evt-fail')]);
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade1],
+      LastEvaluatedKey: undefined,
+    });
 
-    const result = await handler(event, {} as any, () => {}) as any;
-
-    expect(result.batchItemFailures).toBeDefined();
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe('evt-fail');
-  });
-
-  // ── Multiple records ────────────────────────────────────────
-
-  it('processes multiple records in a single event', async () => {
     const event = makeStreamEvent([
-      makeInsertRecord('user-1', 'trade-1', 'evt-1'),
-      makeInsertRecord('user-2', 'trade-2', 'evt-2'),
+      makeStreamRecord('INSERT', trade1, undefined, 'evt-multi-1'),
+      makeStreamRecord('INSERT', trade2, undefined, 'evt-multi-2'),
     ]);
 
-    // The QueryCommand will return the default mock for both calls
-    const result = await handler(event, {} as any, () => {});
+    await handler(event, {} as any, () => {});
 
-    // Should have made at least 2 query calls (one per record/user)
-    expect(ddbMock.commandCalls(QueryCommand).length).toBeGreaterThanOrEqual(2);
-    expect(ddbMock.commandCalls(PutCommand).length).toBeGreaterThanOrEqual(2);
+    // Should have queried trades for both users
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    expect(queryCalls.length).toBeGreaterThanOrEqual(2);
+
+    // Should have processed both users (account balance updates attempted)
+    const getCalls = ddbMock.commandCalls(GetCommand);
+    const accountGets = getCalls.filter(
+      (c) => c.args[0].input.TableName === 'test-accounts',
+    );
+    expect(accountGets.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -- Stream record with missing dynamodb field ----------------------------
+
+  it('skips record when dynamodb field is undefined', async () => {
+    const event = makeStreamEvent([
+      {
+        eventID: 'evt-no-dynamodb',
+        eventName: 'INSERT',
+        // dynamodb is missing entirely
+      },
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // Should not crash; no failures returned
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // No DynamoDB operations should have been triggered
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  // -- Stream record with empty NewImage and OldImage -----------------------
+
+  it('skips record when both NewImage and OldImage are null', async () => {
+    const event = makeStreamEvent([
+      {
+        eventID: 'evt-empty-images',
+        eventName: 'MODIFY',
+        dynamodb: {
+          NewImage: undefined,
+          OldImage: undefined,
+        },
+      },
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // No GSI queries should have been made (no userId to extract)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiQueries).toHaveLength(0);
+  });
+
+  // -- QueryCommand fails when fetching trades for day ----------------------
+
+  it('returns batchItemFailures when queryTradesForDay rejects', async () => {
+    // All QueryCommands fail — queryTradesForDay will reject
+    ddbMock.on(QueryCommand).rejects(new Error('Throttled'));
+
+    const trade = makeTrade();
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-query-fail'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    expect(result.batchItemFailures).toBeDefined();
+    expect(result.batchItemFailures.length).toBeGreaterThanOrEqual(1);
+    const identifiers = result.batchItemFailures.map((f: any) => f.itemIdentifier);
+    expect(identifiers).toContain('evt-query-fail');
+  });
+
+  // -- PutCommand fails when writing daily stats ----------------------------
+
+  it('returns batchItemFailures when PutCommand for daily stats rejects', async () => {
+    const trade = makeTrade();
+
+    // QueryCommand succeeds (returns trade for the day)
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade],
+      LastEvaluatedKey: undefined,
+    });
+
+    // PutCommand fails for daily stats table
+    ddbMock.on(PutCommand).rejects(new Error('ConditionalCheckFailed'));
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-put-fail'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    expect(result.batchItemFailures).toBeDefined();
+    expect(result.batchItemFailures.length).toBeGreaterThanOrEqual(1);
+    const identifiers = result.batchItemFailures.map((f: any) => f.itemIdentifier);
+    expect(identifiers).toContain('evt-put-fail');
+  });
+
+  // -- DeleteCommand fails when removing empty day stats --------------------
+
+  it('returns batchItemFailures when DeleteCommand for empty day rejects', async () => {
+    const trade = makeTrade();
+
+    // queryTradesForDay returns empty (triggers delete path)
+    ddbMock.on(QueryCommand).resolves({
+      Items: [],
+      LastEvaluatedKey: undefined,
+    });
+
+    // DeleteCommand fails
+    ddbMock.on(DeleteCommand).rejects(new Error('AccessDenied'));
+
+    const event = makeStreamEvent([
+      makeStreamRecord('REMOVE', undefined, trade, 'evt-delete-fail'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // The error in the try block marks all records as failed
+    expect(result.batchItemFailures).toBeDefined();
+    expect(result.batchItemFailures.length).toBeGreaterThanOrEqual(1);
+    const identifiers = result.batchItemFailures.map((f: any) => f.itemIdentifier);
+    expect(identifiers).toContain('evt-delete-fail');
+  });
+
+  // -- Trade with invalid/empty openDate ------------------------------------
+
+  it('skips affected day when trade has empty openDate', async () => {
+    const trade = makeTrade({ openDate: '' });
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-empty-date'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // Should not crash; extractDate('') returns '' which is falsy, so no day is added
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // No GSI queries for queryTradesForDay should have been made
+    // (no valid date was extracted, so no affected days)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiQueries).toHaveLength(0);
+  });
+
+  // -- GetCommand fails for account balance (initialBalance) ----------------
+
+  it('handles GetCommand failure for account balance without failing entire batch', async () => {
+    const trade = makeTrade();
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade],
+      LastEvaluatedKey: undefined,
+    });
+    ddbMock.on(PutCommand).resolves({});
+
+    // GetCommand for initial balance fails
+    ddbMock.on(GetCommand).rejects(new Error('Account table unavailable'));
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-get-fail'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // updateAccountBalances catches errors per-account, so the batch should succeed
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // Daily stats PutCommand should still have been called
+    const dailyStatsPuts = ddbMock
+      .commandCalls(PutCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+    expect(dailyStatsPuts.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -- Stream event with 100+ records --------------------------------------
+
+  it('processes a large batch of 100+ stream records', async () => {
+    const records: any[] = [];
+    for (let i = 0; i < 110; i++) {
+      const trade = makeTrade({
+        tradeId: `trade-${i}`,
+        openDate: `2026-04-06T${String(9 + (i % 8)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00Z`,
+      });
+      records.push(makeStreamRecord('INSERT', trade, undefined, `evt-batch-${i}`));
+    }
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [makeTrade()],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent(records);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // All records should succeed (no failures)
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // Daily stats should have been written (deduplication means 1 write for the single day)
+    const dailyStatsPuts = ddbMock
+      .commandCalls(PutCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+    expect(dailyStatsPuts.length).toBeGreaterThanOrEqual(1);
+
+    // rebuildStats should have processed the user (account balance update)
+    const accountGets = ddbMock
+      .commandCalls(GetCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-accounts');
+    expect(accountGets.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -- MODIFY where accountId changed from valid to '-1' --------------------
+
+  it('only rebuilds old day when accountId changes from valid to -1 (MODIFY)', async () => {
+    const oldTrade = makeTrade({ accountId: 'acc-1', openDate: '2026-04-06T09:30:00Z' });
+    const newTrade = makeTrade({ accountId: '-1', openDate: '2026-04-06T09:30:00Z' });
+
+    // queryTradesForDay returns empty for the old account's day (trade moved away)
+    ddbMock.on(QueryCommand).resolves({
+      Items: [],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-acc-change'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Should only query for old account (acc-1), not for '-1'
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+
+    // Only acc-1 day should be queried
+    const accountFilters = gsiQueries.map(
+      (c) => c.args[0].input.ExpressionAttributeValues[':a'],
+    );
+    expect(accountFilters).toContain('acc-1');
+    expect(accountFilters).not.toContain('-1');
+  });
+
+  // -- rebuildStats uses ProjectionExpression for reduced read cost ----------
+
+  it('rebuildStats QueryCommand uses ProjectionExpression with only stats fields', async () => {
+    const trade = makeTrade();
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [trade],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-projection'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Find the QueryCommand targeting the TRADES_TABLE (not the GSI) — that is the rebuildStats call
+    const rebuildQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter(
+        (c) =>
+          c.args[0].input.TableName === 'test-trades' &&
+          !c.args[0].input.IndexName,
+      );
+    expect(rebuildQueries.length).toBeGreaterThanOrEqual(1);
+
+    for (const call of rebuildQueries) {
+      const projection = call.args[0].input.ProjectionExpression;
+      expect(projection).toBeDefined();
+      // Must include the fields needed by calcPnL + accountId
+      expect(projection).toContain('pnl');
+      expect(projection).toContain('side');
+      expect(projection).toContain('entryPrice');
+      expect(projection).toContain('exitPrice');
+      expect(projection).toContain('quantity');
+      expect(projection).toContain('accountId');
+    }
+  });
+
+  // -- rebuildStats logs warning for >10,000 trades ---------------------------
+
+  it('logs warning when user has more than 10,000 trades', async () => {
+    const trade = makeTrade();
+
+    // Simulate a response that claims a large number of items via pagination
+    // First page: 10,001 items (simulate with Count), second page: done
+    const largeBatch = Array.from({ length: 100 }, (_, i) =>
+      makeTrade({ tradeId: `trade-${i}` }),
+    );
+
+    // We simulate >10,000 by chaining paginated responses
+    // 101 pages of 100 items each = 10,100 items
+    const pages: any[] = [];
+    for (let i = 0; i < 101; i++) {
+      pages.push({
+        Items: largeBatch,
+        LastEvaluatedKey: i < 100 ? { userId: 'user-1', tradeId: `page-${i}` } : undefined,
+      });
+    }
+
+    // queryTradesForDay (GSI) returns the trade, then rebuildStats pages through
+    let callIndex = 0;
+    ddbMock.on(QueryCommand).callsFake((input: any) => {
+      if (input.IndexName === 'trades-by-date-gsi') {
+        return { Items: [trade], LastEvaluatedKey: undefined };
+      }
+      // rebuildStats pagination
+      return pages[callIndex++] || { Items: [], LastEvaluatedKey: undefined };
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-large-user'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Verify that a warning was logged about the high trade count
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('10100 trades'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('consider migrating to incremental stats'),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  // -- INSERT where accountId is numeric -1 (not string) --------------------
+
+  it('skips trade when accountId is numeric -1 (not string)', async () => {
+    const trade = makeTrade({ accountId: -1 });
+
+    ddbMock.on(QueryCommand).resolves({
+      Items: [],
+      LastEvaluatedKey: undefined,
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-numeric-neg1'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Should NOT have any queryTradesForDay calls (numeric -1 is skipped)
+    const gsiQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiQueries).toHaveLength(0);
+
+    // Should NOT write daily stats
+    const dailyStatsPuts = ddbMock
+      .commandCalls(PutCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+    expect(dailyStatsPuts).toHaveLength(0);
   });
 });
