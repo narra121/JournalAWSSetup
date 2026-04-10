@@ -10,6 +10,8 @@ Globals:
     Timeout: 10
     MemorySize: 256
     Tracing: PassThrough
+    DeploymentPreference:
+      Type: AllAtOnce
     Environment:
       Variables:
         # Allow either newly created resources or existing ones passed in via parameters
