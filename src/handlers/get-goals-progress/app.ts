@@ -1,4 +1,4 @@
-import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { getUserId } from '../../shared/auth';
@@ -10,7 +10,7 @@ const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 const RULES_TABLE = process.env.RULES_TABLE!;
 
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
   if (!userId) {
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
