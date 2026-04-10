@@ -11,7 +11,7 @@ export const handler = async () => {
   let lastEvaluatedKey: any = undefined;
   const userBuckets: Record<string, any[]> = {};
   do {
-    const resp: any = await ddb.send(new ScanCommand({ TableName: TRADES_TABLE, ExclusiveStartKey: lastEvaluatedKey, ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId', ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' } }));
+    const resp: any = await ddb.send(new ScanCommand({ TableName: TRADES_TABLE, ExclusiveStartKey: lastEvaluatedKey, ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl', ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' } }));
     const items = resp.Items || [];
     for (const it of items) {
       const uid = it.userId;
@@ -29,8 +29,13 @@ export const handler = async () => {
       const accountId = t.accountId;
       if (!accountId || accountId === '-1' || accountId === -1) continue;
 
-      if (t.entryPrice != null && t.exitPrice != null && t.quantity != null) {
-        const pnl = t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity;
+      // Use stored pnl if available, fallback to calculation from prices
+      const pnl = (t.pnl != null && typeof t.pnl === 'number')
+        ? t.pnl
+        : (t.entryPrice != null && t.exitPrice != null && t.quantity != null)
+          ? (t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity)
+          : null;
+      if (pnl != null) {
         realizedPnL += pnl;
         if (pnl > 0) { wins++; sumWinPnL += pnl; if (pnl > bestWin) bestWin = pnl; }
         else if (pnl < 0) { losses++; sumLossPnL += pnl; if (pnl < worstLoss) worstLoss = pnl; }

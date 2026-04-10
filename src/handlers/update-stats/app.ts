@@ -11,6 +11,9 @@ const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 // Also updates account balances based on trade PnL.
 
 const calcPnL = (item: any) => {
+  // Use the stored pnl field if available (frontend pre-calculates this)
+  if (item.pnl != null && typeof item.pnl === 'number') return item.pnl;
+  // Fallback: calculate from prices
   const entry = item.entryPrice;
   const exit = item.exitPrice;
   const qty = item.quantity;
