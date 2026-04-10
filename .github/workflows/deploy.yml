@@ -77,6 +77,7 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/download-artifact@v4
         with:
           name: sam-build
@@ -100,7 +101,7 @@ jobs:
             --type "SecureString" \
             --overwrite \
             --region $AWS_REGION
-      
+
       - name: Store Razorpay Webhook Secret in SSM
         env:
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
@@ -111,19 +112,18 @@ jobs:
             --type "SecureString" \
             --overwrite \
             --region $AWS_REGION
-      
-      - name: Validate SAM (dev)
-        run: sam validate --region $AWS_REGION
-      - name: Deploy to Dev
+
+      - name: Install esbuild for SAM sync
+        run: bun install -g esbuild@latest
+      - name: Deploy to Dev (incremental)
         env:
           RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_DEV }}
           RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET_DEV }}
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
         run: |
-          sam deploy \
+          sam sync \
             --stack-name tradeflow-dev \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
+            --no-watch \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               StageName=tradeflow-dev \
