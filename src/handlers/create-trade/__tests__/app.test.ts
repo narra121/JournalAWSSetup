@@ -50,6 +50,7 @@ function makeEvent(body: any, overrides: Partial<APIGatewayProxyEventV2> = {}): 
   } as unknown as APIGatewayProxyEventV2;
 }
 
+// Minimal valid payload (what tests were using)
 const validTrade = {
   symbol: 'AAPL',
   side: 'BUY',
@@ -58,6 +59,33 @@ const validTrade = {
   entryPrice: 150,
   exitPrice: 160,
   outcome: 'TP',
+};
+
+// Full payload matching what the UI actually sends via tradesApi.createTrade
+const fullUiTrade = {
+  symbol: 'NIFTY',
+  side: 'BUY',
+  quantity: 50,
+  entryPrice: 22000,
+  exitPrice: 22200,
+  stopLoss: 21900,
+  takeProfit: 22400,
+  openDate: '2024-06-15T09:30:00.000Z',
+  closeDate: '2024-06-15T15:00:00.000Z',
+  outcome: 'TP',
+  pnl: 10000,
+  riskRewardRatio: 2,
+  setupType: 'Breakout',
+  tradingSession: 'Morning',
+  marketCondition: 'Trending',
+  tradeNotes: 'Clean breakout above resistance',
+  newsEvents: ['RBI policy decision'],
+  mistakes: ['Entered too early'],
+  lessons: ['Wait for confirmation candle'],
+  tags: ['nifty', 'breakout'],
+  accountIds: ['acc-1'],
+  brokenRuleIds: [],
+  images: [],
 };
 
 // ─── Tests ──────────────────────────────────────────────────────
@@ -181,6 +209,114 @@ describe('create-trade handler', () => {
     const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(400);
+  });
+
+  // ── Full UI payload ─────────────────────────────────────────
+
+  it('creates a trade with the full UI payload (all optional fields)', async () => {
+    const res = await handler(makeEvent(fullUiTrade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.trade.symbol).toBe('NIFTY');
+    expect(body.data.trade.pnl).toBe(10000);
+    expect(body.data.trade.setupType).toBe('Breakout');
+    expect(body.data.trade.tradingSession).toBe('Morning');
+    expect(body.data.trade.marketCondition).toBe('Trending');
+    expect(body.data.trade.tradeNotes).toBe('Clean breakout above resistance');
+    expect(body.data.trade.newsEvents).toEqual(['RBI policy decision']);
+    expect(body.data.trade.mistakes).toEqual(['Entered too early']);
+    expect(body.data.trade.brokenRuleIds).toEqual([]);
+    expect(body.data.trade.accountId).toBe('acc-1');
+  });
+
+  it('accepts trade with zero stopLoss and takeProfit', async () => {
+    const trade = { ...validTrade, stopLoss: 0, takeProfit: 0, riskRewardRatio: 0 };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.data.trade.stopLoss).toBe(0);
+    expect(body.data.trade.takeProfit).toBe(0);
+  });
+
+  it('accepts trade with null optional fields', async () => {
+    const trade = {
+      ...validTrade,
+      exitPrice: null,
+      stopLoss: null,
+      takeProfit: null,
+      setupType: null,
+      tradingSession: null,
+      marketCondition: null,
+      tradeNotes: null,
+      closeDate: null,
+    };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('accepts trade with empty arrays for optional list fields', async () => {
+    const trade = {
+      ...validTrade,
+      newsEvents: [],
+      mistakes: [],
+      lessons: [],
+      tags: [],
+      brokenRuleIds: [],
+      images: [],
+    };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('accepts trade with images containing data URI in url', async () => {
+    const trade = {
+      ...validTrade,
+      images: [
+        {
+          id: 'img-1',
+          url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          timeframe: '1H',
+          description: 'Entry screenshot',
+        },
+      ],
+    };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.data.trade.images).toHaveLength(1);
+    expect(body.data.trade.images[0].id).toBeDefined();
+    // Should have uploaded to S3
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
+  });
+
+  it('accepts trade with images containing empty description', async () => {
+    const trade = {
+      ...validTrade,
+      images: [
+        {
+          id: 'img-1',
+          url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          timeframe: '1H',
+          description: '',
+        },
+      ],
+    };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('accepts trade with ISO datetime string for openDate', async () => {
+    const trade = { ...validTrade, openDate: '2024-06-15T09:30:00.000Z' };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
   });
 
   // ── DynamoDB errors ─────────────────────────────────────────
