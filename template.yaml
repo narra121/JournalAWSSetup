@@ -726,8 +726,8 @@ Resources:
       CodeUri: .
       Handler: src/handlers/rebuild-stats-job/app.handler
       Description: Periodic full stats rebuild for all users (scan Trades)
-      Timeout: 120
-      MemorySize: 512
+      Timeout: 900
+      MemorySize: 2048
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
