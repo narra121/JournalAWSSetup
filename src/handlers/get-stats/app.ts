@@ -8,7 +8,7 @@ import { DailyStatsRecord } from '../../shared/metrics/types';
 
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
-export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const userId = getUserId(event);
   if (!userId) {
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');

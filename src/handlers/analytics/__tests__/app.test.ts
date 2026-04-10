@@ -7,7 +7,7 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 
 // Must import handler after env stubs
-const { lambdaHandler } = await import('../app.ts');
+const { handler } = await import('../app.ts');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -91,7 +91,7 @@ describe('analytics handler', () => {
   it('returns hourlyStats, bestHour, and worstHour for type=hourly', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -107,7 +107,7 @@ describe('analytics handler', () => {
   it('returns dailyWinRate, totalDays, and overallWinRate for type=daily-win-rate', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -123,7 +123,7 @@ describe('analytics handler', () => {
   it('returns symbols, totalSymbols, mostTraded, and mostProfitable for type=symbol-distribution', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -139,7 +139,7 @@ describe('analytics handler', () => {
   it('returns strategies, totalStrategies, mostUsed, and mostProfitable for type=strategy-distribution', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -155,7 +155,7 @@ describe('analytics handler', () => {
   it('returns 400 for an unknown analytics type', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'unknown-type' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'unknown-type' } })) as any;
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
@@ -166,7 +166,7 @@ describe('analytics handler', () => {
 
   it('returns 401 when authorization header is missing', async () => {
     const event = makeEvent({ headers: {} });
-    const res = await lambdaHandler(event) as any;
+    const res = await handler(event) as any;
 
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body);
@@ -178,7 +178,7 @@ describe('analytics handler', () => {
   it('returns empty arrays when user has no trades (hourly)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -188,7 +188,7 @@ describe('analytics handler', () => {
   it('returns empty arrays when user has no trades (daily-win-rate)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -199,7 +199,7 @@ describe('analytics handler', () => {
   it('returns empty arrays when user has no trades (symbol-distribution)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -210,7 +210,7 @@ describe('analytics handler', () => {
   it('returns empty arrays when user has no trades (strategy-distribution)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -227,7 +227,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesWithUnmapped });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -243,7 +243,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesWithUnmapped });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -256,7 +256,7 @@ describe('analytics handler', () => {
   it('returns 500 when DynamoDB query fails', async () => {
     ddbMock.on(QueryCommand).rejects(new Error('DynamoDB timeout'));
 
-    const res = await lambdaHandler(makeEvent()) as any;
+    const res = await handler(makeEvent()) as any;
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
@@ -270,7 +270,7 @@ describe('analytics handler', () => {
     ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
 
     const event = makeEvent({ queryStringParameters: null as any });
-    const res = await lambdaHandler(event) as any;
+    const res = await handler(event) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -287,7 +287,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesWithBadDate });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -303,7 +303,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesWithNull });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -318,7 +318,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesWithZero });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -331,7 +331,7 @@ describe('analytics handler', () => {
     // When there are no trades at all, hourlyStats is empty, so no division by zero
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -354,7 +354,7 @@ describe('analytics handler', () => {
         Items: [sampleTrades[2], sampleTrades[3]],
       });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -370,7 +370,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
 
-    const resHourly = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    const resHourly = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
     expect(resHourly.statusCode).toBe(200);
     const hourlyBody = JSON.parse(resHourly.body);
     expect(hourlyBody.data.hourlyStats).toEqual([]);
@@ -378,7 +378,7 @@ describe('analytics handler', () => {
     ddbMock.reset();
     ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
 
-    const resSymbol = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const resSymbol = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
     expect(resSymbol.statusCode).toBe(200);
     const symbolBody = JSON.parse(resSymbol.body);
     expect(symbolBody.data.symbols).toEqual([]);
@@ -392,7 +392,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesNoSymbol });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -409,7 +409,7 @@ describe('analytics handler', () => {
     ];
     ddbMock.on(QueryCommand).resolves({ Items: tradesNullSetup });
 
-    const res = await lambdaHandler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);

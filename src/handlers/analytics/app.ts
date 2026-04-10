@@ -9,7 +9,7 @@ const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 type AnalyticsType = 'hourly' | 'daily-win-rate' | 'symbol-distribution' | 'strategy-distribution';
 
-export const lambdaHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const userId = getUserId(event);
   const type = (event.queryStringParameters?.type || 'hourly') as AnalyticsType;
   const logger = makeLogger({ requestId: event.requestContext.requestId, userId });

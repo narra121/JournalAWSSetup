@@ -8,7 +8,7 @@ vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 // Mock DynamoDBDocumentClient (the shared ddb module instantiates at import time)
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-const { lambdaHandler } = await import('../app.ts');
+const { handler } = await import('../app.ts');
 
 // --- Helpers ----------------------------------------------------------------
 
@@ -73,7 +73,7 @@ describe('get-stats handler', () => {
       headers: {},
     };
 
-    const res = await lambdaHandler(event as any);
+    const res = await handler(event as any);
 
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body);
@@ -83,7 +83,7 @@ describe('get-stats handler', () => {
   // -- Validation ------------------------------------------------------------
 
   it('returns 400 when missing accountId', async () => {
-    const res = await lambdaHandler(makeEvent({ startDate: '2026-04-01', endDate: '2026-04-30' }));
+    const res = await handler(makeEvent({ startDate: '2026-04-01', endDate: '2026-04-30' }));
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
@@ -92,7 +92,7 @@ describe('get-stats handler', () => {
   });
 
   it('returns 400 when missing startDate', async () => {
-    const res = await lambdaHandler(makeEvent({ accountId: 'acc-1', endDate: '2026-04-30' }));
+    const res = await handler(makeEvent({ accountId: 'acc-1', endDate: '2026-04-30' }));
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
@@ -101,7 +101,7 @@ describe('get-stats handler', () => {
   });
 
   it('returns 400 when missing endDate', async () => {
-    const res = await lambdaHandler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01' }));
+    const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01' }));
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
@@ -139,7 +139,7 @@ describe('get-stats handler', () => {
 
     ddbMock.on(QueryCommand).resolves({ Items: [record1, record2] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -183,7 +183,7 @@ describe('get-stats handler', () => {
 
     ddbMock.on(QueryCommand).resolves({ Items: [record1, record2] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'ALL', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -230,7 +230,7 @@ describe('get-stats handler', () => {
         Items: [record2],
       });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -252,7 +252,7 @@ describe('get-stats handler', () => {
   it('returns empty stats when no daily records found', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -279,7 +279,7 @@ describe('get-stats handler', () => {
 
     ddbMock.on(QueryCommand).resolves({ Items: [record] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({
         accountId: 'acc-1',
         startDate: '2026-04-01',
@@ -303,7 +303,7 @@ describe('get-stats handler', () => {
   it('returns 500 when DynamoDB query fails', async () => {
     ddbMock.on(QueryCommand).rejects(new Error('DynamoDB timeout'));
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -318,7 +318,7 @@ describe('get-stats handler', () => {
   it('queries DynamoDB with invalid startDate string (DDB handles it)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: 'not-a-date', endDate: '2026-04-30' }),
     );
 
@@ -334,7 +334,7 @@ describe('get-stats handler', () => {
   it('returns empty results when startDate is after endDate', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-12-31', endDate: '2026-01-01' }),
     );
 
@@ -350,7 +350,7 @@ describe('get-stats handler', () => {
     const record = makeDailyRecord();
     ddbMock.on(QueryCommand).resolves({ Items: [record] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({
         accountId: 'acc-1',
         startDate: '2026-04-01',
@@ -371,7 +371,7 @@ describe('get-stats handler', () => {
   it('returns 500 when GSI query fails for ALL accounts', async () => {
     ddbMock.on(QueryCommand).rejects(new Error('GSI throughput exceeded'));
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'ALL', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -393,7 +393,7 @@ describe('get-stats handler', () => {
 
     ddbMock.on(QueryCommand).resolves({ Items: [corruptedRecord] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
@@ -410,7 +410,7 @@ describe('get-stats handler', () => {
     const record = makeDailyRecord();
     ddbMock.on(QueryCommand).resolves({ Items: [record] });
 
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: 'acc-1', startDate: '2016-01-01', endDate: '2026-12-31' }),
     );
 
@@ -431,7 +431,7 @@ describe('get-stats handler', () => {
   // -- AccountId is empty string --------------------------------------------
 
   it('returns 400 when accountId is empty string', async () => {
-    const res = await lambdaHandler(
+    const res = await handler(
       makeEvent({ accountId: '', startDate: '2026-04-01', endDate: '2026-04-30' }),
     );
 
