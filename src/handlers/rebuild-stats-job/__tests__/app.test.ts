@@ -92,7 +92,7 @@ describe('rebuild-stats-job handler', () => {
     consoleSpy.mockRestore();
   });
 
-  it('warns and caps at 1000 users when too many need rebuilding', async () => {
+  it('warns but processes ALL users when above threshold', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -108,9 +108,10 @@ describe('rebuild-stats-job handler', () => {
 
     const result = await handler();
 
-    expect(result).toEqual({ rebuiltUsers: 1000 });
+    // All 1500 users should be processed — no cap
+    expect(result).toEqual({ rebuiltUsers: 1500 });
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('1500 users need rebuilding, capping at 1000'),
+      expect.stringContaining('1500 users need rebuilding'),
     );
 
     warnSpy.mockRestore();

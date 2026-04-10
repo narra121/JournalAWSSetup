@@ -178,5 +178,5 @@ export const handler = async () => {
     await rebuildForUser(userId);
   }
 
-  return { rebuiltUsers: userIds.length };
+  return { rebuiltUsers: recentUserIds.length };
 };
