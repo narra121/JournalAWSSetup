@@ -638,6 +638,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/get-image/app.handler
+      AutoPublishAlias: live
       Policies:
         - S3ReadPolicy:
             BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
@@ -664,6 +665,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/update-stats/app.handler
+      AutoPublishAlias: live
       Timeout: 30
       MemorySize: 512
       Policies:
@@ -727,6 +729,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/rebuild-stats-job/app.handler
+      AutoPublishAlias: live
       Description: Periodic full stats rebuild for all users (scan Trades)
       Timeout: 900
       MemorySize: 2048
@@ -820,6 +823,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/migrate-stats/app.handler
+      AutoPublishAlias: live
       Timeout: 900
       MemorySize: 1024
       Policies:
