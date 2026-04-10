@@ -9,7 +9,7 @@ const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
-const MAX_USERS = 1000;
+const WARN_THRESHOLD = 1000;
 
 // ---------------------------------------------------------------------------
 // Step 1: Find users with recent daily-stats changes (last 24 h)
@@ -169,14 +169,12 @@ export const handler = async () => {
     return { rebuiltUsers: 0, skipped: 'no recent changes' };
   }
 
-  // Safeguard: cap at MAX_USERS to prevent runaway costs
-  let userIds = recentUserIds;
-  if (userIds.length > MAX_USERS) {
-    console.warn(`rebuild-stats-job: ${userIds.length} users need rebuilding, capping at ${MAX_USERS}`);
-    userIds = userIds.slice(0, MAX_USERS);
+  // Warn if unusually high — but process ALL users, never skip
+  if (recentUserIds.length > WARN_THRESHOLD) {
+    console.warn(`rebuild-stats-job: ${recentUserIds.length} users need rebuilding (above ${WARN_THRESHOLD} threshold)`);
   }
 
-  for (const userId of userIds) {
+  for (const userId of recentUserIds) {
     await rebuildForUser(userId);
   }
 
