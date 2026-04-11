@@ -103,10 +103,38 @@ Parameters:
     Type: String
     Default: "https://tradequt.com,https://www.tradequt.com"
     Description: Comma-separated list of allowed CORS origins (e.g. https://tradequt.com,https://www.tradequt.com).
+  # --- Frontend infrastructure parameters (CloudFront + S3 hosting) ---
+  CreateFrontendInfra:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Set to "true" on first deployment to create S3 bucket, CloudFront distribution,
+      and DNS records for the frontend. Leave "false" for existing environments.
+      Once created, keep "true" so CloudFormation manages the resources.
+  FrontendDomainName:
+    Type: String
+    Default: ""
+    Description: Primary domain for the frontend (e.g. dev.tradequt.com or tradequt.com). Required when CreateFrontendInfra=true.
+  FrontendWwwDomain:
+    Type: String
+    Default: ""
+    Description: Optional www alias for the frontend (e.g. www.tradequt.com). Leave empty for dev environments.
 
 Conditions:
   CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
+  ShouldCreateFrontendInfra: !Equals [!Ref CreateFrontendInfra, "true"]
+  HasFrontendWwwDomain: !Not [!Equals [!Ref FrontendWwwDomain, ""]]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+  IsProd: !Equals [!Ref Environment, "prod"]
+  CreateFrontendDns: !And
+    - !Condition ShouldCreateFrontendInfra
+    - !Condition HasHostedZone
+  CreateFrontendWwwDns: !And
+    - !Condition ShouldCreateFrontendInfra
+    - !Condition HasHostedZone
+    - !Condition HasFrontendWwwDomain
 
 Resources:
   UserPool:
@@ -1838,6 +1866,128 @@ Resources:
         DNSName: !GetAtt ApiDomainName.RegionalDomainName
         HostedZoneId: !GetAtt ApiDomainName.RegionalHostedZoneId
 
+  # ========================================================================
+  # Frontend Infrastructure (S3 + CloudFront + DNS)
+  # Created only when CreateFrontendInfra = "true" (first-time setup).
+  # After creation, keep the parameter as "true" so CloudFormation manages them.
+  # ========================================================================
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateFrontendInfra
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "tradequt.com-${Environment}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "tradequt-${Environment}-oac"
+        Description: !Sub "OAC for TradeQut ${Environment} frontend"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "TradeQut ${Environment} frontend"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: !If [IsProd, PriceClass_All, PriceClass_100]
+        Aliases: !If
+          - HasFrontendWwwDomain
+          - - !Ref FrontendDomainName
+            - !Ref FrontendWwwDomain
+          - - !Ref FrontendDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: !Sub "tradequt-${Environment}-s3"
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "tradequt-${Environment}-s3"
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  FrontendDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateFrontendDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref FrontendDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
+  FrontendWwwDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateFrontendWwwDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref FrontendWwwDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
 Outputs:
   ApiBaseUrl:
     Value: !If
@@ -1852,3 +2002,12 @@ Outputs:
     Value: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
   ImagesBucketName:
     Value: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+  FrontendDistributionId:
+    Condition: ShouldCreateFrontendInfra
+    Value: !Ref FrontendDistribution
+  FrontendDistributionDomain:
+    Condition: ShouldCreateFrontendInfra
+    Value: !GetAtt FrontendDistribution.DomainName
+  FrontendBucketName:
+    Condition: ShouldCreateFrontendInfra
+    Value: !Ref FrontendBucket

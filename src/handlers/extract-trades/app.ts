@@ -5,7 +5,15 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 const MODEL_ID = 'google/gemini-2.0-flash-001';
 
 
-const GEMINI_VISION_PROMPT = `ROLE:
+const buildGeminiPrompt = () => {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const monthName = monthNames[now.getUTCMonth()];
+
+  return `ROLE:
 You are an expert VISION + OCR financial data extraction model. Your ONLY goal is to read the trade history TABLE shown in the provided image and output a precise structured JSON array. You must be completely accurate and not hallucinate any data.
 
 TARGET SCHEMA (array of objects, order preserved top-to-bottom as in the table):
@@ -37,14 +45,14 @@ FIELD INTERPRETATION:
 - pnl: Profit/Loss value for that row. Preserve sign. Parentheses or a leading minus sign means negative. If colored red and no sign, assume negative.
 
 DATE COMPLETION ALGORITHM (CRITICAL):
-For this task, the current date is August 25, 2025. Use these components to complete any missing date information:
-- CurrentYear: \`2025\`
-- CurrentMonth: \`08\`
-- CurrentDay: \`25\`
+For this task, the current date is ${monthName} ${parseInt(day)}, ${year}. Use these components to complete any missing date information:
+- CurrentYear: \`${year}\`
+- CurrentMonth: \`${month}\`
+- CurrentDay: \`${day}\`
 
-1. Full Datetime Provided: If a cell has a full datetime with a 4-digit year (e.g., \`2024-12-15 17:18\`), use it exactly as provided, even if the year is not 2025.
-2. Year is Missing: If a cell has a month and day but no year (e.g., \`08-20 17:18\`), complete it using \`CurrentYear\`. Result: \`2025-08-20T17:18:00\`.
-3. Year and Month are Missing: If a cell has only a time (e.g., \`17:01\`), complete it using \`CurrentYear\`, \`CurrentMonth\`, and \`CurrentDay\`. Result: \`2025-08-25T17:01:00\`.
+1. Full Datetime Provided: If a cell has a full datetime with a 4-digit year (e.g., \`2024-12-15 17:18\`), use it exactly as provided, even if the year is not ${year}.
+2. Year is Missing: If a cell has a month and day but no year (e.g., \`${month}-20 17:18\`), complete it using \`CurrentYear\`. Result: \`${year}-${month}-20T17:18:00\`.
+3. Year and Month are Missing: If a cell has only a time (e.g., \`17:01\`), complete it using \`CurrentYear\`, \`CurrentMonth\`, and \`CurrentDay\`. Result: \`${year}-${month}-${day}T17:01:00\`.
 4. Formatting: Always output the full ISO 8601 format: \`YYYY-MM-DDTHH:MM:SS\`. If seconds are missing, use \`:00\`.
 5. Blank Close Date: If the close date/time cell is blank, set \`closeDate\` to be the same as the \`openDate\`.
 
@@ -71,6 +79,8 @@ STRICT OUTPUT RULES:
 - Ensure keys in each object follow this exact order: \`symbol\`, \`side\`, \`quantity\`, \`openDate\`, \`closeDate\`, \`entryPrice\`, \`exitPrice\`, \`stopLoss\`, \`takeProfit\`, \`pnl\`.
 - Do not use trailing commas in the JSON.
 - If no valid trade rows can be extracted, output an empty array \`[]\`.`;
+};
+
 // Configurable upstream request timeout (ms) for Gemini fetch; default 80000 (80s)
 const REQUEST_TIMEOUT_MS = (() => {
   const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '80000', 10);
@@ -172,7 +182,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
                 content: [
                   {
                     type: 'text',
-                    text: GEMINI_VISION_PROMPT
+                    text: buildGeminiPrompt()
                   },
                   {
                     type: 'image_url',
