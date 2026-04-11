@@ -50,7 +50,7 @@ function makeEvent(body: any, overrides: Partial<APIGatewayProxyEventV2> = {}): 
   } as unknown as APIGatewayProxyEventV2;
 }
 
-// Minimal valid payload (what tests were using)
+// Minimal valid payload (all required fields)
 const validTrade = {
   symbol: 'AAPL',
   side: 'BUY',
@@ -58,7 +58,9 @@ const validTrade = {
   openDate: '2024-06-15',
   entryPrice: 150,
   exitPrice: 160,
+  closeDate: '2024-06-15',
   outcome: 'TP',
+  pnl: 1000,
 };
 
 // Full payload matching what the UI actually sends via tradesApi.createTrade
@@ -115,21 +117,19 @@ describe('create-trade handler', () => {
     expect(body.data.trade.createdAt).toBeDefined();
   });
 
-  it('calculates PnL for BUY trades when not provided', async () => {
-    const trade = { ...validTrade, pnl: undefined };
+  it('stores provided PnL for BUY trades', async () => {
+    const trade = { ...validTrade, side: 'BUY', pnl: 1000 };
     const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
 
     const body = JSON.parse(res.body);
-    // (exitPrice - entryPrice) * quantity = (160 - 150) * 100 = 1000
     expect(body.data.trade.pnl).toBe(1000);
   });
 
-  it('calculates PnL for SELL trades when not provided', async () => {
-    const trade = { ...validTrade, side: 'SELL', pnl: undefined };
+  it('stores provided PnL for SELL trades', async () => {
+    const trade = { ...validTrade, side: 'SELL', pnl: -1000 };
     const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
 
     const body = JSON.parse(res.body);
-    // (entryPrice - exitPrice) * quantity = (150 - 160) * 100 = -1000
     expect(body.data.trade.pnl).toBe(-1000);
   });
 
@@ -241,20 +241,70 @@ describe('create-trade handler', () => {
     expect(body.data.trade.takeProfit).toBe(0);
   });
 
-  it('accepts trade with null optional fields', async () => {
+  it('accepts trade with null optional fields (non-required ones)', async () => {
     const trade = {
       ...validTrade,
-      exitPrice: null,
       stopLoss: null,
       takeProfit: null,
       setupType: null,
       tradingSession: null,
       marketCondition: null,
       tradeNotes: null,
-      closeDate: null,
     };
     const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
 
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('returns 400 when required field entryPrice is missing', async () => {
+    const { entryPrice, ...trade } = validTrade;
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when required field exitPrice is missing', async () => {
+    const { exitPrice, ...trade } = validTrade;
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when required field closeDate is missing', async () => {
+    const { closeDate, ...trade } = validTrade;
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when required field outcome is missing', async () => {
+    const { outcome, ...trade } = validTrade;
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when required field pnl is missing', async () => {
+    const { pnl, ...trade } = validTrade;
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when entryPrice is null', async () => {
+    const res = await handler(makeEvent({ ...validTrade, entryPrice: null }), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when exitPrice is null', async () => {
+    const res = await handler(makeEvent({ ...validTrade, exitPrice: null }), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('accepts trade with pnl=0 (breakeven)', async () => {
+    const trade = { ...validTrade, pnl: 0, outcome: 'BREAKEVEN', exitPrice: 150 };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('accepts trade with negative pnl (losing trade)', async () => {
+    const trade = { ...validTrade, pnl: -500, outcome: 'SL', exitPrice: 145 };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
     expect(res.statusCode).toBe(201);
   });
 

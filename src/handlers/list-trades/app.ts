@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { makeLogger } from '../../shared/logger';
 import { normalizePotentialKey } from '../../shared/s3';
@@ -57,7 +57,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     let command;
     if (startDate && endDate) {
-      const exprValues: Record<string, any> = { ':u': userId, ':start': startDate, ':end': endDate };
+      // Ensure endDate is inclusive of the full day (openDate stored as ISO datetime)
+      const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
+      const exprValues: Record<string, any> = { ':u': userId, ':start': startDate, ':end': inclusiveEnd };
       const exprNames: Record<string, string> = { '#od': 'openDate' };
       
       // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
@@ -105,12 +107,33 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
   const result = await ddb.send(command);
     let items = result.Items || [];
-    
-    log.info('Query results', { 
-      itemCount: items.length, 
+
+    log.info('Query results', {
+      itemCount: items.length,
       sampleAccountIds: items.slice(0, 3).map((i: any) => i.accountId),
-      hasMore: !!result.LastEvaluatedKey 
+      hasMore: !!result.LastEvaluatedKey
     });
+
+    // GSI returns KEYS_ONLY — fetch full records from main table
+    if (startDate && endDate && items.length > 0) {
+      const keys = items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
+      const chunks: Record<string, any>[][] = [];
+      for (let i = 0; i < keys.length; i += 100) {
+        chunks.push(keys.slice(i, i + 100));
+      }
+      const fullItems: any[] = [];
+      for (const chunk of chunks) {
+        const batchResult = await ddb.send(new BatchGetCommand({
+          RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
+        }));
+        if (batchResult.Responses?.[TRADES_TABLE]) {
+          fullItems.push(...batchResult.Responses[TRADES_TABLE]);
+        }
+      }
+      // Replace GSI items with full items, preserving order by openDate desc
+      const fullMap = new Map(fullItems.map((it: any) => [it.tradeId, it]));
+      items = items.map((it: any) => fullMap.get(it.tradeId) || it);
+    }
     
     // Presign image keys (short-lived) if present
   if (items.length) {

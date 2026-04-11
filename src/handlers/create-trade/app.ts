@@ -287,8 +287,18 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     else if (data.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
   }
   
-  // Use riskRewardRatio from frontend if provided (already calculated in UI)
-  const riskRewardRatio = num(data.riskRewardRatio);
+  // Use riskRewardRatio from frontend if provided, otherwise calculate from SL
+  let riskRewardRatio = num(data.riskRewardRatio);
+  if (riskRewardRatio == null && entryPrice != null && exitPrice != null) {
+    const sl = num(data.stopLoss);
+    if (sl != null && sl !== entryPrice) {
+      const risk = Math.abs(entryPrice - sl);
+      const reward = Math.abs(exitPrice - entryPrice);
+      riskRewardRatio = risk > 0 ? Number((reward / risk).toFixed(4)) : 0;
+    } else {
+      riskRewardRatio = 0;
+    }
+  }
   const outcome = data.outcome;
 
     const now = new Date().toISOString();

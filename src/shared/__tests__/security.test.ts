@@ -116,7 +116,9 @@ const validTrade = {
   openDate: '2024-06-15',
   entryPrice: 150,
   exitPrice: 160,
+  closeDate: '2024-06-15',
   outcome: 'TP',
+  pnl: 1000,
 };
 
 const validAccount = {
@@ -443,7 +445,7 @@ describe('Auth header injection', () => {
 
 describe('JSON prototype pollution', () => {
   it('does not pollute Object prototype via __proto__ in trade body', async () => {
-    const maliciousBody = '{"symbol":"AAPL","side":"BUY","quantity":100,"openDate":"2024-06-15","entryPrice":150,"exitPrice":160,"outcome":"TP","__proto__":{"isAdmin":true}}';
+    const maliciousBody = '{"symbol":"AAPL","side":"BUY","quantity":100,"openDate":"2024-06-15","entryPrice":150,"exitPrice":160,"closeDate":"2024-06-15","outcome":"TP","pnl":1000,"__proto__":{"isAdmin":true}}';
     const event = makeV2Event(validTrade);
     event.body = maliciousBody;
 
@@ -456,7 +458,7 @@ describe('JSON prototype pollution', () => {
   });
 
   it('does not pollute prototype via constructor.prototype in trade body', async () => {
-    const maliciousBody = '{"symbol":"AAPL","side":"BUY","quantity":100,"openDate":"2024-06-15","entryPrice":150,"exitPrice":160,"outcome":"TP","constructor":{"prototype":{"polluted":true}}}';
+    const maliciousBody = '{"symbol":"AAPL","side":"BUY","quantity":100,"openDate":"2024-06-15","entryPrice":150,"exitPrice":160,"closeDate":"2024-06-15","outcome":"TP","pnl":1000,"constructor":{"prototype":{"polluted":true}}}';
     const event = makeV2Event(validTrade);
     event.body = maliciousBody;
 
