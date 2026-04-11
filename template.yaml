@@ -1830,7 +1830,9 @@ Resources:
   ApiMapping:
     Type: AWS::ApiGatewayV2::ApiMapping
     Condition: HasCustomDomain
-    DependsOn: ApiDomainName
+    DependsOn:
+      - ApiDomainName
+      - HttpApi
     Properties:
       DomainName: !Ref CustomDomainName
       ApiId: !Ref HttpApi
