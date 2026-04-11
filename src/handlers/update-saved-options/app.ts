@@ -35,7 +35,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   // Validate that all provided categories are valid
   for (const key of Object.keys(data)) {
-    if (key !== 'userId' && key !== 'updatedAt' && !validCategories.includes(key)) {
+    if (key !== 'userId' && key !== 'updatedAt' && key !== 'createdAt' && !validCategories.includes(key)) {
       log.warn('invalid category in update', { category: key });
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Invalid category: ${key}`);
     }
