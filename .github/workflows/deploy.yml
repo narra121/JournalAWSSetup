@@ -132,6 +132,7 @@ jobs:
             --s3-bucket tradequt-sam-artifacts \
             --s3-prefix tradequt-backend \
             --no-watch \
+            --yes \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               StageName=tradequt-dev \
