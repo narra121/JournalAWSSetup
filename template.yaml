@@ -108,7 +108,7 @@ Parameters:
     Description: Route 53 hosted zone ID for DNS record creation.
   AllowedOrigins:
     Type: String
-    Default: "*"
+    Default: "https://tradequt.com,https://www.tradequt.com"
     Description: Comma-separated list of allowed CORS origins (e.g. https://tradequt.com,https://www.tradequt.com).
 
 Conditions:
@@ -1466,7 +1466,7 @@ Resources:
       Description: Unified analytics endpoint - supports hourly, daily-win-rate, symbol-distribution, strategy-distribution via ?type= query param
       Policies:
         - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
       Events:
         Api:
           Type: HttpApi

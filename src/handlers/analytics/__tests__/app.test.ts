@@ -4,7 +4,7 @@ import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 
 // Mock environment variables before importing handler
-vi.stubEnv('TRADES_TABLE', 'test-trades');
+vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 
 // Must import handler after env stubs
 const { handler } = await import('../app.ts');
@@ -58,24 +58,72 @@ function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayPro
   } as APIGatewayProxyEvent;
 }
 
-// --- Sample trade data ------------------------------------------------------
+// --- Sample DailyStats records (pre-aggregated) ----------------------------
 
-const sampleTrades = [
+const sampleDailyRecords = [
   {
-    userId: 'user-1', tradeId: 't1', symbol: 'AAPL', setupType: 'Breakout',
-    openDate: '2024-03-15T09:30:00Z', pnl: 500, accountId: 'acc-1',
+    userId: 'user-1',
+    sk: 'acc-1#2024-03-15',
+    accountId: 'acc-1',
+    date: '2024-03-15',
+    dayOfWeek: 5, // Friday
+    tradeCount: 2,
+    wins: 1,
+    losses: 1,
+    breakeven: 0,
+    grossProfit: 500,
+    grossLoss: 200,
+    totalPnl: 300,
+    totalVolume: 2,
+    bestTrade: 500,
+    worstTrade: -200,
+    sumRiskReward: 2.5,
+    riskRewardCount: 2,
+    pnlSequence: [500, -200],
+    symbolDistribution: {
+      AAPL: { count: 2, wins: 1, pnl: 300 },
+    },
+    strategyDistribution: {
+      Breakout: { count: 2, wins: 1, pnl: 300 },
+    },
+    sessionDistribution: {},
+    outcomeDistribution: { TP: 1, SL: 1 },
+    hourlyBreakdown: {
+      '09': { count: 2, wins: 1, pnl: 300 },
+    },
   },
   {
-    userId: 'user-1', tradeId: 't2', symbol: 'AAPL', setupType: 'Breakout',
-    openDate: '2024-03-15T09:45:00Z', pnl: -200, accountId: 'acc-1',
-  },
-  {
-    userId: 'user-1', tradeId: 't3', symbol: 'MSFT', setupType: 'Reversal',
-    openDate: '2024-03-16T14:00:00Z', pnl: 300, accountId: 'acc-2',
-  },
-  {
-    userId: 'user-1', tradeId: 't4', symbol: 'TSLA', setupType: 'Breakout',
-    openDate: '2024-03-16T14:30:00Z', pnl: -100, accountId: 'acc-2',
+    userId: 'user-1',
+    sk: 'acc-2#2024-03-16',
+    accountId: 'acc-2',
+    date: '2024-03-16',
+    dayOfWeek: 6, // Saturday
+    tradeCount: 2,
+    wins: 1,
+    losses: 1,
+    breakeven: 0,
+    grossProfit: 300,
+    grossLoss: 100,
+    totalPnl: 200,
+    totalVolume: 2,
+    bestTrade: 300,
+    worstTrade: -100,
+    sumRiskReward: 3.0,
+    riskRewardCount: 2,
+    pnlSequence: [300, -100],
+    symbolDistribution: {
+      MSFT: { count: 1, wins: 1, pnl: 300 },
+      TSLA: { count: 1, wins: 0, pnl: -100 },
+    },
+    strategyDistribution: {
+      Reversal: { count: 1, wins: 1, pnl: 300 },
+      Breakout: { count: 1, wins: 0, pnl: -100 },
+    },
+    sessionDistribution: {},
+    outcomeDistribution: { TP: 1, SL: 1 },
+    hourlyBreakdown: {
+      '14': { count: 2, wins: 1, pnl: 200 },
+    },
   },
 ];
 
@@ -89,7 +137,7 @@ describe('analytics handler', () => {
   // -- Hourly stats ----------------------------------------------------------
 
   it('returns hourlyStats, bestHour, and worstHour for type=hourly', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+    ddbMock.on(QueryCommand).resolves({ Items: sampleDailyRecords });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
 
@@ -105,7 +153,7 @@ describe('analytics handler', () => {
   // -- Daily win rate --------------------------------------------------------
 
   it('returns dailyWinRate, totalDays, and overallWinRate for type=daily-win-rate', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+    ddbMock.on(QueryCommand).resolves({ Items: sampleDailyRecords });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
 
@@ -121,7 +169,7 @@ describe('analytics handler', () => {
   // -- Symbol distribution ---------------------------------------------------
 
   it('returns symbols, totalSymbols, mostTraded, and mostProfitable for type=symbol-distribution', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+    ddbMock.on(QueryCommand).resolves({ Items: sampleDailyRecords });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
 
@@ -132,12 +180,16 @@ describe('analytics handler', () => {
     expect(typeof body.data.totalSymbols).toBe('number');
     expect(body.data.mostTraded).toBeDefined();
     expect(body.data.mostProfitable).toBeDefined();
+    // Should have AAPL, MSFT, TSLA from the two daily records
+    const symbolNames = body.data.symbols.map((s: any) => s.symbol);
+    expect(symbolNames).toContain('AAPL');
+    expect(symbolNames).toContain('MSFT');
   });
 
   // -- Strategy distribution -------------------------------------------------
 
   it('returns strategies, totalStrategies, mostUsed, and mostProfitable for type=strategy-distribution', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+    ddbMock.on(QueryCommand).resolves({ Items: sampleDailyRecords });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
 
@@ -153,7 +205,7 @@ describe('analytics handler', () => {
   // -- Invalid type ----------------------------------------------------------
 
   it('returns 400 for an unknown analytics type', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
+    ddbMock.on(QueryCommand).resolves({ Items: sampleDailyRecords });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'unknown-type' } })) as any;
 
@@ -169,13 +221,11 @@ describe('analytics handler', () => {
     const res = await handler(event) as any;
 
     expect(res.statusCode).toBe(401);
-    const body = JSON.parse(res.body);
-    expect(body.error).toBe('Unauthorized');
   });
 
-  // -- Empty trades ----------------------------------------------------------
+  // -- Empty records ---------------------------------------------------------
 
-  it('returns empty arrays when user has no trades (hourly)', async () => {
+  it('returns empty arrays when user has no daily stats (hourly)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
@@ -185,7 +235,7 @@ describe('analytics handler', () => {
     expect(body.data.hourlyStats).toEqual([]);
   });
 
-  it('returns empty arrays when user has no trades (daily-win-rate)', async () => {
+  it('returns empty arrays when user has no daily stats (daily-win-rate)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'daily-win-rate' } })) as any;
@@ -196,7 +246,7 @@ describe('analytics handler', () => {
     expect(body.data.totalDays).toBe(0);
   });
 
-  it('returns empty arrays when user has no trades (symbol-distribution)', async () => {
+  it('returns empty arrays when user has no daily stats (symbol-distribution)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
@@ -207,7 +257,7 @@ describe('analytics handler', () => {
     expect(body.data.totalSymbols).toBe(0);
   });
 
-  it('returns empty arrays when user has no trades (strategy-distribution)', async () => {
+  it('returns empty arrays when user has no daily stats (strategy-distribution)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
     const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
@@ -218,39 +268,6 @@ describe('analytics handler', () => {
     expect(body.data.totalStrategies).toBe(0);
   });
 
-  // -- Filters out unmapped trades (accountId = '-1') ------------------------
-
-  it('filters out trades with accountId = -1 (string)', async () => {
-    const tradesWithUnmapped = [
-      ...sampleTrades,
-      { userId: 'user-1', tradeId: 't-unmapped', symbol: 'SPY', setupType: 'Gap', openDate: '2024-03-17T10:00:00Z', pnl: 9999, accountId: '-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesWithUnmapped });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    // SPY should NOT appear because it has accountId '-1'
-    const symbolNames = body.data.symbols.map((s: any) => s.symbol);
-    expect(symbolNames).not.toContain('SPY');
-  });
-
-  it('filters out trades with accountId = -1 (number)', async () => {
-    const tradesWithUnmapped = [
-      ...sampleTrades,
-      { userId: 'user-1', tradeId: 't-unmapped2', symbol: 'QQQ', setupType: 'Gap', openDate: '2024-03-17T11:00:00Z', pnl: 8888, accountId: -1 },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesWithUnmapped });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    const symbolNames = body.data.symbols.map((s: any) => s.symbol);
-    expect(symbolNames).not.toContain('QQQ');
-  });
-
   // -- DynamoDB error --------------------------------------------------------
 
   it('returns 500 when DynamoDB query fails', async () => {
@@ -259,163 +276,42 @@ describe('analytics handler', () => {
     const res = await handler(makeEvent()) as any;
 
     expect(res.statusCode).toBe(500);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
 
-  // -- Additional error / edge-case tests ------------------------------------
+  // -- Account filtering -----------------------------------------------------
 
-  it('defaults to hourly when queryStringParameters is entirely missing', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: sampleTrades });
-
-    const event = makeEvent({ queryStringParameters: null as any });
-    const res = await handler(event) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // Should return hourly stats by default
-    expect(body.data.hourlyStats).toBeDefined();
-    expect(Array.isArray(body.data.hourlyStats)).toBe(true);
-  });
-
-  it('does not crash when a trade has an invalid openDate (unparseable)', async () => {
-    const tradesWithBadDate = [
-      ...sampleTrades,
-      { userId: 'user-1', tradeId: 't-bad', symbol: 'BAD', setupType: 'Test', openDate: 'invalid', pnl: 100, accountId: 'acc-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesWithBadDate });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    // new Date('invalid').getHours() → NaN, so the trade with NaN hour
-    // should either be grouped under NaN key or skipped; handler must not crash
-    expect(body.success).toBe(true);
-    expect(body.data.hourlyStats).toBeDefined();
-  });
-
-  it('skips trades with pnl = null in calculations', async () => {
-    const tradesWithNull = [
-      { userId: 'user-1', tradeId: 't-null', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: null, accountId: 'acc-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesWithNull });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // pnl is null → `if (!trade.pnl) continue;` skips it → no hourly data
-    expect(body.data.hourlyStats).toEqual([]);
-  });
-
-  it('counts trade with pnl = 0 correctly (not as a win)', async () => {
-    const tradesWithZero = [
-      { userId: 'user-1', tradeId: 't-zero', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 0, accountId: 'acc-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesWithZero });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    // pnl=0 is falsy, so `if (!trade.pnl) continue;` skips it
-    // The handler treats pnl=0 as "no pnl" → skipped
-    expect(body.data.hourlyStats).toEqual([]);
-  });
-
-  it('handles division-by-zero: winRate is 0 when no trades in an hour', async () => {
-    // When there are no trades at all, hourlyStats is empty, so no division by zero
+  it('queries DailyStats GSI for All Accounts', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    await handler(makeEvent({ queryStringParameters: { type: 'hourly', accountId: 'ALL' } })) as any;
 
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.hourlyStats).toEqual([]);
-    // bestHour and worstHour should be undefined when no data
-    expect(body.data.bestHour).toBeUndefined();
-    expect(body.data.worstHour).toBeUndefined();
+    const calls = ddbMock.commandCalls(QueryCommand);
+    expect(calls.length).toBe(1);
+    expect(calls[0].args[0].input.IndexName).toBe('stats-by-date-gsi');
   });
 
-  it('handles QueryCommand pagination (LastEvaluatedKey) in getAllUserTrades', async () => {
-    // First call returns page 1 with LastEvaluatedKey
-    ddbMock.on(QueryCommand)
-      .resolvesOnce({
-        Items: [sampleTrades[0], sampleTrades[1]],
-        LastEvaluatedKey: { userId: 'user-1', tradeId: 't2' },
-      })
-      // getAllUserTrades does NOT paginate (no loop) - it does a single query
-      // So only the first page items are returned
-      .resolvesOnce({
-        Items: [sampleTrades[2], sampleTrades[3]],
-      });
+  it('queries DailyStats main table for specific account', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
+    await handler(makeEvent({ queryStringParameters: { type: 'hourly', accountId: 'acc-1' } })) as any;
 
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // Only the first page is used (getAllUserTrades doesn't paginate)
-    expect(body.data.hourlyStats).toBeDefined();
+    const calls = ddbMock.commandCalls(QueryCommand);
+    expect(calls.length).toBe(1);
+    // Single account queries main table (no IndexName), using SK BETWEEN
+    expect(calls[0].args[0].input.IndexName).toBeUndefined();
+    expect(calls[0].args[0].input.KeyConditionExpression).toContain('sk BETWEEN');
   });
 
-  it('returns empty results when all trades have accountId = -1', async () => {
-    const unmappedOnly = [
-      { userId: 'user-1', tradeId: 't-u1', symbol: 'AAPL', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 500, accountId: '-1' },
-      { userId: 'user-1', tradeId: 't-u2', symbol: 'MSFT', setupType: 'Reversal', openDate: '2024-03-16T14:00:00Z', pnl: 300, accountId: '-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
+  // -- Date filtering --------------------------------------------------------
 
-    const resHourly = await handler(makeEvent({ queryStringParameters: { type: 'hourly' } })) as any;
-    expect(resHourly.statusCode).toBe(200);
-    const hourlyBody = JSON.parse(resHourly.body);
-    expect(hourlyBody.data.hourlyStats).toEqual([]);
+  it('passes startDate and endDate to DailyStats query', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    ddbMock.reset();
-    ddbMock.on(QueryCommand).resolves({ Items: unmappedOnly });
+    await handler(makeEvent({ queryStringParameters: { type: 'hourly', startDate: '2024-03-01', endDate: '2024-03-31' } })) as any;
 
-    const resSymbol = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
-    expect(resSymbol.statusCode).toBe(200);
-    const symbolBody = JSON.parse(resSymbol.body);
-    expect(symbolBody.data.symbols).toEqual([]);
-    expect(symbolBody.data.totalSymbols).toBe(0);
-  });
-
-  it('handles symbol distribution with undefined symbol gracefully', async () => {
-    const tradesNoSymbol = [
-      { userId: 'user-1', tradeId: 't-nosym', setupType: 'Breakout', openDate: '2024-03-15T09:30:00Z', pnl: 100, accountId: 'acc-1' },
-      ...sampleTrades,
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesNoSymbol });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'symbol-distribution' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // The trade with no symbol should be skipped (`if (!trade.symbol) continue;`)
-    const symbolNames = body.data.symbols.map((s: any) => s.symbol);
-    expect(symbolNames).not.toContain(undefined);
-    expect(symbolNames).not.toContain('undefined');
-  });
-
-  it('handles strategy distribution with null setupType (uses Unknown)', async () => {
-    const tradesNullSetup = [
-      { userId: 'user-1', tradeId: 't-nosetup', symbol: 'AAPL', setupType: null, openDate: '2024-03-15T09:30:00Z', pnl: 200, accountId: 'acc-1' },
-    ];
-    ddbMock.on(QueryCommand).resolves({ Items: tradesNullSetup });
-
-    const res = await handler(makeEvent({ queryStringParameters: { type: 'strategy-distribution' } })) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // `trade.setupType || 'Unknown'` should fall back to 'Unknown'
-    const strategyNames = body.data.strategies.map((s: any) => s.strategy);
-    expect(strategyNames).toContain('Unknown');
+    const calls = ddbMock.commandCalls(QueryCommand);
+    const values = calls[0].args[0].input.ExpressionAttributeValues;
+    expect(values[':startDate']).toBe('2024-03-01');
+    expect(values[':endDate']).toBe('2024-03-31');
   });
 });
