@@ -2,8 +2,22 @@ node_modules
 env-local.json
 test-extract-local.js
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Build output
 .aws-sam/
+
+# SAM deployment config (contains stack names, SSM param paths)
+samconfig.toml
+
+# Certificates and keys
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Test artifacts
 coverage/

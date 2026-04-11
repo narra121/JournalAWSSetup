@@ -75,7 +75,7 @@ try {
     
     Write-Host "`nStored Plan IDs:" -ForegroundColor Green
     foreach ($key in $planKeys) {
-        $paramName = "/tradeflow/$StageName/razorpay/plan/$key"
+        $paramName = "/tradequt/$StageName/razorpay/plan/$key"
         $planId = aws ssm get-parameter --name $paramName --query 'Parameter.Value' --output text 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  ✓ $key : $planId" -ForegroundColor Green

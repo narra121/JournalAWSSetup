@@ -151,7 +151,7 @@ describe('init-subscription-plans handler', () => {
     expect(firstCall.interval).toBe(1);
     expect(firstCall.item.amount).toBe(9900); // 99 * 100 = 9900 paise
     expect(firstCall.item.currency).toBe('INR');
-    expect(firstCall.item.name).toBe('TradeFlow Supporter Monthly');
+    expect(firstCall.item.name).toBe('TradeQut Supporter Monthly');
   });
 
   it('stores plan IDs in SSM with correct parameter names', async () => {
@@ -166,12 +166,12 @@ describe('init-subscription-plans handler', () => {
     const paramNames = putCalls.map((c) => c.args[0].input.Name);
 
     // Verify all expected parameter names
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/monthly-99');
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/monthly-299');
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/monthly-499');
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/yearly-999');
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/yearly-2999');
-    expect(paramNames).toContain('/tradeflow/dev/razorpay/plan/yearly-4999');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/monthly-99');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/monthly-299');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/monthly-499');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/yearly-999');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/yearly-2999');
+    expect(paramNames).toContain('/tradequt/dev/razorpay/plan/yearly-4999');
   });
 
   // ── Plans already exist (idempotent) ───────────────────────
@@ -329,7 +329,7 @@ describe('init-subscription-plans handler', () => {
     expect(writtenBody.Data.Plans).toHaveLength(6);
     expect(writtenBody.Data.Plans[0]).toEqual(
       expect.objectContaining({
-        name: 'TradeFlow Supporter Monthly',
+        name: 'TradeQut Supporter Monthly',
         planId: 'plan_1',
         period: 'monthly',
         amount: 99,

@@ -4,7 +4,11 @@ Param(
   [string]$ApiVersion = "v1",
   [int]$LogRetentionDays = 14,
   [string]$GeminiApiKeyParamName = "/trading-journal/geminiApiKey",
-  [string]$RazorpayWebhookSecretParamName = "/tradeflow/razorpayWebhookSecret"
+  [string]$RazorpayWebhookSecretParamName = "/tradequt/razorpayWebhookSecret",
+  [string]$CustomDomainName = "api.tradequt.com",
+  [string]$CertificateArn = "arn:aws:acm:us-east-1:675016865482:certificate/46a1a4e3-507c-4e7c-a5cf-36bab5be4f2a",
+  [string]$HostedZoneId = "Z00955773GZIPKHCD66GR",
+  [string]$AllowedOrigins = "https://tradequt.com,https://www.tradequt.com"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,12 +21,18 @@ $paramOverrides = @(
   "GeminiApiKeyParamName=$GeminiApiKeyParamName",
   "RazorpayWebhookSecretParamName=$RazorpayWebhookSecretParamName",
   "LogRetentionDays=$LogRetentionDays",
-  "UseExistingResources=false"
+  "UseExistingResources=false",
+  "CustomDomainName=$CustomDomainName",
+  "CertificateArn=$CertificateArn",
+  "HostedZoneId=$HostedZoneId",
+  "AllowedOrigins=$AllowedOrigins"
 )
 
 Write-Host "Deploying..." -ForegroundColor Cyan
 sam deploy `
   --stack-name $stackName `
+  --s3-bucket tradequt-sam-artifacts `
+  --s3-prefix tradequt-backend `
   --no-confirm-changeset `
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM `
   --parameter-overrides $paramOverrides

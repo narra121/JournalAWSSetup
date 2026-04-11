@@ -70,6 +70,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const imagesInput: any[] = Array.isArray(t.images) ? t.images : [];
           const images: any[] = [];
           const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
+          const bulkUploadTasks: Array<{ imgId: string; key: string; buffer: Buffer; contentType: string; timeframe: string | null; description: string | null }> = [];
           for (const img of imagesInput) {
             const imgId = img.id || uuid();
             const isDataUriUrl = typeof img.url === 'string' && /^data:image\//i.test(img.url);
@@ -85,13 +86,21 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               }
               const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
               const key = `images/${userId}/${tradeIdLocal}/${imgId}${ext}`;
-              await s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: key, Body: buffer, ContentType: contentType }));
-              images.push({ id: imgId, key, timeframe: img.timeframe || null, description: img.description || null });
+              bulkUploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
             } else if (img.url) {
               // Accept direct key if provided (internal import use). Ignore arbitrary external URLs for bulk path.
               if (img.url.startsWith('images/')) {
                 images.push({ id: imgId, key: img.url, timeframe: img.timeframe || null, description: img.description || null });
               }
+            }
+          }
+          // Upload all inline images to S3 in parallel
+          if (bulkUploadTasks.length > 0) {
+            await Promise.all(bulkUploadTasks.map(task =>
+              s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: task.key, Body: task.buffer, ContentType: task.contentType }))
+            ));
+            for (const task of bulkUploadTasks) {
+              images.push({ id: task.imgId, key: task.key, timeframe: task.timeframe, description: task.description });
             }
           }
           const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
@@ -247,6 +256,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const imagesInput: any[] = Array.isArray(data.images) ? data.images : [];
     const images: any[] = [];
     const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
+
+    // Prepare all images: validate sizes and build upload tasks before any S3 calls
+    const uploadTasks: Array<{ imgId: string; key: string; buffer: Buffer; contentType: string; timeframe: string | null; description: string | null }> = [];
   for (const img of imagesInput) {
       const imgId = img.id || uuid();
       const isDataUriUrl = typeof img.url === 'string' && /^data:image\//i.test(img.url);
@@ -262,13 +274,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         }
         const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
         const key = `images/${userId}/${tradeId}/${imgId}${ext}`;
-        await s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: key, Body: buffer, ContentType: contentType }));
-        images.push({ id: imgId, key, timeframe: img.timeframe || null, description: img.description || null });
+        uploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
       } else if (img.url) {
         const keyCandidate = normalizePotentialKey(img.url, IMAGES_BUCKET);
         if (keyCandidate) {
           images.push({ id: imgId, key: keyCandidate, timeframe: img.timeframe || null, description: img.description || null });
         }
+      }
+    }
+
+    // Upload all inline images to S3 in parallel
+    if (uploadTasks.length > 0) {
+      await Promise.all(uploadTasks.map(task =>
+        s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: task.key, Body: task.buffer, ContentType: task.contentType }))
+      ));
+      for (const task of uploadTasks) {
+        images.push({ id: task.imgId, key: task.key, timeframe: task.timeframe, description: task.description });
       }
     }
 

@@ -13,7 +13,7 @@ const STAGE_NAME = process.env.STAGE_NAME!;
 const DEFAULT_PLANS = [
   // Monthly Plans
   {
-    name: 'TradeFlow Supporter Monthly',
+    name: 'TradeQut Supporter Monthly',
     amount: 99, // in rupees
     currency: 'INR',
     period: 'monthly' as const,
@@ -21,7 +21,7 @@ const DEFAULT_PLANS = [
     description: 'Monthly subscription - All features included. Support the developer!',
   },
   {
-    name: 'TradeFlow Enthusiast Monthly',
+    name: 'TradeQut Enthusiast Monthly',
     amount: 299, // in rupees
     currency: 'INR',
     period: 'monthly' as const,
@@ -29,7 +29,7 @@ const DEFAULT_PLANS = [
     description: 'Monthly subscription - All features included. Extra support for continued development!',
   },
   {
-    name: 'TradeFlow Champion Monthly',
+    name: 'TradeQut Champion Monthly',
     amount: 499, // in rupees
     currency: 'INR',
     period: 'monthly' as const,
@@ -38,7 +38,7 @@ const DEFAULT_PLANS = [
   },
   // Yearly Plans
   {
-    name: 'TradeFlow Supporter Yearly',
+    name: 'TradeQut Supporter Yearly',
     amount: 999, // in rupees (save ~16%)
     currency: 'INR',
     period: 'yearly' as const,
@@ -46,7 +46,7 @@ const DEFAULT_PLANS = [
     description: 'Yearly subscription - All features included. Support the developer!',
   },
   {
-    name: 'TradeFlow Enthusiast Yearly',
+    name: 'TradeQut Enthusiast Yearly',
     amount: 2999, // in rupees (save ~16%)
     currency: 'INR',
     period: 'yearly' as const,
@@ -54,7 +54,7 @@ const DEFAULT_PLANS = [
     description: 'Yearly subscription - All features included. Extra support for continued development!',
   },
   {
-    name: 'TradeFlow Champion Yearly',
+    name: 'TradeQut Champion Yearly',
     amount: 4999, // in rupees (save ~16%)
     currency: 'INR',
     period: 'yearly' as const,
@@ -100,7 +100,7 @@ export const handler = async (event: CloudFormationEvent): Promise<void> => {
           // Check if plan already exists in SSM Parameter Store
           // Use a unique key based on period and amount
           const planKey = `${planConfig.period}-${planConfig.amount}`;
-          const paramName = `/tradeflow/${STAGE_NAME}/razorpay/plan/${planKey}`;
+          const paramName = `/tradequt/${STAGE_NAME}/razorpay/plan/${planKey}`;
           
           let existingPlanId: string | null = null;
           try {

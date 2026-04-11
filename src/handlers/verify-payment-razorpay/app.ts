@@ -19,7 +19,8 @@ export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {
-    console.log('Verifying Razorpay payment', JSON.stringify(event, null, 2));
+    const { headers, multiValueHeaders, ...safeEvent } = event;
+    console.log('Verifying Razorpay payment', JSON.stringify(safeEvent, null, 2));
 
     // Parse request body
     const body: VerifyPaymentPayload = JSON.parse(event.body || '{}');
@@ -31,7 +32,6 @@ export const handler = async (
         statusCode: 400,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
           data: null,
@@ -51,7 +51,6 @@ export const handler = async (
         statusCode: 401,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
           data: null,
@@ -81,7 +80,6 @@ export const handler = async (
         statusCode: 400,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         },
         body: JSON.stringify({
           data: null,
@@ -124,8 +122,7 @@ export const handler = async (
       statusCode: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+              },
       body: JSON.stringify({
         data: {
           verified: true,
@@ -143,8 +140,7 @@ export const handler = async (
       statusCode: 500,
       headers: {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+              },
       body: JSON.stringify({
         data: null,
         error: {

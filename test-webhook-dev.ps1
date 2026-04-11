@@ -6,7 +6,7 @@ Write-Host "Testing Razorpay Webhook Handler (Dev Environment)" -ForegroundColor
 # Get the API base URL from CloudFormation stack outputs
 Write-Host "`nFetching API URL from stack..." -ForegroundColor Yellow
 $apiUrl = aws cloudformation describe-stacks `
-    --stack-name tradeflow-dev `
+    --stack-name tradequt-dev `
     --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" `
     --output text
 
@@ -24,14 +24,14 @@ Write-Host "Webhook URL: $webhookUrl" -ForegroundColor Green
 # Get webhook secret from SSM Parameter Store
 Write-Host "`nFetching webhook secret from SSM..." -ForegroundColor Yellow
 $webhookSecret = aws ssm get-parameter `
-    --name "/tradeflow/razorpayWebhookSecret" `
+    --name "/tradequt/razorpayWebhookSecret" `
     --with-decryption `
     --query "Parameter.Value" `
     --output text
 
 if (-not $webhookSecret) {
     Write-Host "Error: Could not retrieve webhook secret from SSM" -ForegroundColor Red
-    Write-Host "Make sure the parameter '/tradeflow/razorpayWebhookSecret' exists" -ForegroundColor Yellow
+    Write-Host "Make sure the parameter '/tradequt/razorpayWebhookSecret' exists" -ForegroundColor Yellow
     exit 1
 }
 
@@ -108,4 +108,4 @@ try {
 
 Write-Host ""
 Write-Host "Check CloudWatch Logs for detailed execution logs:" -ForegroundColor Cyan
-Write-Host 'aws logs tail /aws/lambda/tradeflow-dev-RazorpayWebhookFunction --follow' -ForegroundColor White
+Write-Host 'aws logs tail /aws/lambda/tradequt-dev-RazorpayWebhookFunction --follow' -ForegroundColor White

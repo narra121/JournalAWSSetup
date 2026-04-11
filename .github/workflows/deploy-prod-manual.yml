@@ -82,7 +82,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           aws ssm put-parameter \
-            --name "/tradeflow/geminiApiKey" \
+            --name "/tradequt/geminiApiKey" \
             --value "${GEMINI_API_KEY}" \
             --type "SecureString" \
             --overwrite \
@@ -93,7 +93,7 @@ jobs:
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_PROD }}
         run: |
           aws ssm put-parameter \
-            --name "/tradeflow/razorpayWebhookSecret" \
+            --name "/tradequt/razorpayWebhookSecret" \
             --value "${RAZORPAY_WEBHOOK_SECRET}" \
             --type "SecureString" \
             --overwrite \
@@ -106,24 +106,30 @@ jobs:
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_PROD }}
         run: |
           sam deploy \
-            --stack-name tradeflow-prod \
+            --stack-name tradequt-prod \
+            --s3-bucket tradequt-sam-artifacts \
+            --s3-prefix tradequt-backend \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              StageName=tradeflow-prod \
+              StageName=tradequt-prod \
               ApiVersion=v1 \
               LogRetentionDays=14 \
-              GeminiApiKeyParamName=/tradeflow/geminiApiKey \
-              RazorpayWebhookSecretParamName=/tradeflow/razorpayWebhookSecret \
+              GeminiApiKeyParamName=/tradequt/geminiApiKey \
+              RazorpayWebhookSecretParamName=/tradequt/razorpayWebhookSecret \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
-              RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}"
+              RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}" \
+              CustomDomainName=api.tradequt.com \
+              CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }} \
+              HostedZoneId=${{ secrets.HOSTED_ZONE_ID }} \
+              "AllowedOrigins=https://tradequt.com,https://www.tradequt.com"
       
       - name: Get Stack Outputs
         run: |
           echo "## Production Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Stack Outputs:" >> $GITHUB_STEP_SUMMARY
-          aws cloudformation describe-stacks --stack-name tradeflow-prod --query "Stacks[0].Outputs" >> $GITHUB_STEP_SUMMARY
+          aws cloudformation describe-stacks --stack-name tradequt-prod --query "Stacks[0].Outputs" >> $GITHUB_STEP_SUMMARY

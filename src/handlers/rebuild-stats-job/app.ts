@@ -5,7 +5,6 @@ import { extractDate } from '../../shared/utils/pnl';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TRADES_TABLE = process.env.TRADES_TABLE!;
-const STATS_TABLE = process.env.TRADE_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
@@ -56,8 +55,6 @@ async function rebuildForUser(userId: string): Promise<void> {
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
 
-  let tradeCount = trades.length;
-  let realizedPnL = 0, wins = 0, losses = 0, bestWin = 0, worstLoss = 0, sumWinPnL = 0, sumLossPnL = 0;
   const accountPnL: Record<string, number> = {};
 
   for (const t of trades) {
@@ -71,15 +68,9 @@ async function rebuildForUser(userId: string): Promise<void> {
         ? (t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity)
         : null;
     if (pnl != null) {
-      realizedPnL += pnl;
-      if (pnl > 0) { wins++; sumWinPnL += pnl; if (pnl > bestWin) bestWin = pnl; }
-      else if (pnl < 0) { losses++; sumLossPnL += pnl; if (pnl < worstLoss) worstLoss = pnl; }
       accountPnL[accountId] = (accountPnL[accountId] || 0) + pnl;
     }
   }
-
-  // Dual-write: old stats table
-  await ddb.send(new PutCommand({ TableName: STATS_TABLE, Item: { userId, tradeCount, realizedPnL, wins, losses, bestWin, worstLoss, sumWinPnL, sumLossPnL, lastUpdated: new Date().toISOString(), source: 'periodic-job' } }));
 
   // Update account balances = initialBalance + totalPnL from trades
   for (const [accountId, totalPnL] of Object.entries(accountPnL)) {

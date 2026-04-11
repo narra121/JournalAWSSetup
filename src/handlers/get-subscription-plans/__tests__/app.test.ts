@@ -58,13 +58,13 @@ describe('get-subscription-plans handler', () => {
   // ── Success ─────────────────────────────────────────────────
 
   it('returns 200 with all 4 plans when all SSM parameters exist', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_basic_monthly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_basic_yearly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pro_monthly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_pro_yearly_id' } });
 
     const res = await handler(makeEvent()) as any;
@@ -76,13 +76,13 @@ describe('get-subscription-plans handler', () => {
   });
 
   it('returns plans with correct tier, period, and amount details', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -93,44 +93,44 @@ describe('get-subscription-plans handler', () => {
     const basicMonthly = plans.find((p: any) => p.tier === 'basic' && p.period === 'monthly');
     expect(basicMonthly).toBeDefined();
     expect(basicMonthly.amount).toBe(99);
-    expect(basicMonthly.name).toBe('TradeFlow Basic Monthly');
+    expect(basicMonthly.name).toBe('TradeQut Basic Monthly');
     expect(basicMonthly.planId).toBe('plan_bm');
 
     // Basic yearly
     const basicYearly = plans.find((p: any) => p.tier === 'basic' && p.period === 'yearly');
     expect(basicYearly).toBeDefined();
     expect(basicYearly.amount).toBe(999);
-    expect(basicYearly.name).toBe('TradeFlow Basic Yearly');
+    expect(basicYearly.name).toBe('TradeQut Basic Yearly');
     expect(basicYearly.savings).toBe('17%');
 
     // Pro monthly
     const proMonthly = plans.find((p: any) => p.tier === 'pro' && p.period === 'monthly');
     expect(proMonthly).toBeDefined();
     expect(proMonthly.amount).toBe(299);
-    expect(proMonthly.name).toBe('TradeFlow Pro Monthly');
+    expect(proMonthly.name).toBe('TradeQut Pro Monthly');
 
     // Pro yearly
     const proYearly = plans.find((p: any) => p.tier === 'pro' && p.period === 'yearly');
     expect(proYearly).toBeDefined();
     expect(proYearly.amount).toBe(2999);
-    expect(proYearly.name).toBe('TradeFlow Pro Yearly');
+    expect(proYearly.name).toBe('TradeQut Pro Yearly');
     expect(proYearly.savings).toBe('17%');
   });
 
   // ── ParameterNotFound ───────────────────────────────────────
 
   it('filters out null plans when ParameterNotFound', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
 
     const notFoundError = new Error('Parameter not found');
     (notFoundError as any).name = 'ParameterNotFound';
 
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -188,13 +188,13 @@ describe('get-subscription-plans handler', () => {
   // ── Plan data validation ───────────────────────────────────
 
   it('all plans have INR currency', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -206,13 +206,13 @@ describe('get-subscription-plans handler', () => {
   });
 
   it('all plans have interval set to 1', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -224,13 +224,13 @@ describe('get-subscription-plans handler', () => {
   });
 
   it('yearly plans include savings and monthlyEquivalent fields', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -247,13 +247,13 @@ describe('get-subscription-plans handler', () => {
   });
 
   it('monthly plans do not include savings field', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .resolves({ Parameter: { Value: 'plan_py' } });
 
     const res = await handler(makeEvent()) as any;
@@ -272,15 +272,15 @@ describe('get-subscription-plans handler', () => {
   // ── Response shape ─────────────────────────────────────────
 
   it('response message is "Subscription plans retrieved" on success', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
     const notFoundError = new Error('Parameter not found');
     (notFoundError as any).name = 'ParameterNotFound';
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .rejects(notFoundError);
 
     const res = await handler(makeEvent()) as any;
@@ -306,16 +306,16 @@ describe('get-subscription-plans handler', () => {
   // ── Partial plan availability ──────────────────────────────
 
   it('returns only basic plans when pro plans are not found', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
       .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/basic_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
       .resolves({ Parameter: { Value: 'plan_by' } });
 
     const notFoundError = new Error('Parameter not found');
     (notFoundError as any).name = 'ParameterNotFound';
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_monthly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
       .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradeflow/test/razorpay/plan/pro_yearly' })
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
       .rejects(notFoundError);
 
     const res = await handler(makeEvent()) as any;

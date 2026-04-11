@@ -345,6 +345,45 @@ describe('create-trade handler', () => {
     expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
   });
 
+  it('uploads multiple images in parallel via Promise.all', async () => {
+    const trade = {
+      ...validTrade,
+      images: [
+        {
+          id: 'img-1',
+          url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          timeframe: '1H',
+          description: 'Entry screenshot',
+        },
+        {
+          id: 'img-2',
+          url: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+          timeframe: '4H',
+          description: 'Exit screenshot',
+        },
+        {
+          id: 'img-3',
+          base64Data: 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+          timeframe: 'D',
+          description: 'Daily chart',
+        },
+      ],
+    };
+    const res = await handler(makeEvent(trade), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.data.trade.images).toHaveLength(3);
+    // All three images should have been uploaded to S3
+    const s3Calls = s3Mock.commandCalls(PutObjectCommand);
+    expect(s3Calls).toHaveLength(3);
+    // Verify each image has correct extension based on content type
+    const keys = s3Calls.map(c => c.args[0].input.Key as string);
+    expect(keys.some(k => k.endsWith('.png'))).toBe(true);
+    expect(keys.some(k => k.endsWith('.jpg'))).toBe(true);
+    expect(keys.some(k => k.endsWith('.gif'))).toBe(true);
+  });
+
   it('accepts trade with images containing empty description', async () => {
     const trade = {
       ...validTrade,

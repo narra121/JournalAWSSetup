@@ -91,10 +91,11 @@ export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {
-    console.log('Received Razorpay webhook', JSON.stringify(event, null, 2));
+    const { headers, multiValueHeaders, ...safeEvent } = event;
+    console.log('Received Razorpay webhook', JSON.stringify(safeEvent, null, 2));
 
     // Handle case-insensitive headers (API Gateway normalizes to lowercase)
-    const webhookSignature = event.headers['x-razorpay-signature'] || event.headers['X-Razorpay-Signature'] || '';
+    const webhookSignature = headers['x-razorpay-signature'] || headers['X-Razorpay-Signature'] || '';
     
     if (!webhookSignature) {
       console.error('Missing webhook signature header');

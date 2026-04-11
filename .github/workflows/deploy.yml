@@ -1,4 +1,4 @@
-name: Deploy AWS SAM Application
+name: Deploy Backend (Dev)
 
 on:
   workflow_run:
@@ -6,11 +6,11 @@ on:
     types:
       - completed
     branches:
-      - main
+      - develop
+  workflow_dispatch:
 
-# Prevent overlapping deploys to same branch
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-dev
   cancel-in-progress: false
 
 permissions:
@@ -18,15 +18,19 @@ permissions:
   deployments: write
 
 env:
-  AWS_REGION: us-east-1 # Adjust region if needed
+  AWS_REGION: us-east-1
   SAM_CLI_TELEMETRY: 0
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: develop
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-python@v5
         with:
@@ -77,6 +81,8 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: develop
       - uses: oven-sh/setup-bun@v2
       - uses: actions/download-artifact@v4
         with:
@@ -96,7 +102,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           aws ssm put-parameter \
-            --name "/tradeflow/geminiApiKey" \
+            --name "/tradequt/geminiApiKey" \
             --value "${GEMINI_API_KEY}" \
             --type "SecureString" \
             --overwrite \
@@ -107,7 +113,7 @@ jobs:
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
         run: |
           aws ssm put-parameter \
-            --name "/tradeflow/razorpayWebhookSecret" \
+            --name "/tradequt/razorpayWebhookSecret" \
             --value "${RAZORPAY_WEBHOOK_SECRET}" \
             --type "SecureString" \
             --overwrite \
@@ -122,30 +128,22 @@ jobs:
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
         run: |
           sam sync \
-            --stack-name tradeflow-dev \
+            --stack-name tradequt-dev \
+            --s3-bucket tradequt-sam-artifacts \
+            --s3-prefix tradequt-backend \
             --no-watch \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              StageName=tradeflow-dev \
+              StageName=tradequt-dev \
               ApiVersion=v1 \
               LogRetentionDays=7 \
-              GeminiApiKeyParamName=/tradeflow/geminiApiKey \
-              RazorpayWebhookSecretParamName=/tradeflow/razorpayWebhookSecret \
+              GeminiApiKeyParamName=/tradequt/geminiApiKey \
+              RazorpayWebhookSecretParamName=/tradequt/razorpayWebhookSecret \
               UseExistingResources=false \
               RazorpayKeyId="${RAZORPAY_KEY_ID}" \
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
-              RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}"
-
-  deploy-prod:
-    runs-on: ubuntu-latest
-    needs: deploy-dev
-    steps:
-      - name: Production deployment skipped
-        run: |
-          echo "::notice::✅ Dev deployment completed successfully"
-          echo "::notice::⏭️ Production deployment skipped - requires manual approval"
-          echo "::notice::📋 To deploy to production:"
-          echo "::notice::   1. Go to Actions tab"
-          echo "::notice::   2. Select 'Deploy to Production (Manual)'"
-          echo "::notice::   3. Click 'Run workflow'"
-          echo "::notice::   4. Type 'deploy-to-production' and confirm"
+              RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}" \
+              CustomDomainName=api-dev.tradequt.com \
+              CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }} \
+              HostedZoneId=${{ secrets.HOSTED_ZONE_ID }} \
+              AllowedOrigins=https://dev.tradequt.com

@@ -16,7 +16,6 @@ Globals:
       Variables:
         # Allow either newly created resources or existing ones passed in via parameters
         TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        TRADE_STATS_TABLE: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
         IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
         RATE_LIMIT_TABLE: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
         ACCOUNTS_TABLE: !If [CreateNewDataResources, !Ref AccountsTable, '']
@@ -68,10 +67,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Name of an existing Trades table (required if UseExistingResources=true)
-  ExistingTradeStatsTableName:
-    Type: String
-    Default: ""
-    Description: Name of an existing TradeStats table (required if UseExistingResources=true)
   ExistingImagesBucketName:
     Type: String
     Default: ""
@@ -235,19 +230,6 @@ Resources:
             ProjectionType: KEYS_ONLY
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
-  TradeStatsTable:
-    Type: AWS::DynamoDB::Table
-    Condition: CreateNewDataResources
-    Properties:
-      TableName: !Sub TradeStats-${StageName}
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: userId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: userId
-          KeyType: HASH
-
   DailyStatsTable:
     Type: AWS::DynamoDB::Table
     Condition: CreateNewDataResources
@@ -447,7 +429,7 @@ Resources:
           - src/handlers/create-trade/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   ListTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -483,7 +465,7 @@ Resources:
           - src/handlers/list-trades/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   UpdateTradeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -521,7 +503,7 @@ Resources:
           - src/handlers/update-trade/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   DeleteTradeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -562,7 +544,7 @@ Resources:
           - src/handlers/delete-trade/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   BulkDeleteTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -604,7 +586,7 @@ Resources:
           - src/handlers/bulk-delete-trades/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   GetImageFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -630,7 +612,7 @@ Resources:
           - src/handlers/get-image/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   UpdateStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -643,8 +625,6 @@ Resources:
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
         - DynamoDBCrudPolicy:
@@ -670,7 +650,7 @@ Resources:
           - src/handlers/update-stats/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   StatsDLQ:
     Type: AWS::SQS::Queue
@@ -703,13 +683,11 @@ Resources:
       Handler: src/handlers/rebuild-stats-job/app.handler
       AutoPublishAlias: live
       Description: Periodic full stats rebuild for all users (scan Trades)
-      Timeout: 900
-      MemorySize: 2048
+      Timeout: 180
+      MemorySize: 512
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
         - DynamoDBCrudPolicy:
@@ -728,7 +706,7 @@ Resources:
           - src/handlers/rebuild-stats-job/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   GetStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -755,7 +733,7 @@ Resources:
           - src/handlers/get-stats/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   GetGoalsProgressFunction:
     Type: AWS::Serverless::Function
@@ -787,32 +765,7 @@ Resources:
           - src/handlers/get-goals-progress/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
-
-  MigrateStatsFunction:
-    Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/migrate-stats/app.handler
-      AutoPublishAlias: live
-      Timeout: 900
-      MemorySize: 1024
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/migrate-stats/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   AuthSignUpFunction:
     Type: AWS::Serverless::Function
@@ -848,7 +801,7 @@ Resources:
           - src/handlers/auth-signup/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   AuthConfirmSignUpFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -894,7 +847,7 @@ Resources:
           - src/handlers/auth-confirm-signup/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   AuthLoginFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -929,7 +882,7 @@ Resources:
           - src/handlers/auth-login/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   AuthRefreshFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -958,7 +911,7 @@ Resources:
           - src/handlers/auth-refresh/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   AuthForgotPasswordFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -995,7 +948,7 @@ Resources:
           - src/handlers/auth-forgot-password/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
   AuthConfirmForgotPasswordFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1032,7 +985,7 @@ Resources:
           - src/handlers/auth-confirm-forgot-password/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   ExtractTradesFunction:
     Type: AWS::Serverless::Function
@@ -1072,7 +1025,7 @@ Resources:
           - src/handlers/extract-trades/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   EnhanceTextFunction:
     Type: AWS::Serverless::Function
@@ -1112,7 +1065,7 @@ Resources:
           - src/handlers/enhance-text/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Account Management Functions
   ListAccountsFunction:
@@ -1139,7 +1092,7 @@ Resources:
           - src/handlers/list-accounts/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   CreateAccountFunction:
     Type: AWS::Serverless::Function
@@ -1171,7 +1124,7 @@ Resources:
           - src/handlers/create-account/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateAccountFunction:
     Type: AWS::Serverless::Function
@@ -1197,7 +1150,7 @@ Resources:
           - src/handlers/update-account/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateAccountStatusFunction:
     Type: AWS::Serverless::Function
@@ -1223,7 +1176,7 @@ Resources:
           - src/handlers/update-account-status/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   DeleteAccountFunction:
     Type: AWS::Serverless::Function
@@ -1263,7 +1216,7 @@ Resources:
           - src/handlers/delete-account/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Goals and Rules Functions
   UpdateGoalFunction:
@@ -1290,7 +1243,7 @@ Resources:
           - src/handlers/update-goal/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   ListRulesFunction:
     Type: AWS::Serverless::Function
@@ -1316,7 +1269,7 @@ Resources:
           - src/handlers/list-rules/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   GetRulesGoalsFunction:
     Type: AWS::Serverless::Function
@@ -1350,7 +1303,7 @@ Resources:
           - src/handlers/get-rules-goals/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   CreateRuleFunction:
     Type: AWS::Serverless::Function
@@ -1376,7 +1329,7 @@ Resources:
           - src/handlers/create-rule/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateRuleFunction:
     Type: AWS::Serverless::Function
@@ -1402,7 +1355,7 @@ Resources:
           - src/handlers/update-rule/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   ToggleRuleFunction:
     Type: AWS::Serverless::Function
@@ -1428,7 +1381,7 @@ Resources:
           - src/handlers/toggle-rule/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   DeleteRuleFunction:
     Type: AWS::Serverless::Function
@@ -1454,7 +1407,7 @@ Resources:
           - src/handlers/delete-rule/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Analytics Function (Unified for all analytics types)
   AnalyticsFunction:
@@ -1481,7 +1434,7 @@ Resources:
           - src/handlers/analytics/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # User Profile and Preferences Functions
   GetUserProfileFunction:
@@ -1513,7 +1466,7 @@ Resources:
           - src/handlers/get-user-profile/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateUserProfileFunction:
     Type: AWS::Serverless::Function
@@ -1541,7 +1494,7 @@ Resources:
           - src/handlers/update-user-profile/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateUserPreferencesFunction:
     Type: AWS::Serverless::Function
@@ -1567,7 +1520,7 @@ Resources:
           - src/handlers/update-user-preferences/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateUserNotificationsFunction:
     Type: AWS::Serverless::Function
@@ -1593,7 +1546,7 @@ Resources:
           - src/handlers/update-user-notifications/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Saved Options Functions
   GetSavedOptionsFunction:
@@ -1623,7 +1576,7 @@ Resources:
           - src/handlers/get-saved-options/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   UpdateSavedOptionsFunction:
     Type: AWS::Serverless::Function
@@ -1652,7 +1605,7 @@ Resources:
           - src/handlers/update-saved-options/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Razorpay Payment Functions
   CreateOrderRazorpayFunction:
@@ -1680,7 +1633,7 @@ Resources:
           - src/handlers/create-order-razorpay/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Razorpay Subscription Functions
   GetSubscriptionPlansFunction:
@@ -1715,7 +1668,7 @@ Resources:
           - src/handlers/get-subscription-plans/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   CreateRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -1746,7 +1699,7 @@ Resources:
           - src/handlers/create-razorpay-subscription/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   ManageRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -1795,7 +1748,7 @@ Resources:
           - src/handlers/manage-razorpay-subscription/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   VerifyPaymentRazorpayFunction:
     Type: AWS::Serverless::Function
@@ -1825,7 +1778,7 @@ Resources:
           - src/handlers/verify-payment-razorpay/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   RazorpayWebhookFunction:
     Type: AWS::Serverless::Function
@@ -1862,7 +1815,7 @@ Resources:
           - src/handlers/razorpay-webhook/app.ts
         Minify: true
         Target: es2020
-        Sourcemap: true
+        Sourcemap: false
 
   # Custom Domain for API Gateway
   ApiDomainName:
@@ -1907,7 +1860,5 @@ Outputs:
     Value: !Ref UserPoolClient
   TradesTableName:
     Value: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
-  TradeStatsTableName:
-    Value: !If [CreateNewDataResources, !Ref TradeStatsTable, !Ref ExistingTradeStatsTableName]
   ImagesBucketName:
     Value: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]

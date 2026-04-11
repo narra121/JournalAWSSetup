@@ -4,7 +4,6 @@ import { DynamoDBDocumentClient, ScanCommand, PutCommand, GetCommand, UpdateComm
 
 // Stub env before importing handler
 vi.stubEnv('TRADES_TABLE', 'test-trades');
-vi.stubEnv('TRADE_STATS_TABLE', 'test-stats');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 
@@ -123,26 +122,18 @@ describe('rebuild-stats-job handler', () => {
   it('rebuilds stats and returns rebuiltUsers count', async () => {
     stubRecentUsers(['user-1']);
     stubUserTrades([
-      makeTrade({ tradeId: 't1', entryPrice: 100, exitPrice: 110, quantity: 10, side: 'BUY' }),
-      makeTrade({ tradeId: 't2', entryPrice: 200, exitPrice: 190, quantity: 5, side: 'BUY' }),
+      makeTrade({ tradeId: 't1', entryPrice: 100, exitPrice: 110, quantity: 10, side: 'BUY', openDate: '2026-01-15T10:00:00Z' }),
+      makeTrade({ tradeId: 't2', entryPrice: 200, exitPrice: 190, quantity: 5, side: 'BUY', openDate: '2026-01-15T11:00:00Z' }),
     ]);
 
     const result = await handler();
 
     expect(result).toEqual({ rebuiltUsers: 1 });
-    // Should have called PutCommand to write stats
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
-
-    const statsItem = putCalls[0].args[0].input.Item;
-    expect(statsItem.userId).toBe('user-1');
-    expect(statsItem.tradeCount).toBe(2);
-    // Trade 1: (110-100)*10 = 100 (win); Trade 2: (190-200)*5 = -50 (loss)
-    expect(statsItem.realizedPnL).toBe(50);
-    expect(statsItem.wins).toBe(1);
-    expect(statsItem.losses).toBe(1);
-    expect(statsItem.bestWin).toBe(100);
-    expect(statsItem.worstLoss).toBe(-50);
+    // Trade 1: (110-100)*10 = 100; Trade 2: (190-200)*5 = -50; total PnL = 50
+    // Account balance should be initialBalance(10000) + 50 = 10050
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(10050);
   });
 
   it('handles user with no trades (all deleted since last daily stats write)', async () => {
@@ -153,11 +144,10 @@ describe('rebuild-stats-job handler', () => {
     const result = await handler();
 
     expect(result).toEqual({ rebuiltUsers: 1 });
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
-    const statsItem = putCalls[0].args[0].input.Item;
-    expect(statsItem.tradeCount).toBe(0);
-    expect(statsItem.realizedPnL).toBe(0);
+    // No account balance updates since there are no trades
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    // No daily stats PutCommands since there are no trades to group
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
   });
 
   // ── PnL calculation ─────────────────────────────────────────
@@ -167,14 +157,14 @@ describe('rebuild-stats-job handler', () => {
     stubUserTrades([
       makeTrade({ side: 'BUY', entryPrice: 50, exitPrice: 75, quantity: 4 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
-    // (75 - 50) * 4 = 100
-    expect(statsItem.realizedPnL).toBe(100);
-    expect(statsItem.wins).toBe(1);
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    // (75 - 50) * 4 = 100; balance = 1000 + 100 = 1100
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1100);
   });
 
   it('calculates PnL correctly for SELL trades: (entry - exit) * qty', async () => {
@@ -182,14 +172,14 @@ describe('rebuild-stats-job handler', () => {
     stubUserTrades([
       makeTrade({ side: 'SELL', entryPrice: 200, exitPrice: 180, quantity: 2 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
-    // (200 - 180) * 2 = 40
-    expect(statsItem.realizedPnL).toBe(40);
-    expect(statsItem.wins).toBe(1);
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    // (200 - 180) * 2 = 40; balance = 1000 + 40 = 1040
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1040);
   });
 
   // ── Skipping ────────────────────────────────────────────────
@@ -200,15 +190,16 @@ describe('rebuild-stats-job handler', () => {
       makeTrade({ accountId: '-1', entryPrice: 100, exitPrice: 200, quantity: 1 }),
       makeTrade({ tradeId: 't2', accountId: 'acc-1', entryPrice: 100, exitPrice: 110, quantity: 10 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 5000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
-    // Only the second trade should count for PnL
-    expect(statsItem.realizedPnL).toBe(100);
-    expect(statsItem.tradeCount).toBe(2); // tradeCount is total trades
-    expect(statsItem.wins).toBe(1);
+    // Only acc-1 should get a balance update, not the "-1" account
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBe(1);
+    expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
+    // Only the second trade counts: (110-100)*10 = 100; balance = 5000 + 100 = 5100
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(5100);
   });
 
   // ── Account balance updates ─────────────────────────────────
@@ -254,16 +245,17 @@ describe('rebuild-stats-job handler', () => {
         }
         return { Items: [], LastEvaluatedKey: undefined };
       });
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 10000 } });
 
     const result = await handler();
 
     expect(result).toEqual({ rebuiltUsers: 2 });
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls).toHaveLength(2);
-
-    const userIds = putCalls.map((c) => c.args[0].input.Item.userId);
-    expect(userIds).toContain('user-1');
-    expect(userIds).toContain('user-2');
+    // Both users should get account balance updates
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBe(2);
+    const accountIds = updateCalls.map((c) => c.args[0].input.Key.accountId);
+    expect(accountIds).toContain('acc-1');
+    expect(accountIds).toContain('acc-2');
   });
 
   // ── Error / failure cases ──────────────────────────────────
@@ -274,9 +266,9 @@ describe('rebuild-stats-job handler', () => {
     await expect(handler()).rejects.toThrow('DynamoDB scan failed');
   });
 
-  it('throws when PutCommand fails writing stats', async () => {
+  it('throws when PutCommand fails writing daily stats', async () => {
     stubRecentUsers(['user-1']);
-    stubUserTrades([makeTrade()]);
+    stubUserTrades([makeTrade({ openDate: '2026-01-15T10:00:00Z' })]);
     ddbMock.on(PutCommand).rejects(new Error('PutCommand failed'));
 
     await expect(handler()).rejects.toThrow('PutCommand failed');
@@ -319,18 +311,16 @@ describe('rebuild-stats-job handler', () => {
     stubUserTrades([
       makeTrade({ tradeId: 't1', side: null, pnl: undefined, entryPrice: 100, exitPrice: 110, quantity: 10 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
     // When side is null, the handler falls into the else branch of the ternary:
     // (entryPrice - exitPrice) * quantity = (100 - 110) * 10 = -100
-    // This is treated as a SELL calculation, producing a loss
-    expect(statsItem.realizedPnL).toBe(-100);
-    expect(statsItem.wins).toBe(0);
-    expect(statsItem.losses).toBe(1);
-    expect(statsItem.worstLoss).toBe(-100);
+    // balance = 1000 + (-100) = 900
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(900);
   });
 
   it('processes trade with quantity = 0 resulting in pnl = 0', async () => {
@@ -338,15 +328,14 @@ describe('rebuild-stats-job handler', () => {
     stubUserTrades([
       makeTrade({ tradeId: 't1', side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 0 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
-    // (110 - 100) * 0 = 0
-    expect(statsItem.realizedPnL).toBe(0);
-    expect(statsItem.wins).toBe(0);
-    expect(statsItem.losses).toBe(0);
+    // (110 - 100) * 0 = 0; balance = 1000 + 0 = 1000
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1000);
   });
 
   it('handles trade with negative prices', async () => {
@@ -354,15 +343,14 @@ describe('rebuild-stats-job handler', () => {
     stubUserTrades([
       makeTrade({ tradeId: 't1', side: 'BUY', entryPrice: -1, exitPrice: 5, quantity: 10 }),
     ]);
+    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
 
     await handler();
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    const statsItem = putCalls[0].args[0].input.Item;
-    // (5 - (-1)) * 10 = 60
-    expect(statsItem.realizedPnL).toBe(60);
-    expect(statsItem.wins).toBe(1);
-    expect(statsItem.bestWin).toBe(60);
+    // (5 - (-1)) * 10 = 60; balance = 1000 + 60 = 1060
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1060);
   });
 
   it('skips balance update when account not found (GetCommand returns no Item)', async () => {

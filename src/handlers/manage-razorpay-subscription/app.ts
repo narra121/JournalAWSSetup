@@ -18,7 +18,8 @@ const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 export const handler = async (
   event: APIGatewayProxyEvent | any
 ): Promise<APIGatewayProxyResult> => {
-  console.log('Event:', JSON.stringify(event, null, 2));
+  const { headers, multiValueHeaders, ...safeEvent } = event;
+  console.log('Event:', JSON.stringify(safeEvent, null, 2));
 
   try {
     if (!razorpay) {

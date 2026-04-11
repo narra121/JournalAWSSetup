@@ -12,7 +12,8 @@ const STAGE_NAME = process.env.STAGE_NAME || 'dev';
 export const handler = async (
   event: APIGatewayProxyEvent | any
 ): Promise<APIGatewayProxyResult> => {
-  console.log('Event:', JSON.stringify(event, null, 2));
+  const { headers, multiValueHeaders, ...safeEvent } = event;
+  console.log('Event:', JSON.stringify(safeEvent, null, 2));
 
   try {
     // Retrieve all plan IDs from SSM Parameter Store
@@ -41,7 +42,7 @@ export const handler = async (
 async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly', amount: number): Promise<any | null> {
   try {
     const planKey = `${tier}_${period}`;
-    const paramName = `/tradeflow/${STAGE_NAME}/razorpay/plan/${planKey}`;
+    const paramName = `/tradequt/${STAGE_NAME}/razorpay/plan/${planKey}`;
     console.log(`Fetching SSM parameter: ${paramName}`);
     const result = await ssmClient.send(
       new GetParameterCommand({ Name: paramName })
@@ -62,20 +63,20 @@ async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly
 
     // Basic tier
     if (tier === 'basic' && period === 'monthly') {
-      planDetails.name = 'TradeFlow Basic Monthly';
+      planDetails.name = 'TradeQut Basic Monthly';
       planDetails.description = 'Monthly subscription - All features included';
     } else if (tier === 'basic' && period === 'yearly') {
-      planDetails.name = 'TradeFlow Basic Yearly';
+      planDetails.name = 'TradeQut Basic Yearly';
       planDetails.description = 'Yearly subscription - All features included. Save 17%!';
       planDetails.savings = '17%';
       planDetails.monthlyEquivalent = 99;
     }
     // Pro tier
     else if (tier === 'pro' && period === 'monthly') {
-      planDetails.name = 'TradeFlow Pro Monthly';
+      planDetails.name = 'TradeQut Pro Monthly';
       planDetails.description = 'Monthly subscription - All features included. Support development!';
     } else if (tier === 'pro' && period === 'yearly') {
-      planDetails.name = 'TradeFlow Pro Yearly';
+      planDetails.name = 'TradeQut Pro Yearly';
       planDetails.description = 'Yearly subscription - All features included. Save 17% and support development!';
       planDetails.savings = '17%';
       planDetails.monthlyEquivalent = 299;

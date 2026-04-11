@@ -1,4 +1,4 @@
-# TradeFlow Backend
+# TradeQut Backend
 
 Serverless trading journal API built with AWS SAM. Lambda + DynamoDB + Cognito + S3 + API Gateway.
 
@@ -42,7 +42,7 @@ bun install
 
 Edit `env-local.json` with your deployed dev resource names. Get them from:
 ```powershell
-aws cloudformation describe-stacks --stack-name tradeflow-dev --query "Stacks[0].Outputs" --output table
+aws cloudformation describe-stacks --stack-name tradequt-dev --query "Stacks[0].Outputs" --output table
 ```
 
 ### Run backend locally
@@ -60,7 +60,7 @@ After code changes, re-run `sam build` before restarting.
 
 In a second terminal:
 ```powershell
-cd ..\TradeFlow
+cd ..\TradeQut
 bun run dev:local                    # http://localhost:8080, API proxied to localhost:3001
 ```
 
@@ -71,8 +71,8 @@ bun run dev:local                    # http://localhost:8080, API proxied to loc
 ```bash
 # Manual deploy
 sam build --parallel --cached
-sam deploy --stack-name tradeflow-dev --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-  --parameter-overrides StageName=tradeflow-dev ApiVersion=v1 LogRetentionDays=7 \
+sam deploy --stack-name tradequt-dev --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+  --parameter-overrides StageName=tradequt-dev ApiVersion=v1 LogRetentionDays=7 \
   RazorpayKeyId=rzp_test_xxx RazorpayKeySecret=xxx RazorpayWebhookSecret=xxx
 ```
 
@@ -83,8 +83,8 @@ Go to Actions -> "Deploy to Production (Manual)" -> Run workflow -> type `deploy
 ### SSM Parameters (one-time)
 
 ```bash
-aws ssm put-parameter --name "/tradeflow/geminiApiKey" --value "YOUR_KEY" --type SecureString --overwrite
-aws ssm put-parameter --name "/tradeflow/razorpayWebhookSecret" --value "YOUR_SECRET" --type SecureString --overwrite
+aws ssm put-parameter --name "/tradequt/geminiApiKey" --value "YOUR_KEY" --type SecureString --overwrite
+aws ssm put-parameter --name "/tradequt/razorpayWebhookSecret" --value "YOUR_SECRET" --type SecureString --overwrite
 ```
 
 ### GitHub Secrets (for CI/CD)
@@ -101,7 +101,7 @@ aws ssm put-parameter --name "/tradeflow/razorpayWebhookSecret" --value "YOUR_SE
 ### Get Stack Outputs
 
 ```bash
-aws cloudformation describe-stacks --stack-name tradeflow-dev --query "Stacks[0].Outputs" --output table
+aws cloudformation describe-stacks --stack-name tradequt-dev --query "Stacks[0].Outputs" --output table
 ```
 
 ## API Endpoints

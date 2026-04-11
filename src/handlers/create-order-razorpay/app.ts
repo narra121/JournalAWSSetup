@@ -26,7 +26,8 @@ export const handler = async (
       });
     }
 
-    console.log('Creating Razorpay order', { event });
+    const { headers, multiValueHeaders, ...safeEvent } = event;
+    console.log('Creating Razorpay order', { event: safeEvent });
 
     // Parse request body
     const body: CreateOrderPayload = JSON.parse(event.body || '{}');
