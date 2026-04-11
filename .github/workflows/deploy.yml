@@ -143,6 +143,6 @@ jobs:
               RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
               RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}" \
               CustomDomainName=api-dev.tradequt.com \
-              CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }} \
-              HostedZoneId=${{ secrets.HOSTED_ZONE_ID }} \
+              "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
+              "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \
               AllowedOrigins=https://dev.tradequt.com
