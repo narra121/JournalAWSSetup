@@ -119,20 +119,18 @@ jobs:
             --overwrite \
             --region $AWS_REGION
 
-      - name: Install esbuild for SAM sync
-        run: bun install -g esbuild@latest
-      - name: Deploy to Dev (incremental)
+      - name: Deploy to Dev
         env:
           RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_DEV }}
           RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET_DEV }}
           RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
         run: |
-          sam sync \
+          sam deploy \
             --stack-name tradequt-dev \
             --s3-bucket tradequt-sam-artifacts \
             --s3-prefix tradequt-backend \
-            --no-watch \
-            --yes \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               StageName=tradequt-dev \
