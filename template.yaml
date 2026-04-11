@@ -209,12 +209,6 @@ Resources:
           AttributeType: S
         - AttributeName: openDate
           AttributeType: S
-        - AttributeName: symbolOpenDate
-          AttributeType: S
-        - AttributeName: statusOpenDate
-          AttributeType: S
-        - AttributeName: outcomeOpenDate
-          AttributeType: S
         - AttributeName: idempotencyKey
           AttributeType: S
       KeySchema:
@@ -228,30 +222,6 @@ Resources:
             - AttributeName: userId
               KeyType: HASH
             - AttributeName: openDate
-              KeyType: RANGE
-          Projection:
-            ProjectionType: KEYS_ONLY
-        - IndexName: user-symbol-date-gsi
-          KeySchema:
-            - AttributeName: userId
-              KeyType: HASH
-            - AttributeName: symbolOpenDate
-              KeyType: RANGE
-          Projection:
-            ProjectionType: KEYS_ONLY
-        - IndexName: user-status-date-gsi
-          KeySchema:
-            - AttributeName: userId
-              KeyType: HASH
-            - AttributeName: statusOpenDate
-              KeyType: RANGE
-          Projection:
-            ProjectionType: KEYS_ONLY
-        - IndexName: user-outcome-date-gsi
-          KeySchema:
-            - AttributeName: userId
-              KeyType: HASH
-            - AttributeName: outcomeOpenDate
               KeyType: RANGE
           Projection:
             ProjectionType: KEYS_ONLY

@@ -59,12 +59,16 @@ beforeEach(() => {
 
 describe('list-trades handler', () => {
   it('returns trades for authenticated user with pagination metadata', async () => {
-    const items = [
-      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', side: 'BUY', openDate: '2024-01-10', images: [] },
-      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', side: 'SELL', openDate: '2024-02-15', images: [] },
+    const gsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-10' },
+      { userId: 'user-1', tradeId: 't2', openDate: '2024-02-15' },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
+    const fullItems = [
+      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', side: 'BUY', openDate: '2024-01-10', accountId: 'acc-1', images: [] },
+      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', side: 'SELL', openDate: '2024-02-15', accountId: 'acc-1', images: [] },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': fullItems } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -133,12 +137,13 @@ describe('list-trades handler', () => {
 
   it('returns nextCursor and hasMore when DynamoDB returns LastEvaluatedKey', async () => {
     const lastKey = { userId: 'user-1', tradeId: 't5' };
-    const items = [{ userId: 'user-1', tradeId: 't5', symbol: 'TSLA', images: [] }];
+    const gsiKeys = [{ userId: 'user-1', tradeId: 't5', openDate: '2024-06-01' }];
+    const fullItems = [{ userId: 'user-1', tradeId: 't5', symbol: 'TSLA', accountId: 'acc-1', images: [] }];
     ddbMock.on(QueryCommand).resolves({
-      Items: items,
+      Items: gsiKeys,
       LastEvaluatedKey: lastKey,
     });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': fullItems } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -167,16 +172,20 @@ describe('list-trades handler', () => {
   });
 
   it('normalizes image keys in trade items', async () => {
-    const items = [
+    const gsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-10' },
+    ];
+    const fullItems = [
       {
         userId: 'user-1',
         tradeId: 't1',
         symbol: 'AAPL',
+        accountId: 'acc-1',
         images: [{ key: 'images/user-1/t1/img1.jpg', timeframe: '1h' }],
       },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': fullItems } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -242,13 +251,18 @@ describe('list-trades handler', () => {
   });
 
   it('does not crash when DynamoDB returns items with missing required fields', async () => {
-    const items = [
-      { userId: 'user-1' },                          // no tradeId, no symbol
-      { userId: 'user-1', tradeId: 't2' },           // no symbol
-      { userId: 'user-1', symbol: 'AAPL' },          // no tradeId
+    const gsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-01' },
+      { userId: 'user-1', tradeId: 't2', openDate: '2024-01-02' },
+      { userId: 'user-1', tradeId: 't3', openDate: '2024-01-03' },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
+    const fullItems = [
+      { userId: 'user-1', tradeId: 't1', accountId: 'acc-1' },           // no symbol
+      { userId: 'user-1', tradeId: 't2', accountId: 'acc-1' },           // no symbol
+      { userId: 'user-1', tradeId: 't3', symbol: 'AAPL', accountId: 'acc-1' },
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': fullItems } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -304,16 +318,20 @@ describe('list-trades handler', () => {
   });
 
   it('returns trade without image URLs when image has no valid key', async () => {
-    const items = [
+    const gsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-10' },
+    ];
+    const fullItems = [
       {
         userId: 'user-1',
         tradeId: 't1',
         symbol: 'AAPL',
+        accountId: 'acc-1',
         images: [{ url: 'not-a-valid-s3-url' }],
       },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': fullItems } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -336,10 +354,12 @@ describe('list-trades handler', () => {
         limit: '9999',
       },
     });
-    await handler(event, {} as any, () => {}) as any;
+    const res = await handler(event, {} as any, () => {}) as any;
 
-    const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBeLessThanOrEqual(100);
+    // GSI path no longer passes Limit to QueryCommand; limit is applied client-side
+    // Verify the response pagination limit is capped at 100
+    const body = JSON.parse(res.body);
+    expect(body.data.pagination.limit).toBe(100);
   });
 
   it('handles startDate after endDate without error (DDB BETWEEN)', async () => {
@@ -380,17 +400,19 @@ describe('list-trades handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(25);
 
+    // GSI path does NOT pass Limit to QueryCommand (fetches all keys for date range)
     const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBe(25);
+    expect(call.args[0].input.Limit).toBeUndefined();
   });
 
   it('defaults limit to 50 when not provided', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    await handler(makeEvent(), {} as any, () => {}) as any;
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
-    const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBe(50);
+    // GSI path does NOT pass Limit to QueryCommand; verify default in pagination response
+    const body = JSON.parse(res.body);
+    expect(body.data.pagination.limit).toBe(50);
   });
 
   it('clamps limit below 1 to 1', async () => {
@@ -404,10 +426,11 @@ describe('list-trades handler', () => {
         limit: '0',
       },
     });
-    await handler(event, {} as any, () => {}) as any;
+    const res = await handler(event, {} as any, () => {}) as any;
 
-    const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBe(1);
+    // GSI path does NOT pass Limit to QueryCommand; verify clamping in pagination response
+    const body = JSON.parse(res.body);
+    expect(body.data.pagination.limit).toBe(1);
   });
 
   it('passes decoded cursor as ExclusiveStartKey to DynamoDB', async () => {
@@ -433,26 +456,33 @@ describe('list-trades handler', () => {
   it('simulates multi-page traversal using cursor', async () => {
     const page1Key = { userId: 'user-1', openDate: '2024-03-01', tradeId: 't2' };
 
-    const page1Items = [
-      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] },
-      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', images: [] },
+    const page1GsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-15' },
+      { userId: 'user-1', tradeId: 't2', openDate: '2024-03-01' },
     ];
-    const page2Items = [
-      { userId: 'user-1', tradeId: 't3', symbol: 'TSLA', images: [] },
+    const page1FullItems = [
+      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', accountId: 'acc-1', images: [] },
+      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', accountId: 'acc-1', images: [] },
+    ];
+    const page2GsiKeys = [
+      { userId: 'user-1', tradeId: 't3', openDate: '2024-05-01' },
+    ];
+    const page2FullItems = [
+      { userId: 'user-1', tradeId: 't3', symbol: 'TSLA', accountId: 'acc-1', images: [] },
     ];
 
     // Page 1: returns LastEvaluatedKey
     ddbMock.on(QueryCommand).resolvesOnce({
-      Items: page1Items,
+      Items: page1GsiKeys,
       LastEvaluatedKey: page1Key,
     }).resolvesOnce({
       // Page 2: no LastEvaluatedKey (last page)
-      Items: page2Items,
+      Items: page2GsiKeys,
     });
     ddbMock.on(BatchGetCommand).resolvesOnce({
-      Responses: { 'test-trades': page1Items },
+      Responses: { 'test-trades': page1FullItems },
     }).resolvesOnce({
-      Responses: { 'test-trades': page2Items },
+      Responses: { 'test-trades': page2FullItems },
     });
 
     // Fetch page 1

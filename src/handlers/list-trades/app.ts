@@ -55,46 +55,29 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
+    // Query trades — GSI for date range, main table for no-date queries
     let command;
     if (startDate && endDate) {
-      // Ensure endDate is inclusive of the full day (openDate stored as ISO datetime)
+      // GSI query: userId + openDate range (KEYS_ONLY — no FilterExpression here)
       const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
-      const exprValues: Record<string, any> = { ':u': userId, ':start': startDate, ':end': inclusiveEnd };
-      const exprNames: Record<string, string> = { '#od': 'openDate' };
-      
-      // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
-      let filterExpression = undefined;
-      if (shouldFilterByAccount) {
-        // Filter by exact accountId only (don't include -1 "all accounts" trades)
-        filterExpression = '#aid = :aid';
-        exprValues[':aid'] = accountId;
-        exprNames['#aid'] = 'accountId';
-        log.info('Adding accountId filter', { filterExpression, accountIdValue: accountId });
-      }
-      
       command = new QueryCommand({
         TableName: TRADES_TABLE,
         IndexName: 'trades-by-date-gsi',
         KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        FilterExpression: filterExpression,
-        ExpressionAttributeValues: exprValues,
-        ExpressionAttributeNames: exprNames,
-        Limit: limit,
-        ExclusiveStartKey: exclusiveStartKey
+        ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
+        ExpressionAttributeNames: { '#od': 'openDate' },
+        ExclusiveStartKey: exclusiveStartKey,
       });
     } else {
+      // Main table query: userId only, accountId filter works here (full record available)
       const exprValues: Record<string, any> = { ':u': userId };
-      
-      // Add accountId filter at DB level using FilterExpression (skip if 'ALL')
-      let filterExpression = undefined;
       const exprNames: Record<string, string> = {};
+      let filterExpression: string | undefined;
       if (shouldFilterByAccount) {
-        // Filter by exact accountId only (don't include -1 "all accounts" trades)
         filterExpression = '#aid = :aid';
         exprValues[':aid'] = accountId;
         exprNames['#aid'] = 'accountId';
       }
-      
       command = new QueryCommand({
         TableName: TRADES_TABLE,
         KeyConditionExpression: 'userId = :u',
@@ -102,27 +85,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         ExpressionAttributeValues: exprValues,
         ExpressionAttributeNames: Object.keys(exprNames).length > 0 ? exprNames : undefined,
         Limit: limit,
-        ExclusiveStartKey: exclusiveStartKey
+        ExclusiveStartKey: exclusiveStartKey,
       });
     }
-  const result = await ddb.send(command);
+
+    const result = await ddb.send(command);
     let items = result.Items || [];
 
-    log.info('Query results', {
-      itemCount: items.length,
-      sampleAccountIds: items.slice(0, 3).map((i: any) => i.accountId),
-      hasMore: !!result.LastEvaluatedKey
-    });
-
-    // GSI returns KEYS_ONLY — fetch full records from main table
+    // GSI returns KEYS_ONLY — BatchGet full records from main table
     if (startDate && endDate && items.length > 0) {
       const keys = items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
-      const chunks: Record<string, any>[][] = [];
-      for (let i = 0; i < keys.length; i += 100) {
-        chunks.push(keys.slice(i, i + 100));
-      }
       const fullItems: any[] = [];
-      for (const chunk of chunks) {
+      for (let i = 0; i < keys.length; i += 100) {
+        const chunk = keys.slice(i, i + 100);
         const batchResult = await ddb.send(new BatchGetCommand({
           RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
         }));
@@ -130,10 +105,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           fullItems.push(...batchResult.Responses[TRADES_TABLE]);
         }
       }
-      // Replace GSI items with full items, preserving order by openDate desc
       const fullMap = new Map(fullItems.map((it: any) => [it.tradeId, it]));
       items = items.map((it: any) => fullMap.get(it.tradeId) || it);
     }
+
+    // Account filter applied AFTER full data is fetched (GSI doesn't have accountId)
+    if (shouldFilterByAccount) {
+      items = items.filter((it: any) => it.accountId === accountId);
+    }
+
+    log.info('Query results', {
+      itemCount: items.length,
+      sampleAccountIds: items.slice(0, 3).map((i: any) => i.accountId),
+      hasMore: !!result.LastEvaluatedKey,
+    });
     
     // Presign image keys (short-lived) if present
   if (items.length) {

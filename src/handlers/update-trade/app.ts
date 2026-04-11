@@ -164,14 +164,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
-        // Update GSI attributes for the new trade
-        if (newTrade.symbol && newTrade.openDate) {
-          newTrade.symbolOpenDate = `${newTrade.symbol}#${newTrade.openDate}`;
-        }
-        if (newTrade.outcome && newTrade.openDate) {
-          newTrade.statusOpenDate = `${newTrade.outcome}#${newTrade.openDate}`;
-          newTrade.outcomeOpenDate = `${newTrade.outcome}#${newTrade.openDate}`;
-        }
         additionalTrades.push(newTrade);
       }
     } else if (incomingAccountIds.length === 1) {
@@ -209,15 +201,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       : null;
   // Do not auto-set outcome; keep whatever currently stored / provided
     existing.updatedAt = new Date().toISOString();
-    // Update composite GSI attributes (symbol/date, status/date & outcome/date)
-    if (existing.symbol && existing.openDate) {
-      existing.symbolOpenDate = `${existing.symbol}#${existing.openDate}`;
-    }
-    if (existing.outcome && existing.openDate) {
-      existing.statusOpenDate = `${existing.outcome}#${existing.openDate}`;
-      existing.outcomeOpenDate = `${existing.outcome}#${existing.openDate}`;
-    }
-
     // Persist full object (replace strategy) with stricter condition (must belong to user and exist)
     const sets: string[] = []; const names: Record<string,string> = {}; const values: Record<string,any> = { ':u': userId };
     for (const [k,v] of Object.entries(existing)) { if (k === 'userId' || k === 'tradeId') continue; const nk = `#${k}`; const vk = `:${k}`; names[nk] = k; values[vk] = v; sets.push(`${nk} = ${vk}`);}    

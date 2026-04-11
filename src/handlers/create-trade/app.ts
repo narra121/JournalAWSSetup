@@ -146,9 +146,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
               createdAt: nowLocal,
               updatedAt: nowLocal,
-              symbolOpenDate: `${t.symbol}#${t.openDate}`,
-              statusOpenDate: `${outcome || 'UNKNOWN'}#${t.openDate}`,
-              outcomeOpenDate: `${outcome}#${t.openDate}`,
             };
             if (idemKeyItem) item.idempotencyKey = `${idemKeyItem}${accountId ? `-${accountId}` : ''}`;
             return item;
@@ -338,10 +335,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
         createdAt: now,
         updatedAt: now,
-        // Composite attributes for GSIs
-        symbolOpenDate: `${data.symbol}#${data.openDate}`,
-        statusOpenDate: `${outcome || 'UNKNOWN'}#${data.openDate}`,
-        outcomeOpenDate: `${outcome}#${data.openDate}`,
       };
       if (idemKey) item.idempotencyKey = `${idemKey}${accountId ? `-${accountId}` : ''}`;
       return item;
