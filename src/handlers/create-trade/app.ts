@@ -52,7 +52,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const processOne = async (t: any, index: number) => {
         try {
           const requiredFields = ['symbol','side','quantity','openDate'];
-      for (const f of requiredFields) if (!t[f]) { log.debug('bulk item missing field', { index, field: f }); throw new Error(`Missing field ${f}`); }
+      for (const f of requiredFields) if (t[f] === undefined || t[f] === null || t[f] === '') { log.debug('bulk item missing field', { index, field: f }); throw new Error(`Missing field ${f}`); }
           const tradeIdLocal = uuid();
             const idemKeyItem = t.idempotencyKey || t.idemKey || null;
             if (idemKeyItem) {
@@ -219,7 +219,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     // Single create path
     const required = ['symbol', 'side', 'quantity', 'openDate'];
-  for (const f of required) if (!data[f]) { log.warn('single create missing field', { field: f }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Missing field ${f}`); }
+  for (const f of required) if (data[f] === undefined || data[f] === null || data[f] === '') { log.warn('single create missing field', { field: f }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Missing field ${f}`); }
     const idemKey = event.headers?.['Idempotency-Key'] || event.headers?.['idempotency-key'];
     let tradeId = uuid();
     if (idemKey) {
