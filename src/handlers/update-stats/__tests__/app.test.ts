@@ -16,6 +16,7 @@ vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('TRADE_STATS_TABLE', 'test-stats');
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
+vi.stubEnv('SAVED_OPTIONS_TABLE', 'test-saved-options');
 
 // Mock DynamoDBDocumentClient (the shared ddb module instantiates at import time)
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -676,6 +677,73 @@ describe('update-stats stream handler', () => {
     expect(accountUpdate).toBeDefined();
     expect(accountUpdate!.args[0].input.UpdateExpression).toContain('ADD #balance :delta');
     expect(accountUpdate!.args[0].input.ExpressionAttributeValues![':delta']).toBe(200);
+  });
+
+  // -- Symbol sync into SavedOptions -----------------------------------------
+
+  it('syncs new symbol into SavedOptions on INSERT', async () => {
+    const trade = makeTrade({ symbol: 'TSLA' });
+
+    ddbMock.on(QueryCommand).resolves({ Items: [trade], LastEvaluatedKey: undefined });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
+    ddbMock.on(GetCommand).resolves({ Item: { symbols: ['AAPL'] } });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-sync'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Should have called UpdateCommand on saved-options table with merged symbols
+    const optionUpdates = ddbMock
+      .commandCalls(UpdateCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
+    expect(optionUpdates).toHaveLength(1);
+    expect(optionUpdates[0].args[0].input.ExpressionAttributeValues![':symbols']).toEqual(['AAPL', 'TSLA']);
+  });
+
+  it('skips symbol sync when symbol already exists in SavedOptions', async () => {
+    const trade = makeTrade({ symbol: 'AAPL' });
+
+    ddbMock.on(QueryCommand).resolves({ Items: [trade], LastEvaluatedKey: undefined });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
+    ddbMock.on(GetCommand).resolves({ Item: { symbols: ['AAPL', 'MSFT'] } });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-dup'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // No UpdateCommand on saved-options since symbol already present
+    const optionUpdates = ddbMock
+      .commandCalls(UpdateCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
+    expect(optionUpdates).toHaveLength(0);
+  });
+
+  it('syncs symbol on MODIFY but not on REMOVE', async () => {
+    const oldTrade = makeTrade({ symbol: 'AAPL' });
+    const newTrade = makeTrade({ symbol: 'GOOG' });
+    const removedTrade = makeTrade({ symbol: 'NFLX' });
+
+    ddbMock.on(QueryCommand).resolves({ Items: [newTrade], LastEvaluatedKey: undefined });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [newTrade] } });
+    ddbMock.on(GetCommand).resolves({ Item: { symbols: [] } });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-sym'),
+      makeStreamRecord('REMOVE', undefined, removedTrade, 'evt-remove-sym'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Only GOOG should be synced (from MODIFY), not NFLX (from REMOVE)
+    const optionUpdates = ddbMock
+      .commandCalls(UpdateCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
+    expect(optionUpdates).toHaveLength(1);
+    expect(optionUpdates[0].args[0].input.ExpressionAttributeValues![':symbols']).toEqual(['GOOG']);
   });
 
   // -- INSERT where accountId is numeric -1 (not string) --------------------

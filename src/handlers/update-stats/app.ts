@@ -1,13 +1,14 @@
 import { DynamoDBStreamHandler, DynamoDBStreamEvent } from 'aws-lambda';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { ddb } from '../../shared/dynamo';
-import { BatchGetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
 import { extractDate, calcPnL } from '../../shared/utils/pnl';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
+const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -80,6 +81,49 @@ async function adjustAccountBalance(userId: string, accountId: string, pnlDelta:
 }
 
 // ---------------------------------------------------------------------------
+// Sync trade symbols into SavedOptions
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge newly-seen symbols into the user's SavedOptions record.
+ * Read-modify-write is acceptable here because stream events are low-frequency
+ * and the periodic rebuild-stats-job can correct any drift.
+ */
+async function syncSymbolsToSavedOptions(userId: string, newSymbols: Set<string>): Promise<void> {
+  if (newSymbols.size === 0) return;
+
+  try {
+    const existing = await ddb.send(new GetCommand({
+      TableName: SAVED_OPTIONS_TABLE,
+      Key: { userId },
+      ProjectionExpression: 'symbols',
+    }));
+
+    const currentSymbols: string[] = existing.Item?.symbols || [];
+    const currentSet = new Set(currentSymbols);
+    const toAdd = [...newSymbols].filter(s => !currentSet.has(s));
+
+    if (toAdd.length === 0) return;
+
+    const merged = [...currentSymbols, ...toAdd];
+
+    await ddb.send(new UpdateCommand({
+      TableName: SAVED_OPTIONS_TABLE,
+      Key: { userId },
+      UpdateExpression: 'SET #symbols = :symbols, #updatedAt = :now',
+      ExpressionAttributeNames: { '#symbols': 'symbols', '#updatedAt': 'updatedAt' },
+      ExpressionAttributeValues: {
+        ':symbols': merged,
+        ':now': new Date().toISOString(),
+      },
+    }));
+  } catch (e) {
+    // Non-critical — don't fail the stream processing for a symbol sync issue
+    console.error(`Failed to sync symbols for user ${userId}`, e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -91,6 +135,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     //    and compute per-account PnL deltas for incremental balance updates
     const affectedDays = new Map<string, Set<string>>(); // "userId#accountId" → Set<date>
     const balanceDeltas = new Map<string, number>(); // "userId#accountId" → pnlDelta
+    const symbolsByUser = new Map<string, Set<string>>(); // userId → Set<symbol>
 
     for (const record of event.Records) {
       if (!record.dynamodb) continue;
@@ -109,6 +154,15 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       const newAcct = newImage?.accountId;
       const oldAcct = oldImage?.accountId;
       const isValidAcct = (a: any) => a && a !== '-1' && String(a) !== '-1';
+
+      // --- Collect symbols for SavedOptions sync ---
+      if (record.eventName === 'INSERT' || record.eventName === 'MODIFY') {
+        const symbol = newImage?.symbol;
+        if (symbol && typeof symbol === 'string') {
+          if (!symbolsByUser.has(userId)) symbolsByUser.set(userId, new Set());
+          symbolsByUser.get(userId)!.add(symbol);
+        }
+      }
 
       // --- Track affected days for DailyStats rebuild ---
       if (isValidAcct(newAcct)) {
@@ -192,6 +246,11 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     for (const [userAccKey, delta] of balanceDeltas) {
       const [userId, accountId] = userAccKey.split('#', 2);
       await adjustAccountBalance(userId, accountId, delta);
+    }
+
+    // 4. Sync new symbols into SavedOptions (non-blocking per user)
+    for (const [userId, symbols] of symbolsByUser) {
+      await syncSymbolsToSavedOptions(userId, symbols);
     }
   } catch (e) {
     console.error('Failed processing stream event', e);

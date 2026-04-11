@@ -645,6 +645,8 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt StatsDLQ.Arn
