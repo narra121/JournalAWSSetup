@@ -1237,6 +1237,31 @@ Resources:
         Sourcemap: false
 
   # Goals and Rules Functions
+  CreateGoalFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-goal/app.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-goal/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+
   UpdateGoalFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
