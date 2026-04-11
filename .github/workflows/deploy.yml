@@ -6,7 +6,7 @@ on:
     types:
       - completed
     branches:
-      - develop
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: develop
+          ref: main
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-python@v5
         with:
@@ -82,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: develop
+          ref: main
       - uses: oven-sh/setup-bun@v2
       - uses: actions/download-artifact@v4
         with:
