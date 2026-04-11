@@ -1832,7 +1832,7 @@ Resources:
     Condition: HasCustomDomain
     DependsOn:
       - ApiDomainName
-      - HttpApi
+      - HttpApiStage
     Properties:
       DomainName: !Ref CustomDomainName
       ApiId: !Ref HttpApi
