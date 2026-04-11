@@ -53,11 +53,11 @@ Parameters:
     Description: CloudWatch Logs retention in days (10 is not supported; choose nearest 7 or 14).
   GeminiApiKeyParamName:
     Type: String
-    Default: /tradeflow/geminiApiKey
+    Default: /tradequt/geminiApiKey
     Description: Name of SSM SecureString parameter storing the Gemini API key.
   RazorpayWebhookSecretParamName:
     Type: String
-    Default: /tradeflow/razorpayWebhookSecret
+    Default: /tradequt/razorpayWebhookSecret
     Description: Name of SSM SecureString parameter storing the Razorpay webhook secret.
   UseExistingResources:
     Type: String
@@ -94,15 +94,32 @@ Parameters:
     Default: ""
     NoEcho: true
     Description: Razorpay Webhook Secret for signature verification
+  CustomDomainName:
+    Type: String
+    Default: ""
+    Description: Custom domain name for the API (e.g. api.tradequt.com). Leave empty to skip.
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN for the custom domain (must be in us-east-1).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: Route 53 hosted zone ID for DNS record creation.
+  AllowedOrigins:
+    Type: String
+    Default: "*"
+    Description: Comma-separated list of allowed CORS origins (e.g. https://tradequt.com,https://www.tradequt.com).
 
 Conditions:
   CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
 
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub TradeFlowUserPool-${StageName}
+      UserPoolName: !Sub TradeQutUserPool-${StageName}
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
       Policies:
@@ -136,8 +153,8 @@ Resources:
       # Restrict CORS to only allow authenticated API calls, not direct browser access
       CorsConfiguration:
         CorsRules:
-          - AllowedOrigins: ['*']
-            AllowedHeaders: 
+          - AllowedOrigins: !Split [",", !Ref AllowedOrigins]
+            AllowedHeaders:
               - "Authorization"
               - "Content-Type"
             AllowedMethods: [GET, PUT]
@@ -287,28 +304,7 @@ Resources:
             - AttributeName: date
               KeyType: RANGE
           Projection:
-            ProjectionType: INCLUDE
-            NonKeyAttributes:
-              - accountId
-              - tradeCount
-              - wins
-              - losses
-              - breakeven
-              - grossProfit
-              - grossLoss
-              - totalPnl
-              - totalVolume
-              - bestTrade
-              - worstTrade
-              - sumRiskReward
-              - riskRewardCount
-              - totalDurationHours
-              - durationTradeCount
-              - minDurationHours
-              - maxDurationHours
-              - pnlSequence
-              - dayOfWeek
-              - brokenRulesCounts
+            ProjectionType: ALL
 
   AuthRateLimitTable:
     Type: AWS::DynamoDB::Table
@@ -429,12 +425,18 @@ Resources:
               audience: [!Ref UserPoolClient]
         DefaultAuthorizer: CognitoAuthorizer
       CorsConfiguration:
-        AllowOrigins:
-          - '*'
+        AllowOrigins: !Split [",", !Ref AllowedOrigins]
         AllowMethods:
-          - '*'
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
         AllowHeaders:
-          - '*'
+          - Authorization
+          - Content-Type
+          - X-Amz-Date
+          - X-Api-Key
         ExposeHeaders:
           - Content-Type
           - Authorization
@@ -1725,7 +1727,7 @@ Resources:
             Effect: Allow
             Action:
               - ssm:GetParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradeflow/${Environment}/razorpay/plan/*"
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/${Environment}/razorpay/plan/*"
       Events:
         Api:
           Type: HttpApi
@@ -1892,10 +1894,43 @@ Resources:
         Target: es2020
         Sourcemap: true
 
-  # Export Function
+  # Custom Domain for API Gateway
+  ApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasCustomDomain
+    Properties:
+      DomainName: !Ref CustomDomainName
+      DomainNameConfigurations:
+        - EndpointType: REGIONAL
+          CertificateArn: !Ref CertificateArn
+
+  ApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasCustomDomain
+    DependsOn: ApiDomainName
+    Properties:
+      DomainName: !Ref CustomDomainName
+      ApiId: !Ref HttpApi
+      Stage: !Ref StageName
+
+  ApiDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasCustomDomain
+    DependsOn: ApiDomainName
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref CustomDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt ApiDomainName.RegionalHostedZoneId
+
 Outputs:
   ApiBaseUrl:
-    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${CustomDomainName}/${ApiVersion}"
+      - !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"
   UserPoolId:
     Value: !Ref UserPool
   UserPoolClientId:
