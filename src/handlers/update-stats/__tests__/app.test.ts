@@ -267,9 +267,9 @@ describe('update-stats stream handler', () => {
     expect(identifiers).toContain('evt-fail-2');
   });
 
-  // -- Dual-write to old stats table -----------------------------------------
+  // -- Incremental account balance update (ADD delta) -----------------------
 
-  it('calls rebuildStats for dual-write to old stats table', async () => {
+  it('adjusts account balance with ADD delta on INSERT', async () => {
     const trade = makeTrade({
       side: 'BUY',
       entryPrice: 100,
@@ -291,13 +291,14 @@ describe('update-stats stream handler', () => {
 
     await handler(event, {} as any, () => {});
 
-    // rebuildStats updates account balances (legacy stats table write removed)
-    // Verify account balance update was attempted
-    const getCalls = ddbMock.commandCalls(GetCommand);
-    const accountGet = getCalls.find(
+    // Verify UpdateCommand was called on the accounts table with ADD #balance :delta
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    const accountUpdate = updateCalls.find(
       (c) => c.args[0].input.TableName === 'test-accounts',
     );
-    expect(accountGet).toBeDefined();
+    expect(accountUpdate).toBeDefined();
+    expect(accountUpdate!.args[0].input.UpdateExpression).toContain('ADD #balance :delta');
+    expect(accountUpdate!.args[0].input.ConditionExpression).toBe('attribute_exists(userId)');
   });
 
   // -- Skips records with no userId ------------------------------------------
@@ -347,12 +348,12 @@ describe('update-stats stream handler', () => {
     const queryCalls = ddbMock.commandCalls(QueryCommand);
     expect(queryCalls.length).toBeGreaterThanOrEqual(2);
 
-    // Should have processed both users (account balance updates attempted)
-    const getCalls = ddbMock.commandCalls(GetCommand);
-    const accountGets = getCalls.filter(
+    // Should have processed both users (account balance updates attempted via UpdateCommand)
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    const accountUpdates = updateCalls.filter(
       (c) => c.args[0].input.TableName === 'test-accounts',
     );
-    expect(accountGets.length).toBeGreaterThanOrEqual(1);
+    expect(accountUpdates.length).toBeGreaterThanOrEqual(2);
   });
 
   // -- Stream record with missing dynamodb field ----------------------------
@@ -569,11 +570,11 @@ describe('update-stats stream handler', () => {
       .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
     expect(dailyStatsPuts.length).toBeGreaterThanOrEqual(1);
 
-    // rebuildStats should have processed the user (account balance update)
-    const accountGets = ddbMock
-      .commandCalls(GetCommand)
+    // Incremental balance update should have been applied via UpdateCommand
+    const accountUpdates = ddbMock
+      .commandCalls(UpdateCommand)
       .filter((c) => c.args[0].input.TableName === 'test-accounts');
-    expect(accountGets.length).toBeGreaterThanOrEqual(1);
+    expect(accountUpdates.length).toBeGreaterThanOrEqual(1);
   });
 
   // -- MODIFY where accountId changed from valid to '-1' --------------------
@@ -606,9 +607,9 @@ describe('update-stats stream handler', () => {
     expect(gsiQueries[0].args[0].input.ExpressionAttributeValues[':d']).toBe('2026-04-06');
   });
 
-  // -- rebuildStats uses ProjectionExpression for reduced read cost ----------
+  // -- No full table scan (incremental only) --------------------------------
 
-  it('rebuildStats QueryCommand uses ProjectionExpression with only stats fields', async () => {
+  it('does not issue a full table scan QueryCommand (no rebuildStats)', async () => {
     const trade = makeTrade();
 
     ddbMock.on(QueryCommand).resolves({
@@ -620,85 +621,61 @@ describe('update-stats stream handler', () => {
     });
 
     const event = makeStreamEvent([
-      makeStreamRecord('INSERT', trade, undefined, 'evt-projection'),
+      makeStreamRecord('INSERT', trade, undefined, 'evt-no-scan'),
     ]);
 
     await handler(event, {} as any, () => {});
 
-    // Find the QueryCommand targeting the TRADES_TABLE (not the GSI) — that is the rebuildStats call
-    const rebuildQueries = ddbMock
+    // All QueryCommands should target the GSI (queryTradesForDay), none should be
+    // a full table scan on TRADES_TABLE without an IndexName (old rebuildStats path)
+    const nonGsiQueries = ddbMock
       .commandCalls(QueryCommand)
       .filter(
         (c) =>
           c.args[0].input.TableName === 'test-trades' &&
           !c.args[0].input.IndexName,
       );
-    expect(rebuildQueries.length).toBeGreaterThanOrEqual(1);
-
-    for (const call of rebuildQueries) {
-      const projection = call.args[0].input.ProjectionExpression;
-      expect(projection).toBeDefined();
-      // Must include the fields needed by calcPnL + accountId
-      expect(projection).toContain('pnl');
-      expect(projection).toContain('side');
-      expect(projection).toContain('entryPrice');
-      expect(projection).toContain('exitPrice');
-      expect(projection).toContain('quantity');
-      expect(projection).toContain('accountId');
-    }
+    expect(nonGsiQueries).toHaveLength(0);
   });
 
-  // -- rebuildStats logs warning for >10,000 trades ---------------------------
+  // -- MODIFY computes correct PnL delta for balance update ----------------
 
-  it('logs warning when user has more than 10,000 trades', async () => {
-    const trade = makeTrade();
+  it('computes PnL delta correctly on MODIFY (newPnl - oldPnl)', async () => {
+    const oldTrade = makeTrade({
+      side: 'BUY',
+      entryPrice: 100,
+      exitPrice: 110,
+      quantity: 10,
+    }); // PnL = (110-100)*10 = 100
+    const newTrade = makeTrade({
+      side: 'BUY',
+      entryPrice: 100,
+      exitPrice: 130,
+      quantity: 10,
+    }); // PnL = (130-100)*10 = 300
 
-    // Simulate a response that claims a large number of items via pagination
-    // First page: 10,001 items (simulate with Count), second page: done
-    const largeBatch = Array.from({ length: 100 }, (_, i) =>
-      makeTrade({ tradeId: `trade-${i}` }),
-    );
-
-    // We simulate >10,000 by chaining paginated responses
-    // 101 pages of 100 items each = 10,100 items
-    const pages: any[] = [];
-    for (let i = 0; i < 101; i++) {
-      pages.push({
-        Items: largeBatch,
-        LastEvaluatedKey: i < 100 ? { userId: 'user-1', tradeId: `page-${i}` } : undefined,
-      });
-    }
-
-    // queryTradesForDay (GSI) returns the trade, then rebuildStats pages through
-    let callIndex = 0;
-    ddbMock.on(QueryCommand).callsFake((input: any) => {
-      if (input.IndexName === 'trades-by-date-gsi') {
-        return { Items: [trade], LastEvaluatedKey: undefined };
-      }
-      // rebuildStats pagination
-      return pages[callIndex++] || { Items: [], LastEvaluatedKey: undefined };
+    ddbMock.on(QueryCommand).resolves({
+      Items: [newTrade],
+      LastEvaluatedKey: undefined,
     });
     ddbMock.on(BatchGetCommand).resolves({
-      Responses: { 'test-trades': [trade] },
+      Responses: { 'test-trades': [newTrade] },
     });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
     const event = makeStreamEvent([
-      makeStreamRecord('INSERT', trade, undefined, 'evt-large-user'),
+      makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-delta'),
     ]);
 
     await handler(event, {} as any, () => {});
 
-    // Verify that a warning was logged about the high trade count
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('10100 trades'),
+    // Verify the UpdateCommand on accounts table uses the correct delta (300 - 100 = 200)
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    const accountUpdate = updateCalls.find(
+      (c) => c.args[0].input.TableName === 'test-accounts',
     );
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('consider migrating to incremental stats'),
-    );
-
-    warnSpy.mockRestore();
+    expect(accountUpdate).toBeDefined();
+    expect(accountUpdate!.args[0].input.UpdateExpression).toContain('ADD #balance :delta');
+    expect(accountUpdate!.args[0].input.ExpressionAttributeValues![':delta']).toBe(200);
   });
 
   // -- INSERT where accountId is numeric -1 (not string) --------------------
