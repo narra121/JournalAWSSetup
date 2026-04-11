@@ -1,7 +1,7 @@
 import { DynamoDBStreamHandler, DynamoDBStreamEvent } from 'aws-lambda';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
 import { extractDate, calcPnL } from '../../shared/utils/pnl';
 
@@ -17,14 +17,31 @@ const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
  * Fetch all trades for a given (userId, accountId, date) from the GSI.
  */
 async function queryTradesForDay(userId: string, accountId: string, date: string): Promise<any[]> {
-  const result = await ddb.send(new QueryCommand({
+  // GSI is KEYS_ONLY — query GSI for keys, then BatchGet full records from main table
+  const gsiResult = await ddb.send(new QueryCommand({
     TableName: TRADES_TABLE,
     IndexName: 'trades-by-date-gsi',
     KeyConditionExpression: 'userId = :u AND begins_with(openDate, :d)',
-    FilterExpression: 'accountId = :a',
-    ExpressionAttributeValues: { ':u': userId, ':d': date, ':a': accountId },
+    ExpressionAttributeValues: { ':u': userId, ':d': date },
   }));
-  return result.Items || [];
+  const gsiItems = gsiResult.Items || [];
+  if (gsiItems.length === 0) return [];
+
+  // Fetch full records from main table
+  const keys = gsiItems.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
+  const fullItems: any[] = [];
+  for (let i = 0; i < keys.length; i += 100) {
+    const chunk = keys.slice(i, i + 100);
+    const batchResult = await ddb.send(new BatchGetCommand({
+      RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
+    }));
+    if (batchResult.Responses?.[TRADES_TABLE]) {
+      fullItems.push(...batchResult.Responses[TRADES_TABLE]);
+    }
+  }
+
+  // Filter by accountId (now we have the full record with accountId)
+  return fullItems.filter((it: any) => it.accountId === accountId);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
@@ -64,6 +64,7 @@ describe('list-trades handler', () => {
       { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', side: 'SELL', openDate: '2024-02-15', images: [] },
     ];
     ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -132,10 +133,12 @@ describe('list-trades handler', () => {
 
   it('returns nextCursor and hasMore when DynamoDB returns LastEvaluatedKey', async () => {
     const lastKey = { userId: 'user-1', tradeId: 't5' };
+    const items = [{ userId: 'user-1', tradeId: 't5', symbol: 'TSLA', images: [] }];
     ddbMock.on(QueryCommand).resolves({
-      Items: [{ userId: 'user-1', tradeId: 't5', symbol: 'TSLA', images: [] }],
+      Items: items,
       LastEvaluatedKey: lastKey,
     });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -173,6 +176,7 @@ describe('list-trades handler', () => {
       },
     ];
     ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -244,6 +248,7 @@ describe('list-trades handler', () => {
       { userId: 'user-1', symbol: 'AAPL' },          // no tradeId
     ];
     ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -254,10 +259,12 @@ describe('list-trades handler', () => {
   });
 
   it('accountId=ALL uses correct key condition without accountId filter', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: [
+    const items = [
       { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', accountId: 'acc-1', images: [] },
       { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', accountId: 'acc-2', images: [] },
-    ] });
+    ];
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const event = makeEvent({
       queryStringParameters: {
@@ -306,6 +313,7 @@ describe('list-trades handler', () => {
       },
     ];
     ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -425,18 +433,26 @@ describe('list-trades handler', () => {
   it('simulates multi-page traversal using cursor', async () => {
     const page1Key = { userId: 'user-1', openDate: '2024-03-01', tradeId: 't2' };
 
+    const page1Items = [
+      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] },
+      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', images: [] },
+    ];
+    const page2Items = [
+      { userId: 'user-1', tradeId: 't3', symbol: 'TSLA', images: [] },
+    ];
+
     // Page 1: returns LastEvaluatedKey
     ddbMock.on(QueryCommand).resolvesOnce({
-      Items: [
-        { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] },
-        { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', images: [] },
-      ],
+      Items: page1Items,
       LastEvaluatedKey: page1Key,
     }).resolvesOnce({
       // Page 2: no LastEvaluatedKey (last page)
-      Items: [
-        { userId: 'user-1', tradeId: 't3', symbol: 'TSLA', images: [] },
-      ],
+      Items: page2Items,
+    });
+    ddbMock.on(BatchGetCommand).resolvesOnce({
+      Responses: { 'test-trades': page1Items },
+    }).resolvesOnce({
+      Responses: { 'test-trades': page2Items },
     });
 
     // Fetch page 1
@@ -476,10 +492,12 @@ describe('list-trades handler', () => {
   });
 
   it('pagination object has correct shape when there are no more pages', async () => {
+    const items = [{ userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] }];
     ddbMock.on(QueryCommand).resolves({
-      Items: [{ userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] }],
+      Items: items,
       // No LastEvaluatedKey
     });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
     const body = JSON.parse(res.body);

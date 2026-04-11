@@ -7,6 +7,7 @@ import {
   DeleteCommand,
   GetCommand,
   UpdateCommand,
+  BatchGetCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 
@@ -81,6 +82,9 @@ describe('update-stats stream handler', () => {
       Items: [trade],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
+    });
 
     const event = makeStreamEvent([
       makeStreamRecord('INSERT', trade, undefined, 'evt-insert-1'),
@@ -147,6 +151,9 @@ describe('update-stats stream handler', () => {
       Items: [newTrade],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [newTrade] },
+    });
 
     const event = makeStreamEvent([
       makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-1'),
@@ -212,6 +219,9 @@ describe('update-stats stream handler', () => {
       Items: [trade1, trade2],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade1, trade2] },
+    });
 
     const event = makeStreamEvent([
       makeStreamRecord('INSERT', trade1, undefined, 'evt-dup-1'),
@@ -271,6 +281,9 @@ describe('update-stats stream handler', () => {
       Items: [trade],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
+    });
 
     const event = makeStreamEvent([
       makeStreamRecord('INSERT', trade, undefined, 'evt-dual-1'),
@@ -318,6 +331,9 @@ describe('update-stats stream handler', () => {
     ddbMock.on(QueryCommand).resolves({
       Items: [trade1],
       LastEvaluatedKey: undefined,
+    });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade1] },
     });
 
     const event = makeStreamEvent([
@@ -414,6 +430,9 @@ describe('update-stats stream handler', () => {
       Items: [trade],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
+    });
 
     // PutCommand fails for daily stats table
     ddbMock.on(PutCommand).rejects(new Error('ConditionalCheckFailed'));
@@ -493,6 +512,9 @@ describe('update-stats stream handler', () => {
       Items: [trade],
       LastEvaluatedKey: undefined,
     });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
+    });
     ddbMock.on(PutCommand).resolves({});
 
     // GetCommand for initial balance fails
@@ -529,6 +551,9 @@ describe('update-stats stream handler', () => {
     ddbMock.on(QueryCommand).resolves({
       Items: [makeTrade()],
       LastEvaluatedKey: undefined,
+    });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [makeTrade()] },
     });
 
     const event = makeStreamEvent(records);
@@ -569,17 +594,16 @@ describe('update-stats stream handler', () => {
 
     await handler(event, {} as any, () => {});
 
-    // Should only query for old account (acc-1), not for '-1'
+    // Should only query for old account (acc-1) day, not for '-1'
     const gsiQueries = ddbMock
       .commandCalls(QueryCommand)
       .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
 
-    // Only acc-1 day should be queried
-    const accountFilters = gsiQueries.map(
-      (c) => c.args[0].input.ExpressionAttributeValues[':a'],
-    );
-    expect(accountFilters).toContain('acc-1');
-    expect(accountFilters).not.toContain('-1');
+    // Only one GSI query should be made (for the old valid account's date)
+    // The '-1' account is skipped entirely before queryTradesForDay is called
+    expect(gsiQueries).toHaveLength(1);
+    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues[':u']).toBe('user-1');
+    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues[':d']).toBe('2026-04-06');
   });
 
   // -- rebuildStats uses ProjectionExpression for reduced read cost ----------
@@ -590,6 +614,9 @@ describe('update-stats stream handler', () => {
     ddbMock.on(QueryCommand).resolves({
       Items: [trade],
       LastEvaluatedKey: undefined,
+    });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
     });
 
     const event = makeStreamEvent([
@@ -650,6 +677,9 @@ describe('update-stats stream handler', () => {
       }
       // rebuildStats pagination
       return pages[callIndex++] || { Items: [], LastEvaluatedKey: undefined };
+    });
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade] },
     });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
