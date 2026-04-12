@@ -119,6 +119,19 @@ jobs:
             --overwrite \
             --region $AWS_REGION
 
+      - name: Store Google Client Secret in SSM
+        env:
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [ -n "${GOOGLE_CLIENT_SECRET}" ]; then
+            aws ssm put-parameter \
+              --name "/tradequt/googleClientSecret" \
+              --value "${GOOGLE_CLIENT_SECRET}" \
+              --type "SecureString" \
+              --overwrite \
+              --region $AWS_REGION
+          fi
+
       - name: Deploy to Dev
         env:
           RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_DEV }}
@@ -145,4 +158,6 @@ jobs:
               CustomDomainName=api-dev.tradequt.com \
               "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
               "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \
-              AllowedOrigins=https://dev.tradequt.com
+              AllowedOrigins=https://dev.tradequt.com \
+              "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
+              "GoogleClientSecretParam=/tradequt/googleClientSecret"
