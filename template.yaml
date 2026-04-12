@@ -120,9 +120,18 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional www alias for the frontend (e.g. www.tradequt.com). Leave empty for dev environments.
+  GoogleClientId:
+    Type: String
+    Default: ""
+    Description: Google OAuth Client ID for Sign-In with Google. Leave empty to skip Google auth setup.
+  GoogleClientSecretParam:
+    Type: String
+    Default: /tradequt/googleClientSecret
+    Description: SSM SecureString parameter name for Google OAuth Client Secret.
 
 Conditions:
   CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
+  HasGoogleAuth: !Not [!Equals [!Ref GoogleClientId, ""]]
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
   ShouldCreateFrontendInfra: !Equals [!Ref CreateFrontendInfra, "true"]
   HasFrontendWwwDomain: !Not [!Equals [!Ref FrontendWwwDomain, ""]]
@@ -150,6 +159,9 @@ Resources:
           RequireNumbers: true
           RequireSymbols: true
           RequireUppercase: true
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpFunction.Arn
+        PostConfirmation: !GetAtt PostConfirmationFunction.Arn
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -160,10 +172,132 @@ Resources:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       PreventUserExistenceErrors: ENABLED
-      SupportedIdentityProviders: [COGNITO]
-      CallbackURLs: ["http://localhost:3000/"]
-      LogoutURLs: ["http://localhost:3000/"]
-      AllowedOAuthFlowsUserPoolClient: false
+      SupportedIdentityProviders: !If
+        - HasGoogleAuth
+        - - COGNITO
+          - Google
+        - - COGNITO
+      AllowedOAuthFlowsUserPoolClient: !If [HasGoogleAuth, true, false]
+      AllowedOAuthFlows: !If
+        - HasGoogleAuth
+        - - code
+        - !Ref AWS::NoValue
+      AllowedOAuthScopes: !If
+        - HasGoogleAuth
+        - - openid
+          - email
+          - profile
+        - !Ref AWS::NoValue
+      CallbackURLs: !If
+        - HasGoogleAuth
+        - - https://tradequt.com/auth/callback
+          - https://www.tradequt.com/auth/callback
+          - https://dev.tradequt.com/auth/callback
+          - http://localhost:5173/auth/callback
+        - - http://localhost:5173/
+      LogoutURLs: !If
+        - HasGoogleAuth
+        - - https://tradequt.com/login
+          - https://www.tradequt.com/login
+          - https://dev.tradequt.com/login
+          - http://localhost:5173/login
+        - - http://localhost:5173/
+
+  # Google Identity Provider (only created when GoogleClientId is provided)
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogleAuth
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Sub "{{resolve:ssm-secure:${GoogleClientSecretParam}}}"
+        authorize_scopes: "openid email profile"
+      AttributeMapping:
+        email: email
+        name: name
+        username: sub
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: HasGoogleAuth
+    Properties:
+      Domain: !Sub "auth-${StageName}.tradequt.com"
+      UserPoolId: !Ref UserPool
+      CustomDomainConfig:
+        CertificateArn: !Ref CertificateArn
+
+  AuthDomainDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasGoogleAuth
+    DependsOn: UserPoolDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "auth-${StageName}.tradequt.com"
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt UserPoolDomain.CloudFrontDistribution
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  # Cognito trigger Lambda functions
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-pre-signup/app.handler
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-pre-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  PostConfirmationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-post-confirmation/app.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+      Environment:
+        Variables:
+          RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+          SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-post-confirmation/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PreSignUpFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  PostConfirmationInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PostConfirmationFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
 
   ImagesBucket:
     Type: AWS::S3::Bucket
@@ -2133,3 +2267,6 @@ Outputs:
   FrontendBucketName:
     Condition: ShouldCreateFrontendInfra
     Value: !Ref FrontendBucket
+  CognitoDomain:
+    Condition: HasGoogleAuth
+    Value: !Sub "auth-${StageName}.tradequt.com"

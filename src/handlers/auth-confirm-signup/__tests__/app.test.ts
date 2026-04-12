@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, BatchWriteCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchWriteCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProviderClient, ConfirmSignUpCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -39,6 +39,8 @@ function makeEvent(body: any): APIGatewayProxyEventV2 {
 beforeEach(() => {
   cognitoMock.reset();
   ddbMock.reset();
+  // Idempotency checks return empty (no existing data)
+  ddbMock.on(QueryCommand).resolves({ Items: [] });
   ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
   ddbMock.on(PutCommand).resolves({});
 });
@@ -276,5 +278,29 @@ describe('auth-confirm-signup handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.confirmed).toBe(true);
+  });
+
+  // ── Idempotency ─────────────────────────────────────────────
+
+  it('skips creating rules when user already has rules', async () => {
+    cognitoMock.on(ConfirmSignUpCommand).resolves({});
+    cognitoMock.on(AdminGetUserCommand).resolves({
+      UserAttributes: [{ Name: 'sub', Value: 'user-sub-existing' }],
+    });
+    // Return existing items for rules query
+    ddbMock.on(QueryCommand, { TableName: 'test-rules' }).resolves({
+      Items: [{ userId: 'user-sub-existing', ruleId: 'existing-rule' }],
+    });
+    // Return empty for saved options query
+    ddbMock.on(QueryCommand, { TableName: 'test-saved-options' }).resolves({ Items: [] });
+
+    await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
+
+    // No batch write for rules since they already exist
+    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
+    expect(batchCalls).toHaveLength(0);
+    // Saved options should still be created
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls).toHaveLength(1);
   });
 });
