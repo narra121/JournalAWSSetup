@@ -119,10 +119,10 @@ describe('report-error handler', () => {
 
   // ── 4. Payload too large ─────────────────────────────────────
 
-  it('returns 413 for payload exceeding 200KB', async () => {
+  it('returns 413 for payload exceeding 1MB', async () => {
     const event = makeEvent(validPayload());
-    // Create a body larger than 200KB
-    event.body = 'x'.repeat(201 * 1024);
+    // Create a body larger than 1MB
+    event.body = 'x'.repeat(1025 * 1024);
     const res = await handler(event, {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(413);
