@@ -542,8 +542,8 @@ Resources:
           - GET
           - POST
           - PUT
-          - PATCH
           - DELETE
+          - PATCH
           - OPTIONS
         AllowHeaders:
           - Authorization
