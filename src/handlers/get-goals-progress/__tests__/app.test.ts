@@ -798,6 +798,55 @@ describe('get-goals-progress handler', () => {
     expect(dailyStatsCalls[0].args[0].input.KeyConditionExpression).toContain('#s BETWEEN');
   });
 
+  it('remaps base rule UUIDs to period rule IDs via text matching when periodKey is provided', async () => {
+    // Base rules (bare UUIDs) — stored in trades' brokenRuleIds
+    const baseRules = [
+      { userId: 'user-1', ruleId: 'base-uuid-1', rule: 'Never risk more than 1%', isActive: true },
+      { userId: 'user-1', ruleId: 'base-uuid-2', rule: 'Always set stop loss', isActive: true },
+    ];
+
+    // Period-specific rules (different IDs, same text)
+    const periodRules = [
+      { userId: 'user-1', ruleId: 'week#2026-04-07#period-uuid-1', rule: 'Never risk more than 1%', isActive: true },
+      { userId: 'user-1', ruleId: 'week#2026-04-07#period-uuid-2', rule: 'Always set stop loss', isActive: true },
+    ];
+
+    // Daily stats have brokenRulesCounts with BASE rule UUIDs
+    const dailyRecord = makeDailyRecord({
+      brokenRulesCounts: { 'base-uuid-1': 1 },
+    });
+
+    // Setup mocks: first rules query returns period rules, second returns all rules
+    ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [dailyRecord] });
+    ddbMock.on(QueryCommand, { TableName: 'test-goals' }).resolves({ Items: mockGoals });
+    ddbMock.on(QueryCommand, { TableName: 'test-rules' })
+      .resolvesOnce({ Items: periodRules })   // queryRulesByPeriod
+      .resolves({ Items: [...baseRules, ...periodRules] }); // queryRules (all)
+
+    const res = await handler(
+      makeEvent({
+        accountId: 'acc1',
+        startDate: '2026-04-07',
+        endDate: '2026-04-13',
+        period: 'weekly',
+        periodKey: 'week#2026-04-07',
+      }),
+    );
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const rc = body.data.ruleCompliance;
+
+    // The base-uuid-1 broken count should be remapped to period-uuid-1 via text match
+    expect(rc.brokenRulesCounts['week#2026-04-07#period-uuid-1']).toBe(1);
+    // base-uuid-1 should no longer be a key (it was remapped)
+    expect(rc.brokenRulesCounts['base-uuid-1']).toBeUndefined();
+    // 1 of 2 active rules broken
+    expect(rc.brokenCount).toBe(1);
+    expect(rc.followedCount).toBe(1);
+    expect(rc.totalActiveRules).toBe(2);
+  });
+
   it('uses GSI query for ALL accounts', async () => {
     setupMocks({
       dailyStats: [makeDailyRecord()],

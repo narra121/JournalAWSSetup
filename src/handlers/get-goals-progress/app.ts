@@ -68,13 +68,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    // Run all 3 queries in parallel
-    const [dailyRecords, goals, rules] = await Promise.all([
+    // Run all queries in parallel
+    // When periodKey is provided, also fetch all rules so we can map
+    // base rule IDs (stored in trades) to period-specific rule IDs.
+    const [dailyRecords, goals, rules, allRules] = await Promise.all([
       accountId === 'ALL'
         ? queryAllAccounts(userId, startDate, endDate)
         : querySingleAccount(userId, accountId, startDate, endDate),
       periodKey ? queryGoalsByPeriod(userId, periodKey) : queryGoals(userId),
       periodKey ? queryRulesByPeriod(userId, periodKey) : queryRules(userId),
+      periodKey ? queryRules(userId) : Promise.resolve([]),
     ]);
 
     // Aggregate daily records into stats
@@ -87,7 +90,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const goalProgress = computeGoalProgress(stats, filteredGoals);
 
     // Compute rule compliance
-    const ruleCompliance = computeRuleCompliance(stats, rules);
+    const ruleCompliance = computeRuleCompliance(stats, rules, allRules);
 
     return envelope({
       statusCode: 200,
@@ -362,9 +365,56 @@ function computeGoalProgress(stats: any, filteredGoals: any[]) {
 
 /**
  * Compute rule compliance from broken rules in stats and active rules.
+ *
+ * Trades store brokenRuleIds as base rule UUIDs (from BrokenRulesSelect),
+ * but period-specific rules have prefixed IDs (e.g. "week#2026-04-07#<uuid>").
+ * When allRules is provided, we remap base UUIDs → period rule IDs via text matching.
  */
-function computeRuleCompliance(stats: any, rules: any[]) {
-  const brokenRulesCounts: Record<string, number> = stats.brokenRulesCounts || {};
+function computeRuleCompliance(stats: any, rules: any[], allRules: any[] = []) {
+  const rawCounts: Record<string, number> = stats.brokenRulesCounts || {};
+
+  // Remap broken rule IDs to period-specific rule IDs when needed
+  let brokenRulesCounts = rawCounts;
+  if (allRules.length > 0 && rules.length > 0) {
+    // Build ruleId → ruleText from all rules (includes base/legacy rules)
+    const idToText: Record<string, string> = {};
+    for (const r of allRules) {
+      if (r.ruleId && r.rule) idToText[r.ruleId] = r.rule;
+    }
+
+    // Build ruleText → periodRuleId from current period rules
+    const textToPeriodId: Record<string, string> = {};
+    const periodRuleIdSet = new Set<string>();
+    for (const r of rules) {
+      if (r.rule && r.ruleId) {
+        textToPeriodId[r.rule] = r.ruleId;
+        periodRuleIdSet.add(r.ruleId);
+      }
+    }
+
+    // Remap counts: translate base UUIDs to period rule IDs via text
+    brokenRulesCounts = {};
+    for (const [ruleId, count] of Object.entries(rawCounts)) {
+      if ((count as number) <= 0) continue;
+
+      // Already a period rule ID — keep as-is
+      if (periodRuleIdSet.has(ruleId)) {
+        brokenRulesCounts[ruleId] = (brokenRulesCounts[ruleId] || 0) + (count as number);
+        continue;
+      }
+
+      // Map via text: base ruleId → text → period ruleId
+      const text = idToText[ruleId];
+      if (text && textToPeriodId[text]) {
+        const periodId = textToPeriodId[text];
+        brokenRulesCounts[periodId] = (brokenRulesCounts[periodId] || 0) + (count as number);
+      } else {
+        // No mapping found — keep original
+        brokenRulesCounts[ruleId] = (brokenRulesCounts[ruleId] || 0) + (count as number);
+      }
+    }
+  }
+
   const brokenRuleIds = new Set(
     Object.entries(brokenRulesCounts)
       .filter(([, count]) => (count as number) > 0)
