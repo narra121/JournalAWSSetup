@@ -115,6 +115,45 @@ describe('batchWritePutAll', () => {
     expect(mockDdb.send).not.toHaveBeenCalled();
   });
 
+  it('chunks items into batches of 25 when more than 25 items', async () => {
+    vi.useRealTimers();
+
+    mockDdb.send.mockResolvedValue({ UnprocessedItems: {} });
+
+    const items = makeItems(60); // 3 chunks: 25 + 25 + 10
+    await batchWritePutAll({
+      ddb: mockDdb,
+      tableName: 'test-table',
+      items,
+    });
+
+    // Should have been called 3 times (one per chunk, in parallel)
+    expect(mockDdb.send).toHaveBeenCalledTimes(3);
+
+    const callSizes = mockDdb.send.mock.calls.map(
+      (call: any) => call[0].input.RequestItems['test-table'].length
+    );
+    callSizes.sort((a: number, b: number) => b - a);
+    expect(callSizes).toEqual([25, 25, 10]);
+  });
+
+  it('handles exactly 25 items in a single batch', async () => {
+    mockDdb.send.mockResolvedValueOnce({ UnprocessedItems: {} });
+
+    const items = makeItems(25);
+    const promise = batchWritePutAll({
+      ddb: mockDdb,
+      tableName: 'test-table',
+      items,
+    });
+
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(mockDdb.send).toHaveBeenCalledTimes(1);
+    expect(mockDdb.send.mock.calls[0][0].input.RequestItems['test-table']).toHaveLength(25);
+  });
+
   it('calls log.warn on retries when logger provided', async () => {
     const items = makeItems(1);
     const log = {

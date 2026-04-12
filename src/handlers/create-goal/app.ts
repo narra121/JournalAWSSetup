@@ -95,7 +95,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    const goalId = uuid();
+    const baseId = uuid();
+    const goalId = data.periodKey ? `${data.periodKey}#${baseId}` : baseId;
     const now = new Date().toISOString();
     const config = GOAL_TYPE_CONFIG[data.goalType as GoalType];
 

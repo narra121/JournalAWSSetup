@@ -224,4 +224,40 @@ describe('update-user-preferences handler', () => {
     expect(body.data.preferences.timezone).toBe('Asia/Kolkata');
     expect(body.data.preferences.currency).toBe('USD'); // unchanged
   });
+
+  // ── carryForwardGoalsRules ──────────────────────────────────
+
+  it('persists carryForwardGoalsRules when set to true', async () => {
+    const res = await handler(makeEvent({ carryForwardGoalsRules: true }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.carryForwardGoalsRules).toBe(true);
+
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].args[0].input.Item.carryForwardGoalsRules).toBe(true);
+  });
+
+  it('persists carryForwardGoalsRules when set to false', async () => {
+    const res = await handler(makeEvent({ carryForwardGoalsRules: false }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.carryForwardGoalsRules).toBe(false);
+
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].args[0].input.Item.carryForwardGoalsRules).toBe(false);
+  });
+
+  it('defaults carryForwardGoalsRules to true when not in stored preferences', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    const res = await handler(makeEvent({ darkMode: true }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.preferences.carryForwardGoalsRules).toBe(true);
+  });
 });

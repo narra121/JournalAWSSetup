@@ -61,7 +61,8 @@ export enum ErrorCodes {
   INTERNAL_ERROR = 'INTERNAL_ERROR',
   ITEM_TOO_LARGE = 'ITEM_TOO_LARGE',
   EMAIL_NOT_VERIFIED = 'EMAIL_NOT_VERIFIED',
-  USER_EXISTS = 'USER_EXISTS'
+  USER_EXISTS = 'USER_EXISTS',
+  RULE_IN_USE = 'RULE_IN_USE'
 }
 
 export function errorResponse(statusCode: number, code: ErrorCodes, message: string, details?: any) {

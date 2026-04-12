@@ -21,6 +21,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const startDate = query.startDate;
   const endDate = query.endDate;
   const period = query.period;
+  const periodKey = query.periodKey || null;
 
   if (!accountId || !startDate || !endDate || !period) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId, startDate, endDate, and period are required');
@@ -36,8 +37,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       accountId === 'ALL'
         ? queryAllAccounts(userId, startDate, endDate)
         : querySingleAccount(userId, accountId, startDate, endDate),
-      queryGoals(userId),
-      queryRules(userId),
+      periodKey ? queryGoalsByPeriod(userId, periodKey) : queryGoals(userId),
+      periodKey ? queryRulesByPeriod(userId, periodKey) : queryRules(userId),
     ]);
 
     // Aggregate daily records into stats
@@ -185,6 +186,62 @@ async function queryRules(userId: string): Promise<any[]> {
         TableName: RULES_TABLE,
         KeyConditionExpression: 'userId = :u',
         ExpressionAttributeValues: { ':u': userId },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+
+    if (result.Items) {
+      items.push(...result.Items);
+    }
+
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
+/**
+ * Query goals for a user filtered by periodKey prefix. Handles pagination.
+ */
+async function queryGoalsByPeriod(userId: string, periodKey: string): Promise<any[]> {
+  const items: any[] = [];
+  let exclusiveStartKey: Record<string, any> | undefined;
+  const prefix = `${periodKey}#`;
+
+  do {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: GOALS_TABLE,
+        KeyConditionExpression: 'userId = :u AND begins_with(goalId, :prefix)',
+        ExpressionAttributeValues: { ':u': userId, ':prefix': prefix },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+
+    if (result.Items) {
+      items.push(...result.Items);
+    }
+
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
+/**
+ * Query rules for a user filtered by periodKey prefix. Handles pagination.
+ */
+async function queryRulesByPeriod(userId: string, periodKey: string): Promise<any[]> {
+  const items: any[] = [];
+  let exclusiveStartKey: Record<string, any> | undefined;
+  const prefix = `${periodKey}#`;
+
+  do {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: RULES_TABLE,
+        KeyConditionExpression: 'userId = :u AND begins_with(ruleId, :prefix)',
+        ExpressionAttributeValues: { ':u': userId, ':prefix': prefix },
         ExclusiveStartKey: exclusiveStartKey,
       }),
     );

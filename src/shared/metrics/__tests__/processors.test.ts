@@ -7,6 +7,8 @@ import { HourlyProcessor, HourlyAggregator } from '../processors/hourly';
 import { PnlSequenceProcessor, PnlSequenceAggregator } from '../processors/pnl-sequence';
 import { DayOfWeekAggregator } from '../processors/day-of-week';
 import { BrokenRulesProcessor, BrokenRulesAggregator } from '../processors/broken-rules';
+import { MistakesProcessor, MistakesAggregator } from '../processors/mistakes';
+import { LessonsProcessor, LessonsAggregator } from '../processors/lessons';
 import type { TradeRecord, ProcessorContext } from '../types';
 
 function makeTrade(overrides: Record<string, any> = {}): TradeRecord {
@@ -976,5 +978,322 @@ describe('BrokenRulesAggregator', () => {
 
     const result = agg.getResult({});
     expect(result.brokenRulesCounts).toEqual({ r1: 1, r2: 2, r3: 3 });
+  });
+});
+
+// ─── BrokenRulesProcessor (brokenRulesDistribution with PnL) ──
+
+describe('BrokenRulesProcessor — brokenRulesDistribution', () => {
+  let proc: BrokenRulesProcessor;
+
+  beforeEach(() => {
+    proc = new BrokenRulesProcessor();
+  });
+
+  it('brokenRulesDistribution includes count AND totalPnl per ruleId', () => {
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1', 'r2'], pnl: 50 }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.brokenRulesDistribution).toEqual({
+      r1: { count: 1, totalPnl: 50 },
+      r2: { count: 1, totalPnl: 50 },
+    });
+  });
+
+  it('accumulates totalPnl from calcPnL across multiple trades', () => {
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1'], pnl: 100 }), defaultContext);
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1'], pnl: -40 }), defaultContext);
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1', 'r2'], pnl: 20 }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.brokenRulesDistribution['r1']).toEqual({ count: 3, totalPnl: 80 });
+    expect(result.brokenRulesDistribution['r2']).toEqual({ count: 1, totalPnl: 20 });
+  });
+
+  it('returns both brokenRulesCounts and brokenRulesDistribution (backward compat)', () => {
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1', 'r2'], pnl: 30 }), defaultContext);
+
+    const result = proc.getResult();
+    // Legacy field
+    expect(result.brokenRulesCounts).toEqual({ r1: 1, r2: 1 });
+    // New field
+    expect(result.brokenRulesDistribution).toEqual({
+      r1: { count: 1, totalPnl: 30 },
+      r2: { count: 1, totalPnl: 30 },
+    });
+  });
+
+  it('returns empty distribution when no brokenRuleIds', () => {
+    proc.processTrade(makeTrade({}), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.brokenRulesDistribution).toEqual({});
+  });
+
+  it('reset clears both brokenRulesCounts and brokenRulesDistribution', () => {
+    proc.processTrade(makeTrade({ brokenRuleIds: ['r1'], pnl: 50 }), defaultContext);
+    proc.reset();
+
+    const result = proc.getResult();
+    expect(result.brokenRulesCounts).toEqual({});
+    expect(result.brokenRulesDistribution).toEqual({});
+  });
+});
+
+// ─── BrokenRulesAggregator (brokenRulesDistribution merging) ──
+
+describe('BrokenRulesAggregator — brokenRulesDistribution', () => {
+  let agg: BrokenRulesAggregator;
+
+  beforeEach(() => {
+    agg = new BrokenRulesAggregator();
+  });
+
+  it('merges brokenRulesDistribution from multiple daily records', () => {
+    agg.merge({
+      brokenRulesCounts: { r1: 2 },
+      brokenRulesDistribution: { r1: { count: 2, totalPnl: 80 } },
+    });
+    agg.merge({
+      brokenRulesCounts: { r1: 1, r2: 1 },
+      brokenRulesDistribution: { r1: { count: 1, totalPnl: -30 }, r2: { count: 1, totalPnl: 50 } },
+    });
+
+    const result = agg.getResult({});
+    expect(result.brokenRulesDistribution).toEqual({
+      r1: { count: 3, totalPnl: 50 },
+      r2: { count: 1, totalPnl: 50 },
+    });
+    // backward compat
+    expect(result.brokenRulesCounts).toEqual({ r1: 3, r2: 1 });
+  });
+
+  it('handles records with no brokenRulesDistribution', () => {
+    agg.merge({ brokenRulesCounts: { r1: 1 } });
+    agg.merge({});
+
+    const result = agg.getResult({});
+    expect(result.brokenRulesDistribution).toEqual({});
+    expect(result.brokenRulesCounts).toEqual({ r1: 1 });
+  });
+});
+
+// ─── MistakesProcessor ─────────────────────────────────────────
+
+describe('MistakesProcessor', () => {
+  let proc: MistakesProcessor;
+
+  beforeEach(() => {
+    proc = new MistakesProcessor();
+  });
+
+  it('returns empty mistakesDistribution when trade has no mistakes', () => {
+    proc.processTrade(makeTrade({}), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution).toEqual({});
+  });
+
+  it('accumulates count and totalPnl per mistake string', () => {
+    proc.processTrade(makeTrade({ mistakes: ['Chased entry'], pnl: -50 }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 1, totalPnl: -50 });
+  });
+
+  it('handles multiple trades with overlapping mistakes (sums correctly)', () => {
+    proc.processTrade(makeTrade({ mistakes: ['Chased entry', 'No stop loss'], pnl: -40 }), defaultContext);
+    proc.processTrade(makeTrade({ mistakes: ['Chased entry', 'Oversize'], pnl: 20 }), defaultContext);
+    proc.processTrade(makeTrade({ mistakes: ['No stop loss'], pnl: -10 }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 2, totalPnl: -20 });
+    expect(result.mistakesDistribution['No stop loss']).toEqual({ count: 2, totalPnl: -50 });
+    expect(result.mistakesDistribution['Oversize']).toEqual({ count: 1, totalPnl: 20 });
+  });
+
+  it('handles empty array mistakes field', () => {
+    proc.processTrade(makeTrade({ mistakes: [] }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution).toEqual({});
+  });
+
+  it('handles null mistakes field', () => {
+    proc.processTrade(makeTrade({ mistakes: null }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution).toEqual({});
+  });
+
+  it('handles non-array mistakes field (string)', () => {
+    proc.processTrade(makeTrade({ mistakes: 'Chased entry' }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution).toEqual({});
+  });
+
+  it('reset clears state', () => {
+    proc.processTrade(makeTrade({ mistakes: ['Chased entry'], pnl: 100 }), defaultContext);
+    expect(Object.keys(proc.getResult().mistakesDistribution).length).toBe(1);
+
+    proc.reset();
+
+    const result = proc.getResult();
+    expect(result.mistakesDistribution).toEqual({});
+  });
+});
+
+// ─── MistakesAggregator ────────────────────────────────────────
+
+describe('MistakesAggregator', () => {
+  let agg: MistakesAggregator;
+
+  beforeEach(() => {
+    agg = new MistakesAggregator();
+  });
+
+  it('merges mistakesDistribution from multiple daily records', () => {
+    agg.merge({
+      mistakesDistribution: {
+        'Chased entry': { count: 2, totalPnl: -80 },
+        'Oversize': { count: 1, totalPnl: -20 },
+      },
+    });
+    agg.merge({
+      mistakesDistribution: {
+        'Chased entry': { count: 1, totalPnl: 30 },
+        'No stop loss': { count: 3, totalPnl: -150 },
+      },
+    });
+
+    const result = agg.getResult({});
+    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 3, totalPnl: -50 });
+    expect(result.mistakesDistribution['Oversize']).toEqual({ count: 1, totalPnl: -20 });
+    expect(result.mistakesDistribution['No stop loss']).toEqual({ count: 3, totalPnl: -150 });
+  });
+
+  it('handles records with no mistakesDistribution', () => {
+    agg.merge({ mistakesDistribution: { 'Chased entry': { count: 1, totalPnl: -10 } } });
+    agg.merge({});
+    agg.merge({ mistakesDistribution: undefined });
+
+    const result = agg.getResult({});
+    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 1, totalPnl: -10 });
+  });
+
+  it('returns empty distribution when no records are merged', () => {
+    const result = agg.getResult({});
+    expect(result.mistakesDistribution).toEqual({});
+  });
+});
+
+// ─── LessonsProcessor ──────────────────────────────────────────
+
+describe('LessonsProcessor', () => {
+  let proc: LessonsProcessor;
+
+  beforeEach(() => {
+    proc = new LessonsProcessor();
+  });
+
+  it('returns empty lessonsDistribution when trade has no lessons', () => {
+    proc.processTrade(makeTrade({}), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution).toEqual({});
+  });
+
+  it('counts each lesson string', () => {
+    proc.processTrade(makeTrade({ lessons: ['Wait for confirmation'] }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution['Wait for confirmation']).toBe(1);
+  });
+
+  it('handles multiple trades with overlapping lessons', () => {
+    proc.processTrade(makeTrade({ lessons: ['Wait for confirmation', 'Use smaller size'] }), defaultContext);
+    proc.processTrade(makeTrade({ lessons: ['Wait for confirmation', 'Follow the plan'] }), defaultContext);
+    proc.processTrade(makeTrade({ lessons: ['Use smaller size'] }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution['Wait for confirmation']).toBe(2);
+    expect(result.lessonsDistribution['Use smaller size']).toBe(2);
+    expect(result.lessonsDistribution['Follow the plan']).toBe(1);
+  });
+
+  it('handles empty array lessons field', () => {
+    proc.processTrade(makeTrade({ lessons: [] }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution).toEqual({});
+  });
+
+  it('handles null lessons field', () => {
+    proc.processTrade(makeTrade({ lessons: null }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution).toEqual({});
+  });
+
+  it('handles non-array lessons field (string)', () => {
+    proc.processTrade(makeTrade({ lessons: 'Wait for confirmation' }), defaultContext);
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution).toEqual({});
+  });
+
+  it('reset clears state', () => {
+    proc.processTrade(makeTrade({ lessons: ['Wait for confirmation'] }), defaultContext);
+    expect(Object.keys(proc.getResult().lessonsDistribution).length).toBe(1);
+
+    proc.reset();
+
+    const result = proc.getResult();
+    expect(result.lessonsDistribution).toEqual({});
+  });
+});
+
+// ─── LessonsAggregator ─────────────────────────────────────────
+
+describe('LessonsAggregator', () => {
+  let agg: LessonsAggregator;
+
+  beforeEach(() => {
+    agg = new LessonsAggregator();
+  });
+
+  it('merges lessonsDistribution from multiple daily records', () => {
+    agg.merge({
+      lessonsDistribution: {
+        'Wait for confirmation': 3,
+        'Use smaller size': 1,
+      },
+    });
+    agg.merge({
+      lessonsDistribution: {
+        'Wait for confirmation': 2,
+        'Follow the plan': 4,
+      },
+    });
+
+    const result = agg.getResult({});
+    expect(result.lessonsDistribution['Wait for confirmation']).toBe(5);
+    expect(result.lessonsDistribution['Use smaller size']).toBe(1);
+    expect(result.lessonsDistribution['Follow the plan']).toBe(4);
+  });
+
+  it('handles records with no lessonsDistribution', () => {
+    agg.merge({ lessonsDistribution: { 'Wait for confirmation': 2 } });
+    agg.merge({});
+    agg.merge({ lessonsDistribution: undefined });
+
+    const result = agg.getResult({});
+    expect(result.lessonsDistribution['Wait for confirmation']).toBe(2);
+  });
+
+  it('returns empty distribution when no records are merged', () => {
+    const result = agg.getResult({});
+    expect(result.lessonsDistribution).toEqual({});
   });
 });

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, DeleteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('RULES_TABLE', 'test-rules');
+vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -65,6 +66,7 @@ describe('delete-rule handler', () => {
 
   it('deletes a rule and returns 200 with the deleted rule data', async () => {
     ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(DeleteCommand).resolves({});
 
     const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
@@ -129,6 +131,7 @@ describe('delete-rule handler', () => {
 
   it('returns 500 when DynamoDB DeleteCommand fails after successful Get', async () => {
     ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(DeleteCommand).rejects(new Error('Delete failed'));
 
     const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
@@ -168,6 +171,7 @@ describe('delete-rule handler', () => {
       isActive: false,
     };
     ddbMock.on(GetCommand).resolves({ Item: fullRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(DeleteCommand).resolves({});
 
     const res = await handler(makeEvent('rule-xyz'), {} as any, () => {}) as any;
@@ -182,6 +186,7 @@ describe('delete-rule handler', () => {
 
   it('sends correct Key to GetCommand and DeleteCommand', async () => {
     ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(DeleteCommand).resolves({});
 
     await handler(makeEvent('rule-abc'), {} as any, () => {});
@@ -197,6 +202,7 @@ describe('delete-rule handler', () => {
 
   it('returns success message on delete', async () => {
     ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(DeleteCommand).resolves({});
 
     const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
@@ -225,5 +231,64 @@ describe('delete-rule handler', () => {
 
     const deleteCalls = ddbMock.commandCalls(DeleteCommand);
     expect(deleteCalls).toHaveLength(0);
+  });
+
+  // ── Rule-in-use protection ──────────────────────────────────
+
+  it('returns 409 when rule is referenced in DailyStats brokenRulesCounts', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [
+        { userId: 'user-1', sk: 'acc-1#2024-01-15', brokenRulesCounts: { 'rule-abc': 2 } },
+      ],
+    });
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('RULE_IN_USE');
+    expect(body.message).toContain('rule is broken in one or more trades');
+
+    // DeleteCommand should NOT have been called
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(0);
+  });
+
+  it('deletes rule when not referenced by any DailyStats records', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [
+        { userId: 'user-1', sk: 'acc-1#2024-01-15', brokenRulesCounts: {} },
+        { userId: 'user-1', sk: 'acc-1#2024-01-16', brokenRulesCounts: { 'other-rule': 3 } },
+      ],
+    });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.rule.ruleId).toBe('rule-abc');
+
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(1);
+  });
+
+  it('deletes rule when DailyStats has no records at all', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingRule });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(1);
   });
 });

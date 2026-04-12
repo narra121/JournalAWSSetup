@@ -47,13 +47,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         tradeReminders: true,
         weeklyReport: true,
         goalAlerts: true
-      }
+      },
+      carryForwardGoalsRules: true
     };
 
     // Update with provided values
     if (data.darkMode !== undefined) preferences.darkMode = data.darkMode;
     if (data.currency) preferences.currency = data.currency;
     if (data.timezone) preferences.timezone = data.timezone;
+    if (data.carryForwardGoalsRules !== undefined) preferences.carryForwardGoalsRules = data.carryForwardGoalsRules;
     preferences.updatedAt = new Date().toISOString();
 
     await ddb.send(new PutCommand({

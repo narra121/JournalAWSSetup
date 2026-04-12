@@ -38,7 +38,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    const ruleId = uuid();
+    const baseId = uuid();
+    const ruleId = data.periodKey ? `${data.periodKey}#${baseId}` : baseId;
     const now = new Date().toISOString();
 
     const rule = {
