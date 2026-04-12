@@ -247,6 +247,16 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/auth-pre-signup/app.handler
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+              - cognito-idp:AdminLinkProviderForUser
+            Resource: !GetAtt UserPool.Arn
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
