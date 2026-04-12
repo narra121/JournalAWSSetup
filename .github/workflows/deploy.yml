@@ -160,4 +160,4 @@ jobs:
               "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \
               AllowedOrigins=https://dev.tradequt.com \
               "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
-              "GoogleClientSecretParam=/tradequt/googleClientSecret"
+              "GoogleClientSecret=${{ secrets.GOOGLE_CLIENT_SECRET }}"

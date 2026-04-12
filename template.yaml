@@ -124,10 +124,11 @@ Parameters:
     Type: String
     Default: ""
     Description: Google OAuth Client ID for Sign-In with Google. Leave empty to skip Google auth setup.
-  GoogleClientSecretParam:
+  GoogleClientSecret:
     Type: String
-    Default: /tradequt/googleClientSecret
-    Description: SSM SecureString parameter name for Google OAuth Client Secret.
+    Default: ""
+    NoEcho: true
+    Description: Google OAuth Client Secret (SSM Secure references not supported for Cognito IdP).
 
 Conditions:
   CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
@@ -213,7 +214,7 @@ Resources:
       ProviderType: Google
       ProviderDetails:
         client_id: !Ref GoogleClientId
-        client_secret: !Sub "{{resolve:ssm-secure:${GoogleClientSecretParam}}}"
+        client_secret: !Ref GoogleClientSecret
         authorize_scopes: "openid email profile"
       AttributeMapping:
         email: email
