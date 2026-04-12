@@ -248,10 +248,12 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       await adjustAccountBalance(userId, accountId, delta);
     }
 
-    // 4. Sync new symbols into SavedOptions (non-blocking per user)
-    for (const [userId, symbols] of symbolsByUser) {
-      await syncSymbolsToSavedOptions(userId, symbols);
-    }
+    // 4. Sync new symbols into SavedOptions (parallel — each user is independent)
+    await Promise.allSettled(
+      [...symbolsByUser].map(([userId, symbols]) =>
+        syncSymbolsToSavedOptions(userId, symbols)
+      )
+    );
   } catch (e) {
     console.error('Failed processing stream event', e);
     for (const record of event.Records) {

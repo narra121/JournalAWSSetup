@@ -236,8 +236,9 @@ describe('delete-trade handler', () => {
     expect(listCalls).toHaveLength(2);
     expect(listCalls[1].args[0].input.ContinuationToken).toBe('token1');
 
+    // All keys collected first, then deleted in a single batch (total < 1000)
     const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
-    expect(deleteCalls).toHaveLength(2);
+    expect(deleteCalls).toHaveLength(1);
   });
 
   it('still deletes trade even when S3 has no images', async () => {

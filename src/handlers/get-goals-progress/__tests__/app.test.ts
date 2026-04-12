@@ -794,8 +794,8 @@ describe('get-goals-progress handler', () => {
     expect(dailyStatsCalls.length).toBeGreaterThanOrEqual(1);
     // Specific account should NOT use IndexName
     expect(dailyStatsCalls[0].args[0].input.IndexName).toBeUndefined();
-    // Should use sk BETWEEN
-    expect(dailyStatsCalls[0].args[0].input.KeyConditionExpression).toContain('sk BETWEEN');
+    // Should use sk BETWEEN (aliased as #s for ProjectionExpression compatibility)
+    expect(dailyStatsCalls[0].args[0].input.KeyConditionExpression).toContain('#s BETWEEN');
   });
 
   it('uses GSI query for ALL accounts', async () => {

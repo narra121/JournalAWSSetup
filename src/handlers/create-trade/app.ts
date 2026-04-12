@@ -170,17 +170,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         }
       };
 
-      // Process sequentially to limit parallel S3 pressure (could be parallelized with Promise.allSettled if needed)
+      // Process in parallel batches of 10 for throughput
+      const PARALLEL_BATCH = 10;
       const toWrite: any[] = [];
-  for (let i=0;i<itemsArr.length;i++) {
-        const resItems = await processOne(itemsArr[i], i);
-        if (resItems) {
-          // resItems is now an array of items (one per account)
-          if (Array.isArray(resItems)) {
-            toWrite.push(...resItems);
-          } else {
-            toWrite.push(resItems);
+
+      for (let batch = 0; batch < itemsArr.length; batch += PARALLEL_BATCH) {
+        const batchSlice = itemsArr.slice(batch, batch + PARALLEL_BATCH);
+        const results = await Promise.allSettled(
+          batchSlice.map((item, idx) => processOne(item, batch + idx))
+        );
+
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            if (Array.isArray(result.value)) {
+              toWrite.push(...result.value);
+            } else {
+              toWrite.push(result.value);
+            }
           }
+          // Rejected results are already handled inside processOne (pushed to errors array)
         }
       }
 

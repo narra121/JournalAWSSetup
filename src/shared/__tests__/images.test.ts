@@ -99,10 +99,9 @@ describe('removeImagesForTrade', () => {
     // Second list call should use the ContinuationToken
     expect(listCalls[1].args[0].input.ContinuationToken).toBe('token1');
 
-    // Should have made 2 delete calls (one per page)
+    // All keys collected first, then deleted in a single batch (total < 1000)
     const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
-    expect(deleteCalls).toHaveLength(2);
-    expect(deleteCalls[0].args[0].input.Delete?.Objects).toHaveLength(2);
-    expect(deleteCalls[1].args[0].input.Delete?.Objects).toHaveLength(1);
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].args[0].input.Delete?.Objects).toHaveLength(3);
   });
 });

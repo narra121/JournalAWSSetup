@@ -92,19 +92,53 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const result = await ddb.send(command);
     let items = result.Items || [];
 
-    // GSI returns KEYS_ONLY — BatchGet full records from main table
+    // GSI returns KEYS_ONLY — BatchGet full records from main table (parallel chunks)
     if (startDate && endDate && items.length > 0) {
       const keys = items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
-      const fullItems: any[] = [];
+      const chunks: Record<string, any>[][] = [];
       for (let i = 0; i < keys.length; i += 100) {
-        const chunk = keys.slice(i, i + 100);
-        const batchResult = await ddb.send(new BatchGetCommand({
-          RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
-        }));
+        chunks.push(keys.slice(i, i + 100));
+      }
+
+      // Fire all BatchGet requests in parallel
+      const batchResults = await Promise.all(
+        chunks.map(chunk =>
+          ddb.send(new BatchGetCommand({
+            RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
+          }))
+        )
+      );
+
+      const fullItems: any[] = [];
+      const unprocessedKeys: Record<string, any>[][] = [];
+      for (const batchResult of batchResults) {
         if (batchResult.Responses?.[TRADES_TABLE]) {
           fullItems.push(...batchResult.Responses[TRADES_TABLE]);
         }
+        if (batchResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys?.length) {
+          unprocessedKeys.push(batchResult.UnprocessedKeys[TRADES_TABLE].Keys as Record<string, any>[]);
+        }
       }
+
+      // Retry any unprocessed keys (sequential with backoff)
+      for (const retryKeys of unprocessedKeys) {
+        let keysToRetry = retryKeys;
+        let attempt = 0;
+        while (keysToRetry.length > 0 && attempt < 3) {
+          if (attempt > 0) {
+            await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
+          }
+          const retryResult = await ddb.send(new BatchGetCommand({
+            RequestItems: { [TRADES_TABLE]: { Keys: keysToRetry } },
+          }));
+          if (retryResult.Responses?.[TRADES_TABLE]) {
+            fullItems.push(...retryResult.Responses[TRADES_TABLE]);
+          }
+          keysToRetry = (retryResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys as Record<string, any>[] | undefined) || [];
+          attempt++;
+        }
+      }
+
       const fullMap = new Map(fullItems.map((it: any) => [it.tradeId, it]));
       items = items.map((it: any) => fullMap.get(it.tradeId) || it);
     }

@@ -10,6 +10,42 @@ const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 const RULES_TABLE = process.env.RULES_TABLE!;
 
+/**
+ * ProjectionExpression for DailyStats queries in this handler.
+ * Only fetches fields needed by aggregateDailyRecords() — avoids transferring
+ * the full 30+ attribute records when only aggregation fields are needed.
+ *
+ * Fields accessed by aggregation processors:
+ *   CoreStats: tradeCount, wins, losses, breakeven, grossProfit, grossLoss, totalVolume
+ *   Extremes: bestTrade, worstTrade
+ *   RiskReward: sumRiskReward, riskRewardCount
+ *   Duration: totalDurationHours, durationTradeCount, minDurationHours, maxDurationHours, durationBuckets
+ *   Distributions: symbolDistribution, strategyDistribution, sessionDistribution, outcomeDistribution
+ *   Hourly: hourlyBreakdown
+ *   PnlSequence: pnlSequence, equityCurvePoints, date, totalPnl
+ *   DayOfWeek: dayOfWeek, tradeCount, wins, totalPnl
+ *   Mistakes: mistakesDistribution
+ *   Lessons: lessonsDistribution
+ *   BrokenRules: brokenRulesCounts, brokenRulesDistribution
+ */
+const DAILY_STATS_PROJECTION_NAMES: Record<string, string> = {
+  '#d': 'date',
+  '#s': 'sk',
+};
+
+const DAILY_STATS_PROJECTION = [
+  'userId', '#s', '#d', 'accountId', 'dayOfWeek',
+  'tradeCount', 'wins', 'losses', 'breakeven', 'grossProfit', 'grossLoss', 'totalPnl', 'totalVolume',
+  'bestTrade', 'worstTrade',
+  'sumRiskReward', 'riskRewardCount',
+  'totalDurationHours', 'durationTradeCount', 'minDurationHours', 'maxDurationHours', 'durationBuckets',
+  'symbolDistribution', 'strategyDistribution', 'sessionDistribution', 'outcomeDistribution',
+  'hourlyBreakdown',
+  'pnlSequence', 'equityCurvePoints',
+  'mistakesDistribution', 'lessonsDistribution',
+  'brokenRulesCounts', 'brokenRulesDistribution',
+].join(', ');
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
   if (!userId) {
@@ -87,8 +123,9 @@ async function queryAllAccounts(
       new QueryCommand({
         TableName: DAILY_STATS_TABLE,
         IndexName: 'stats-by-date-gsi',
-        KeyConditionExpression: 'userId = :userId AND #date BETWEEN :startDate AND :endDate',
-        ExpressionAttributeNames: { '#date': 'date' },
+        KeyConditionExpression: 'userId = :userId AND #d BETWEEN :startDate AND :endDate',
+        ProjectionExpression: DAILY_STATS_PROJECTION,
+        ExpressionAttributeNames: { ...DAILY_STATS_PROJECTION_NAMES },
         ExpressionAttributeValues: {
           ':userId': userId,
           ':startDate': startDate,
@@ -126,7 +163,9 @@ async function querySingleAccount(
     const result = await ddb.send(
       new QueryCommand({
         TableName: DAILY_STATS_TABLE,
-        KeyConditionExpression: 'userId = :userId AND sk BETWEEN :skStart AND :skEnd',
+        KeyConditionExpression: 'userId = :userId AND #s BETWEEN :skStart AND :skEnd',
+        ProjectionExpression: DAILY_STATS_PROJECTION,
+        ExpressionAttributeNames: { ...DAILY_STATS_PROJECTION_NAMES },
         ExpressionAttributeValues: {
           ':userId': userId,
           ':skStart': `${accountId}#${startDate}`,

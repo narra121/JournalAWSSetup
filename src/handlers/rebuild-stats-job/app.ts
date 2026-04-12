@@ -165,8 +165,24 @@ export const handler = async () => {
     console.warn(`rebuild-stats-job: ${recentUserIds.length} users need rebuilding (above ${WARN_THRESHOLD} threshold)`);
   }
 
-  for (const userId of recentUserIds) {
-    await rebuildForUser(userId);
+  // Process 5 users concurrently — each user's rebuild is independent (different partition key)
+  const CONCURRENT_USERS = 5;
+  const allErrors: Error[] = [];
+  for (let i = 0; i < recentUserIds.length; i += CONCURRENT_USERS) {
+    const batch = recentUserIds.slice(i, i + CONCURRENT_USERS);
+    const results = await Promise.allSettled(
+      batch.map(userId => rebuildForUser(userId))
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        allErrors.push(result.reason);
+      }
+    }
+  }
+
+  // Re-throw the first error so callers (and tests) see the failure
+  if (allErrors.length > 0) {
+    throw allErrors[0];
   }
 
   return { rebuiltUsers: recentUserIds.length };

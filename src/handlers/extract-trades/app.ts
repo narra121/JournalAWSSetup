@@ -164,16 +164,42 @@ const MAX_IMAGE_BASE64_LENGTH = (() => {
   return Number.isFinite(v) && v > 10000 ? v : 4000000;
 })();
 
+// --- Prompt caching (TTL-based, avoids rebuilding date strings on every invocation) ---
+let cachedGeminiPrompt: { text: string; expiry: number } | null = null;
+let cachedTextPrompt: { text: string; expiry: number } | null = null;
+const PROMPT_CACHE_TTL = 3600000; // 1 hour
+
+function getGeminiPrompt(): string {
+  const now = Date.now();
+  if (!cachedGeminiPrompt || now > cachedGeminiPrompt.expiry) {
+    cachedGeminiPrompt = { text: buildGeminiPrompt(), expiry: now + PROMPT_CACHE_TTL };
+  }
+  return cachedGeminiPrompt.text;
+}
+
+function getTextPrompt(): string {
+  const now = Date.now();
+  if (!cachedTextPrompt || now > cachedTextPrompt.expiry) {
+    cachedTextPrompt = { text: buildTextExtractionPrompt(), expiry: now + PROMPT_CACHE_TTL };
+  }
+  return cachedTextPrompt.text;
+}
+
+// --- API key caching with TTL ---
 let cachedApiKey: string | undefined;
+let apiKeyExpiry = 0;
+const API_KEY_CACHE_TTL = 3600000; // 1 hour
+
 const ssm = new SSMClient({});
 async function getApiKey(): Promise<string> {
-  if (cachedApiKey) return cachedApiKey;
+  if (cachedApiKey && Date.now() < apiKeyExpiry) return cachedApiKey;
   const paramName = process.env.GEMINI_API_KEY_PARAM;
   if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
   const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   const v = res.Parameter?.Value;
   if (!v) throw new Error('Gemini API key parameter empty');
   cachedApiKey = v;
+  apiKeyExpiry = Date.now() + API_KEY_CACHE_TTL;
   return v;
 }
 
@@ -248,7 +274,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
         const text = await callGemini(
           apiKey,
-          [{ text: buildTextExtractionPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent }],
+          [{ text: getTextPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent }],
           controller.signal
         );
 
@@ -316,7 +342,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Process all images concurrently via Gemini direct API
     const allItems: any[] = [];
     const processingDetails: any[] = new Array(images.length);
-    const prompt = buildGeminiPrompt();
+    const prompt = getGeminiPrompt();
 
     const imageResults = await Promise.allSettled(images.map(async (imageBase64, i) => {
       const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');

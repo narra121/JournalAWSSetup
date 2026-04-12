@@ -83,12 +83,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       log.info('deleted all trade images', { count: tradesToDelete.length });
     }
     
-    // Delete trades in batches of 25 (DynamoDB BatchWrite limit)
-    if (tradesToDelete.length > 0) {
+    // Delete trades and goals in parallel (different tables, no contention)
+    const deleteTrades = async () => {
       const batchSize = 25;
       for (let i = 0; i < tradesToDelete.length; i += batchSize) {
         const batch = tradesToDelete.slice(i, i + batchSize);
-        
         await ddb.send(new BatchWriteCommand({
           RequestItems: {
             [TRADES_TABLE]: batch.map(trade => ({
@@ -98,17 +97,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             }))
           }
         }));
-        
         log.info('deleted trade batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
       }
-    }
+    };
 
-    // Delete goals in batches of 25
-    if (goalsToDelete.length > 0) {
+    const deleteGoals = async () => {
       const batchSize = 25;
       for (let i = 0; i < goalsToDelete.length; i += batchSize) {
         const batch = goalsToDelete.slice(i, i + batchSize);
-        
         await ddb.send(new BatchWriteCommand({
           RequestItems: {
             [GOALS_TABLE]: batch.map(goal => ({
@@ -118,10 +114,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             }))
           }
         }));
-        
         log.info('deleted goal batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
       }
-    }
+    };
+
+    await Promise.all([deleteTrades(), deleteGoals()]);
 
     // Delete the account
     await ddb.send(new DeleteCommand({

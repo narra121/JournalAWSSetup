@@ -186,12 +186,34 @@ async function queryTable(tableName: string, userId: string, skPrefix?: string):
 
 /** Fetch legacy records (SK that doesn't start with week# or month#). */
 async function queryLegacyRecords(tableName: string, userId: string): Promise<any[]> {
-  // Query all records and filter legacy ones client-side
-  const all = await queryTable(tableName, userId);
-  return all.filter(item => {
-    const sk = tableName === RULES_TABLE ? item.ruleId : item.goalId;
-    return isLegacyRecord(sk);
-  });
+  // Use DynamoDB FilterExpression to return only legacy records (server-side filtering)
+  // instead of fetching ALL records and filtering client-side.
+  // Legacy records have sort keys that don't start with 'week#' or 'month#'.
+  const items: any[] = [];
+  let exclusiveStartKey: Record<string, any> | undefined;
+  const skAttr = tableName === RULES_TABLE ? 'ruleId' : 'goalId';
+
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'userId = :userId',
+      FilterExpression: 'NOT begins_with(#sk, :wp) AND NOT begins_with(#sk, :mp)',
+      ExpressionAttributeNames: { '#sk': skAttr },
+      ExpressionAttributeValues: {
+        ':userId': userId,
+        ':wp': 'week#',
+        ':mp': 'month#',
+      },
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+
+    if (result.Items) {
+      items.push(...result.Items);
+    }
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
 }
 
 /** Check if user has carry-forward enabled (default = true). */

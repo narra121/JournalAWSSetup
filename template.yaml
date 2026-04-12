@@ -454,6 +454,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   ListTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -488,6 +490,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   UpdateTradeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -524,6 +528,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   DeleteTradeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -563,6 +569,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   BulkDeleteTradesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -603,6 +611,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   GetImageFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -629,6 +639,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   UpdateStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -637,7 +649,7 @@ Resources:
       Handler: src/handlers/update-stats/app.handler
 
       Timeout: 30
-      MemorySize: 512
+      MemorySize: 256
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
@@ -669,6 +681,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   StatsDLQ:
     Type: AWS::SQS::Queue
@@ -725,6 +739,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   GetStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources
@@ -732,7 +748,7 @@ Resources:
       CodeUri: .
       Handler: src/handlers/get-stats/app.handler
       Timeout: 15
-      MemorySize: 512
+      MemorySize: 256
 
       Policies:
         - DynamoDBReadPolicy:
@@ -752,6 +768,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   GetGoalsProgressFunction:
     Type: AWS::Serverless::Function
@@ -760,7 +778,7 @@ Resources:
       CodeUri: .
       Handler: src/handlers/get-goals-progress/app.handler
       Timeout: 15
-      MemorySize: 512
+      MemorySize: 256
 
       Policies:
         - DynamoDBReadPolicy:
@@ -784,6 +802,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   AuthSignUpFunction:
     Type: AWS::Serverless::Function
@@ -820,6 +840,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   AuthConfirmSignUpFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -866,6 +888,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   AuthLoginFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -901,6 +925,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   AuthRefreshFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -930,6 +956,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   AuthForgotPasswordFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -967,6 +995,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   AuthConfirmForgotPasswordFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1004,6 +1034,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   ExtractTradesFunction:
     Type: AWS::Serverless::Function
@@ -1044,6 +1076,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   EnhanceTextFunction:
     Type: AWS::Serverless::Function
@@ -1084,6 +1118,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Account Management Functions
   ListAccountsFunction:
@@ -1111,6 +1147,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   CreateAccountFunction:
     Type: AWS::Serverless::Function
@@ -1143,6 +1181,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateAccountFunction:
     Type: AWS::Serverless::Function
@@ -1169,6 +1209,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateAccountStatusFunction:
     Type: AWS::Serverless::Function
@@ -1195,6 +1237,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   DeleteAccountFunction:
     Type: AWS::Serverless::Function
@@ -1235,6 +1279,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Goals and Rules Functions
   CreateGoalFunction:
@@ -1261,6 +1307,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateGoalFunction:
     Type: AWS::Serverless::Function
@@ -1287,6 +1335,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   ListRulesFunction:
     Type: AWS::Serverless::Function
@@ -1313,6 +1363,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   GetRulesGoalsFunction:
     Type: AWS::Serverless::Function
@@ -1352,6 +1404,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   CreateRuleFunction:
     Type: AWS::Serverless::Function
@@ -1378,6 +1432,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateRuleFunction:
     Type: AWS::Serverless::Function
@@ -1404,6 +1460,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   ToggleRuleFunction:
     Type: AWS::Serverless::Function
@@ -1430,6 +1488,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   DeleteRuleFunction:
     Type: AWS::Serverless::Function
@@ -1458,6 +1518,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Analytics Function (Unified for all analytics types)
   AnalyticsFunction:
@@ -1485,6 +1547,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # User Profile and Preferences Functions
   GetUserProfileFunction:
@@ -1517,6 +1581,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateUserProfileFunction:
     Type: AWS::Serverless::Function
@@ -1545,6 +1611,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateUserPreferencesFunction:
     Type: AWS::Serverless::Function
@@ -1571,6 +1639,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateUserNotificationsFunction:
     Type: AWS::Serverless::Function
@@ -1597,6 +1667,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Saved Options Functions
   GetSavedOptionsFunction:
@@ -1627,6 +1699,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   UpdateSavedOptionsFunction:
     Type: AWS::Serverless::Function
@@ -1656,6 +1730,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Razorpay Payment Functions
   CreateOrderRazorpayFunction:
@@ -1684,6 +1760,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Razorpay Subscription Functions
   GetSubscriptionPlansFunction:
@@ -1719,6 +1797,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   CreateRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -1750,6 +1830,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   ManageRazorpaySubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -1799,6 +1881,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   VerifyPaymentRazorpayFunction:
     Type: AWS::Serverless::Function
@@ -1829,6 +1913,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   RazorpayWebhookFunction:
     Type: AWS::Serverless::Function
@@ -1866,6 +1952,8 @@ Resources:
         Minify: true
         Target: es2020
         Sourcemap: false
+        External:
+          - "@aws-sdk/*"
 
   # Custom Domain for API Gateway
   ApiDomainName:
