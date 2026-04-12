@@ -1,33 +1,31 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, GetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
 vi.stubEnv('USER_PREFERENCES_TABLE', 'test-user-preferences');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
-const cognitoMock = mockClient(CognitoIdentityProviderClient);
 
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
-function makeJwt(sub: string): string {
+function makeJwt(claims: Record<string, string>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256' }));
-  const payload = btoa(JSON.stringify({ sub }));
+  const payload = btoa(JSON.stringify(claims));
   return `${header}.${payload}.sig`;
 }
 
-function makeEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayProxyEventV2 {
+function makeEvent(jwtClaims: Record<string, string> = { sub: 'user-1', name: 'Test User', email: 'test@example.com' }, overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayProxyEventV2 {
   return {
     version: '2.0',
     routeKey: 'GET /user/profile',
     rawPath: '/user/profile',
     rawQueryString: '',
     headers: {
-      authorization: `Bearer ${makeJwt('user-1')}`,
+      authorization: `Bearer ${makeJwt(jwtClaims)}`,
       ...((overrides as any).headers || {}),
     },
     requestContext: {
@@ -63,14 +61,6 @@ const storedPreferences = {
 
 beforeEach(() => {
   ddbMock.reset();
-  cognitoMock.reset();
-  cognitoMock.on(GetUserCommand).resolves({
-    UserAttributes: [
-      { Name: 'name', Value: 'Test User' },
-      { Name: 'email', Value: 'test@example.com' },
-    ],
-    Username: 'user-1',
-  });
   ddbMock.on(GetCommand).resolves({ Item: { ...storedPreferences } });
 });
 
@@ -108,10 +98,8 @@ describe('get-user-profile handler', () => {
     expect(body.data.user.preferences.notifications.goalAlerts).toBe(true);
   });
 
-  it('handles Cognito failure gracefully and still returns profile', async () => {
-    cognitoMock.on(GetUserCommand).rejects(new Error('Cognito unavailable'));
-
-    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+  it('returns empty name and email when JWT has no name/email claims', async () => {
+    const res = await handler(makeEvent({ sub: 'user-1' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -202,15 +190,8 @@ describe('get-user-profile handler', () => {
 
   // ── Cognito user info ──────────────────────────────────────
 
-  it('returns empty name and email when Cognito has no name/email attributes', async () => {
-    cognitoMock.on(GetUserCommand).resolves({
-      UserAttributes: [
-        { Name: 'phone_number', Value: '+1234567890' },
-      ],
-      Username: 'user-1',
-    });
-
-    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+  it('returns empty name and email when JWT claims lack those fields', async () => {
+    const res = await handler(makeEvent({ sub: 'user-1', phone_number: '+1234567890' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -248,20 +229,8 @@ describe('get-user-profile handler', () => {
 
   // ── Cognito with different user ────────────────────────────
 
-  it('returns Cognito user data for a different user', async () => {
-    cognitoMock.on(GetUserCommand).resolves({
-      UserAttributes: [
-        { Name: 'name', Value: 'Jane Doe' },
-        { Name: 'email', Value: 'jane@example.com' },
-      ],
-      Username: 'user-2',
-    });
-
-    const event = makeEvent({
-      headers: { authorization: `Bearer ${makeJwt('user-2')}` },
-    } as any);
-
-    const res = await handler(event, {} as any, () => {}) as any;
+  it('returns user data from JWT claims for a different user', async () => {
+    const res = await handler(makeEvent({ sub: 'user-2', name: 'Jane Doe', email: 'jane@example.com' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);

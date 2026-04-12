@@ -1,46 +1,47 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, GetUserCommand, UpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
-const cognito = new CognitoIdentityProviderClient({});
+
+/** Extract claims from the Cognito JWT (authorizer or manual decode). */
+function getClaims(event: any): Record<string, string> {
+  // Production: API Gateway Cognito authorizer populates claims
+  const authClaims = (event.requestContext as any)?.authorizer?.jwt?.claims;
+  if (authClaims) return authClaims;
+
+  // SAM local fallback: decode JWT payload from Authorization header
+  const authHeader = event.headers?.authorization || event.headers?.Authorization;
+  if (!authHeader) return {};
+  try {
+    const payload = authHeader.replace(/^Bearer\s+/i, '').split('.')[1];
+    if (!payload) return {};
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return {};
+  }
+}
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
-  const accessToken = event.headers?.authorization || event.headers?.Authorization || '';
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
-  
+
   log.info('get-user-profile invoked');
-  
+
   if (!userId) {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
 
   try {
-    // Get user info from Cognito
-    let userName = '';
-    let userEmail = '';
-    
-    try {
-      if (accessToken) {
-        const cognitoUser = await cognito.send(new GetUserCommand({
-          AccessToken: accessToken.replace('Bearer ', '')
-        }));
-        
-        const nameAttr = cognitoUser.UserAttributes?.find(a => a.Name === 'name');
-        const emailAttr = cognitoUser.UserAttributes?.find(a => a.Name === 'email');
-        
-        if (nameAttr?.Value) userName = nameAttr.Value;
-        if (emailAttr?.Value) userEmail = emailAttr.Value;
-      }
-    } catch (cognitoError: any) {
-      log.warn('failed to get cognito user', { error: cognitoError.message });
-    }
+    // Extract user info directly from the ID token claims
+    // (no extra Cognito API call needed — the ID token already has email/name)
+    const claims = getClaims(event);
+    const userName = claims.name || '';
+    const userEmail = claims.email || '';
 
     // Get preferences from DynamoDB
     const prefsResult = await ddb.send(new GetCommand({
