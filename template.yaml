@@ -165,6 +165,8 @@ Resources:
         PostConfirmation: !GetAtt PostConfirmationFunction.Arn
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    # Ensure Google IdP exists before client references it as SupportedIdentityProvider
+    DependsOn: GoogleIdentityProvider
     Properties:
       UserPoolId: !Ref UserPool
       ClientName: web
