@@ -1,10 +1,11 @@
 import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 const cognito = new CognitoIdentityProviderClient({});
-const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 export const handler = async (event: any) => {
   const email = event.request?.userAttributes?.email;
+  // Cognito passes the User Pool ID in the event — no env var needed (avoids circular dependency in SAM)
+  const USER_POOL_ID = event.userPoolId;
 
   // Case 1: Google sign-in — link to existing email/password account if one exists
   if (event.triggerSource === 'PreSignUp_ExternalProvider') {

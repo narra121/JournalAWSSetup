@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
-vi.stubEnv('USER_POOL_ID', 'us-east-1_TestPool');
-
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
+const TEST_POOL_ID = 'us-east-1_TestPool';
 
 const { handler } = await import('../app.ts');
 
@@ -19,6 +18,7 @@ describe('auth-pre-signup handler', () => {
 
   it('auto-confirms and auto-verifies email for external provider', async () => {
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_123456',
       request: { userAttributes: { email: 'google@example.com' } },
@@ -39,6 +39,7 @@ describe('auth-pre-signup handler', () => {
     });
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_789012',
       request: { userAttributes: { email: 'shared@example.com' } },
@@ -50,7 +51,7 @@ describe('auth-pre-signup handler', () => {
     const linkCalls = cognitoMock.commandCalls(AdminLinkProviderForUserCommand);
     expect(linkCalls).toHaveLength(1);
     expect(linkCalls[0].args[0].input).toEqual({
-      UserPoolId: 'us-east-1_TestPool',
+      UserPoolId: TEST_POOL_ID,
       DestinationUser: {
         ProviderName: 'Cognito',
         ProviderAttributeValue: 'native-user-uuid',
@@ -67,6 +68,7 @@ describe('auth-pre-signup handler', () => {
     cognitoMock.on(ListUsersCommand).resolves({ Users: [] });
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_111111',
       request: { userAttributes: { email: 'new@example.com' } },
@@ -87,6 +89,7 @@ describe('auth-pre-signup handler', () => {
     });
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_222222',
       request: { userAttributes: { email: 'google@example.com' } },
@@ -108,6 +111,7 @@ describe('auth-pre-signup handler', () => {
     cognitoMock.on(AdminLinkProviderForUserCommand).rejects(new Error('Link failed'));
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_333333',
       request: { userAttributes: { email: 'fail@example.com' } },
@@ -124,6 +128,7 @@ describe('auth-pre-signup handler', () => {
 
   it('does not auto-confirm for normal signup when no Google account exists', async () => {
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'new-user',
       request: { userAttributes: { email: 'normal@example.com' } },
@@ -144,6 +149,7 @@ describe('auth-pre-signup handler', () => {
     });
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'email-user',
       request: { userAttributes: { email: 'both@example.com' } },
@@ -160,6 +166,7 @@ describe('auth-pre-signup handler', () => {
     cognitoMock.on(ListUsersCommand).rejects(new Error('Service unavailable'));
 
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'email-user',
       request: { userAttributes: { email: 'error@example.com' } },
@@ -176,6 +183,7 @@ describe('auth-pre-signup handler', () => {
 
   it('does not auto-confirm for admin create user', async () => {
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_AdminCreateUser',
       request: { userAttributes: { email: 'admin@example.com' } },
       response: {},
@@ -189,6 +197,7 @@ describe('auth-pre-signup handler', () => {
 
   it('returns the event unchanged for non-external, non-signup triggers', async () => {
     const event = {
+      userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_AdminCreateUser',
       request: { userAttributes: { email: 'test@example.com' } },
       response: {},
