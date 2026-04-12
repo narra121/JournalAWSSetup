@@ -247,6 +247,11 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/auth-pre-signup/app.handler
+      # Override Globals env vars to break circular dep: UserPool → this function → UserPool/UserPoolClient
+      Environment:
+        Variables:
+          USER_POOL_ID: "COGNITO_TRIGGER"
+          USER_POOL_CLIENT_ID: "COGNITO_TRIGGER"
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -268,8 +273,11 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref RulesTable, '']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+      # Override Globals env vars to break circular dep: UserPool → this function → UserPool/UserPoolClient
       Environment:
         Variables:
+          USER_POOL_ID: "COGNITO_TRIGGER"
+          USER_POOL_CLIENT_ID: "COGNITO_TRIGGER"
           RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
           SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
     Metadata:
