@@ -8,7 +8,7 @@ import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 
 const ERROR_REPORTS_BUCKET = process.env.ERROR_REPORTS_BUCKET!;
 const s3 = new S3Client({});
-const MAX_BODY_BYTES = 200 * 1024; // 200KB
+const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {

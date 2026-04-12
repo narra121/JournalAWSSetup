@@ -137,11 +137,11 @@ describe('CoreStatsAggregator', () => {
     expect(result.expectancy).toBe(25); // (200-100)/4
   });
 
-  it('profitFactor returns Infinity when no losses', () => {
+  it('profitFactor returns null when no losses (profit exists)', () => {
     agg.merge({ tradeCount: 2, wins: 2, losses: 0, breakeven: 0, grossProfit: 100, grossLoss: 0, totalVolume: 2 });
 
     const result = agg.getResult({});
-    expect(result.profitFactor).toBe(Infinity);
+    expect(result.profitFactor).toBeNull();
   });
 
   it('profitFactor returns 0 when no profit and no loss', () => {
