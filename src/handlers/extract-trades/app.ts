@@ -2,7 +2,8 @@ import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
-const MODEL_ID = 'google/gemini-2.0-flash-001';
+const MODEL_ID = 'gemini-2.5-flash-preview-05-20';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 
 const buildGeminiPrompt = () => {
@@ -167,13 +168,39 @@ let cachedApiKey: string | undefined;
 const ssm = new SSMClient({});
 async function getApiKey(): Promise<string> {
   if (cachedApiKey) return cachedApiKey;
-  const paramName = process.env.OPENROUTER_API_KEY_PARAM || process.env.GEMINI_API_KEY_PARAM;
-  if (!paramName) throw new Error('Missing OPENROUTER_API_KEY_PARAM or GEMINI_API_KEY_PARAM');
+  const paramName = process.env.GEMINI_API_KEY_PARAM;
+  if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
   const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   const v = res.Parameter?.Value;
-  if (!v) throw new Error('OpenRouter API key parameter empty');
+  if (!v) throw new Error('Gemini API key parameter empty');
   cachedApiKey = v;
   return v;
+}
+
+/** Call Gemini API directly. Accepts text-only or text+image parts. */
+async function callGemini(
+  apiKey: string,
+  parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
+  signal: AbortSignal
+): Promise<string> {
+  const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent?key=${apiKey}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts }],
+      generationConfig: { temperature: 0 },
+    }),
+    signal,
+  });
+  if (!resp.ok) {
+    const errorText = await resp.text();
+    throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
+  }
+  const data = await resp.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('Gemini returned empty response');
+  return text.trim();
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
@@ -219,35 +246,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-        const fetchResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': process.env.HTTP_REFERER || 'https://tradehaven.app',
-            'X-Title': 'Trading Journal'
-          },
-          body: JSON.stringify({
-            model: MODEL_ID,
-            messages: [
-              {
-                role: 'user',
-                content: buildTextExtractionPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent
-              }
-            ]
-          }),
-          signal: controller.signal
-        });
+        const text = await callGemini(
+          apiKey,
+          [{ text: buildTextExtractionPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent }],
+          controller.signal
+        );
 
         clearTimeout(timeoutId);
 
-        if (!fetchResponse.ok) {
-          const errorText = await fetchResponse.text();
-          throw new Error(`OpenRouter API error: ${fetchResponse.status} ${fetchResponse.statusText} - ${errorText}`);
-        }
-
-        const data = await fetchResponse.json();
-        const text = data.choices[0].message.content.trim();
         const extracted = extractJsonArray(text);
         const elapsed = Date.now() - started;
 
@@ -285,7 +291,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         return envelope({
           statusCode: 500,
           error: {
-            code: isAbort ? 'OpenRouterTimeout' : 'OpenRouterError',
+            code: isAbort ? 'GeminiTimeout' : 'GeminiError',
             message: isAbort ? `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Try with less data.` : (err?.message || 'AI processing failed')
           },
           meta: { elapsedMs: elapsed },
@@ -307,156 +313,130 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return envelope({ statusCode: 500, error: { code: 'ConfigError', message: e.message }, message: e.message });
     }
 
-    // Process each image and collect all extracted trades
+    // Process all images concurrently via Gemini direct API
     const allItems: any[] = [];
-    const processingDetails: any[] = [];
+    const processingDetails: any[] = new Array(images.length);
+    const prompt = buildGeminiPrompt();
 
-    for (let i = 0; i < images.length; i++) {
-      const imageBase64 = images[i];
-      
-      // Strip possible data URI prefix
+    const imageResults = await Promise.allSettled(images.map(async (imageBase64, i) => {
       const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
-      
+
       if (cleaned.length > MAX_IMAGE_BASE64_LENGTH) {
-        processingDetails.push({
+        processingDetails[i] = {
           imageIndex: i,
           error: `Image base64 length ${cleaned.length} exceeds limit ${MAX_IMAGE_BASE64_LENGTH}`,
           skipped: true
-        });
-        continue;
+        };
+        return;
       }
 
       console.log(`ExtractTrades processing image ${i + 1}/${images.length}`, { sizeChars: cleaned.length });
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
       let text: string;
       try {
-        console.log('Calling OpenRouter API with Gemini model', { model: MODEL_ID, imageIndex: i });
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-        
-        const fetchResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': process.env.HTTP_REFERER || 'https://tradehaven.app',
-            'X-Title': 'Trading Journal'
-          },
-          body: JSON.stringify({
-            model: MODEL_ID,
-            messages: [
-              {
-                role: 'user',
-                content: [
-                  {
-                    type: 'text',
-                    text: buildGeminiPrompt()
-                  },
-                  {
-                    type: 'image_url',
-                    image_url: {
-                      url: `data:image/png;base64,${cleaned}`
-                    }
-                  }
-                ]
-              }
-            ]
-          }),
-          signal: controller.signal
-        });
-        
+        text = await callGemini(
+          apiKey,
+          [
+            { text: prompt },
+            { inlineData: { mimeType: 'image/png', data: cleaned } }
+          ],
+          controller.signal
+        );
         clearTimeout(timeoutId);
-        
-        if (!fetchResponse.ok) {
-          const errorText = await fetchResponse.text();
-          throw new Error(`OpenRouter API error: ${fetchResponse.status} ${fetchResponse.statusText} - ${errorText}`);
-        }
-        
-        const data = await fetchResponse.json();
-        text = data.choices[0].message.content.trim();
       } catch (err: any) {
-        const imageElapsed = Date.now() - started;
+        clearTimeout(timeoutId);
         const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
-        console.error(`OpenRouter API call failed for image ${i}`, { elapsedMs: imageElapsed, isAbort, error: err?.message });
-        
-        processingDetails.push({
+        console.error(`Gemini API call failed for image ${i}`, { isAbort, error: err?.message });
+
+        processingDetails[i] = {
           imageIndex: i,
-          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message || 'OpenRouter API call failed',
+          error: isAbort ? `Timeout after ${REQUEST_TIMEOUT_MS}ms` : err?.message || 'Gemini API call failed',
           skipped: true
-        });
-        
-        // If this is the only image and it failed, return error immediately
+        };
+
+        // Single-image failure: propagate for immediate error response
         if (images.length === 1) {
-          return envelope({ 
-            statusCode: 500,
-            error: { 
-              code: isAbort ? 'OpenRouterTimeout' : 'OpenRouterError', 
-              message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'OpenRouter API call failed')
-            }, 
-            meta: { elapsedMs: imageElapsed },
-            message: 'Extraction failed'
-          });
+          throw { _singleImageError: true, isAbort, err };
         }
-        continue;
+        return;
       }
 
-      console.log(`OpenRouter response received for image ${i}`, { chars: text.length });
+      console.log(`Gemini response received for image ${i}`, { chars: text.length });
 
       const extracted = extractJsonArray(text);
       if (!extracted.json) {
-        processingDetails.push({
+        processingDetails[i] = {
           imageIndex: i,
           error: 'Model did not return JSON array',
           rawPreview: text.slice(0, 200),
           skipped: true
-        });
-        continue;
+        };
+        return;
       }
 
-      let items: any[];
       try {
-        items = JSON.parse(extracted.json);
+        const items = JSON.parse(extracted.json);
         allItems.push(...items);
-        processingDetails.push({
+        processingDetails[i] = {
           imageIndex: i,
           extractedCount: items.length,
           parseSteps: extracted.steps
-        });
+        };
       } catch (e: any) {
-        processingDetails.push({
+        processingDetails[i] = {
           imageIndex: i,
           error: `JSON parse error: ${e.message}`,
           skipped: true
+        };
+      }
+    }));
+
+    // Handle single-image failure thrown from inside Promise.allSettled
+    for (const result of imageResults) {
+      if (result.status === 'rejected' && result.reason?._singleImageError) {
+        const { isAbort, err } = result.reason;
+        const imageElapsed = Date.now() - started;
+        return envelope({
+          statusCode: 500,
+          error: {
+            code: isAbort ? 'GeminiTimeout' : 'GeminiError',
+            message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'Gemini API call failed')
+          },
+          meta: { elapsedMs: imageElapsed },
+          message: 'Extraction failed'
         });
       }
     }
 
     const elapsed = Date.now() - started;
-    
+    const finalDetails = processingDetails.filter(Boolean);
+
     // If all images failed to process, return error
-    const allFailed = processingDetails.every(d => d.skipped === true);
-    if (allFailed && processingDetails.length > 0) {
-      return envelope({ 
+    const allFailed = finalDetails.every(d => d.skipped === true);
+    if (allFailed && finalDetails.length > 0) {
+      return envelope({
         statusCode: 500,
-        error: { 
-          code: 'ExtractionFailed', 
+        error: {
+          code: 'ExtractionFailed',
           message: 'All images failed to process',
-          details: processingDetails
-        }, 
+          details: finalDetails
+        },
         meta: { elapsedMs: elapsed, totalImages: images.length },
         message: 'All images failed to process'
       });
     }
-    
-    return envelope({ 
+
+    return envelope({
       statusCode: 200,
-      data: { items: allItems }, 
-      meta: { 
-        elapsedMs: elapsed, 
+      data: { items: allItems },
+      meta: {
+        elapsedMs: elapsed,
         totalImages: images.length,
         totalExtracted: allItems.length,
-        processingDetails 
+        processingDetails: finalDetails
       },
       message: 'Extraction successful'
     });
