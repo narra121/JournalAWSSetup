@@ -22,6 +22,7 @@ Globals:
         USER_PREFERENCES_TABLE: !If [CreateNewDataResources, !Ref UserPreferencesTable, '']
         SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
         DAILY_STATS_TABLE: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        ERROR_REPORTS_BUCKET: !If [CreateNewDataResources, !Ref ErrorReportsBucket, '']
         SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
         USER_POOL_ID: !Ref UserPool
         USER_POOL_CLIENT_ID: !Ref UserPoolClient
@@ -325,6 +326,30 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: cognito-idp.amazonaws.com
       SourceArn: !GetAtt UserPool.Arn
+
+  ErrorReportsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateNewDataResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ErrorReportsLifecycle
+            Status: Enabled
+            Prefix: errors/
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: GLACIER
+            ExpirationInDays: 365
+      Tags:
+        - Key: Project
+          Value: TradeQut
 
   ImagesBucket:
     Type: AWS::S3::Bucket
@@ -2117,6 +2142,42 @@ Resources:
         External:
           - "@aws-sdk/*"
 
+  ReportErrorFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/report-error/app.handler
+      Timeout: 10
+      MemorySize: 128
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !Sub "${ErrorReportsBucket.Arn}/errors/*"
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/errors/report
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/report-error/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
   # Custom Domain for API Gateway
   ApiDomainName:
     Type: AWS::ApiGatewayV2::DomainName
@@ -2295,6 +2356,9 @@ Outputs:
   FrontendBucketName:
     Condition: ShouldCreateFrontendInfra
     Value: !Ref FrontendBucket
+  ErrorReportsBucketName:
+    Condition: CreateNewDataResources
+    Value: !Ref ErrorReportsBucket
   CognitoDomain:
     Condition: HasGoogleAuth
     Value: !Sub "auth-${StageName}.tradequt.com"

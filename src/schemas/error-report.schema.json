@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "error-report.schema.json",
+  "type": "object",
+  "required": ["error", "timestamp", "url"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["message"],
+      "properties": {
+        "message": { "type": "string", "maxLength": 2000 },
+        "stack": { "type": ["string", "null"], "maxLength": 10000 },
+        "componentStack": { "type": ["string", "null"], "maxLength": 5000 },
+        "type": { "type": "string", "enum": ["react-render", "unhandled-error", "unhandled-rejection", "manual"] }
+      },
+      "additionalProperties": false
+    },
+    "timestamp": { "type": "string" },
+    "url": { "type": "string", "maxLength": 2000 },
+    "userId": { "type": ["string", "null"], "maxLength": 128 },
+    "browser": {
+      "type": "object",
+      "properties": {
+        "userAgent": { "type": "string", "maxLength": 500 },
+        "language": { "type": "string", "maxLength": 20 },
+        "platform": { "type": "string", "maxLength": 50 },
+        "screenWidth": { "type": "integer" },
+        "screenHeight": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "consoleLogs": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": { "type": "string" },
+          "message": { "type": "string", "maxLength": 1000 },
+          "timestamp": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "recentApiCalls": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "maxLength": 500 },
+          "method": { "type": "string" },
+          "status": { "type": "integer" },
+          "timestamp": { "type": "string" },
+          "requestBody": { "type": ["string", "null"], "maxLength": 2000 },
+          "responseBody": { "type": ["string", "null"], "maxLength": 2000 },
+          "durationMs": { "type": "integer" },
+          "curl": { "type": ["string", "null"], "maxLength": 5000 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "appVersion": { "type": ["string", "null"] },
+        "sessionDuration": { "type": "integer" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
