@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, UpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
-const ddbMock = mockClient(DynamoDBDocumentClient);
+vi.stubEnv('USER_POOL_ID', 'us-east-1_TestPool');
+
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
 
 const { handler } = await import('../app.ts');
@@ -48,9 +48,8 @@ function makeEvent(body: any, overrides: Partial<APIGatewayProxyEventV2> = {}): 
 // ─── Tests ──────────────────────────────────────────────────────
 
 beforeEach(() => {
-  ddbMock.reset();
   cognitoMock.reset();
-  cognitoMock.on(UpdateUserAttributesCommand).resolves({});
+  cognitoMock.on(AdminUpdateUserAttributesCommand).resolves({});
 });
 
 describe('update-user-profile handler', () => {
@@ -64,7 +63,7 @@ describe('update-user-profile handler', () => {
     expect(body.success).toBe(true);
     expect(body.message).toContain('updated');
 
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     const attrs = cognitoCalls[0].args[0].input.UserAttributes;
     expect(attrs).toEqual(
@@ -76,7 +75,7 @@ describe('update-user-profile handler', () => {
   });
 
   it('handles Cognito update failure gracefully', async () => {
-    cognitoMock.on(UpdateUserAttributesCommand).rejects(new Error('Cognito update failed'));
+    cognitoMock.on(AdminUpdateUserAttributesCommand).rejects(new Error('Cognito update failed'));
 
     const res = await handler(makeEvent({ name: 'New Name' }), {} as any, () => {}) as any;
 
@@ -126,7 +125,7 @@ describe('update-user-profile handler', () => {
     const res = await handler(makeEvent({ someOtherField: 'value' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(0);
   });
 
@@ -148,7 +147,7 @@ describe('update-user-profile handler', () => {
     const res = await handler(makeEvent({ name: 'Only Name' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     const attrs = cognitoCalls[0].args[0].input.UserAttributes;
     expect(attrs).toHaveLength(1);
@@ -160,7 +159,7 @@ describe('update-user-profile handler', () => {
     const res = await handler(makeEvent({ email: 'newemail@example.com' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     const attrs = cognitoCalls[0].args[0].input.UserAttributes;
     expect(attrs).toHaveLength(1);
@@ -175,7 +174,7 @@ describe('update-user-profile handler', () => {
     const res = await handler(makeEvent({ name: specialName }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     expect(cognitoCalls[0].args[0].input.UserAttributes![0].Value).toBe(specialName);
   });
@@ -195,7 +194,7 @@ describe('update-user-profile handler', () => {
 
     // Handler passes it to Cognito which would reject or accept
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     expect(cognitoCalls[0].args[0].input.UserAttributes![0].Value).toBe(longName);
   });
@@ -209,17 +208,17 @@ describe('update-user-profile handler', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     // No Cognito calls since no name or email
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(0);
   });
 
-  it('strips Bearer prefix from access token before sending to Cognito', async () => {
+  it('sends UserPoolId and Username (userId) to Cognito Admin API', async () => {
     const res = await handler(makeEvent({ name: 'Test' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
-    const cognitoCalls = cognitoMock.commandCalls(UpdateUserAttributesCommand);
+    const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
-    const accessToken = cognitoCalls[0].args[0].input.AccessToken;
-    expect(accessToken).not.toContain('Bearer');
+    expect(cognitoCalls[0].args[0].input.UserPoolId).toBe('us-east-1_TestPool');
+    expect(cognitoCalls[0].args[0].input.Username).toBe('user-1');
   });
 });

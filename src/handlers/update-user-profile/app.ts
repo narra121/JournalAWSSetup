@@ -1,20 +1,18 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { ddb } from '../../shared/dynamo';
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, UpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
 
+const USER_POOL_ID = process.env.USER_POOL_ID!;
 const cognito = new CognitoIdentityProviderClient({});
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
-  const accessToken = event.headers?.authorization || event.headers?.Authorization || '';
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
-  
+
   log.info('update-user-profile invoked');
-  
+
   if (!userId) {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
@@ -34,16 +32,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    // Update Cognito user attributes if name or email provided
-    if ((data.name || data.email) && accessToken) {
+    // Update Cognito user attributes using Admin API (works with userId/sub, no access token needed)
+    if (data.name || data.email) {
       const attributes = [];
       if (data.name) attributes.push({ Name: 'name', Value: data.name });
       if (data.email) attributes.push({ Name: 'email', Value: data.email });
 
       try {
-        await cognito.send(new UpdateUserAttributesCommand({
-          AccessToken: accessToken.replace('Bearer ', ''),
-          UserAttributes: attributes
+        await cognito.send(new AdminUpdateUserAttributesCommand({
+          UserPoolId: USER_POOL_ID,
+          Username: userId,
+          UserAttributes: attributes,
         }));
         log.info('cognito attributes updated');
       } catch (cognitoError: any) {
@@ -52,7 +51,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     log.info('profile updated');
-    
+
     return envelope({ statusCode: 200, message: 'Profile updated successfully' });
   } catch (error: any) {
     log.error('failed to update user profile', { error: error.message });

@@ -1521,8 +1521,8 @@ Resources:
         - Statement:
             Effect: Allow
             Action:
-              - cognito-idp:UpdateUserAttributes
-            Resource: '*'
+              - cognito-idp:AdminUpdateUserAttributes
+            Resource: !GetAtt UserPool.Arn
       Events:
         Api:
           Type: HttpApi
