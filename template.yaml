@@ -247,13 +247,6 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/auth-pre-signup/app.handler
-      Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - cognito-idp:ListUsers
-              - cognito-idp:AdminLinkProviderForUser
-            Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -297,6 +290,22 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: cognito-idp.amazonaws.com
       SourceArn: !GetAtt UserPool.Arn
+
+  # Standalone policy for PreSignUp — avoids circular dep (UserPool → PreSignUpFunction → Role → UserPool)
+  PreSignUpCognitoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: PreSignUpCognitoAccess
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+              - cognito-idp:AdminLinkProviderForUser
+            Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
+      Roles:
+        - !Ref PreSignUpFunctionRole
 
   PostConfirmationInvokePermission:
     Type: AWS::Lambda::Permission
