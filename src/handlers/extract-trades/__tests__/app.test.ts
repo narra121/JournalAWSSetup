@@ -130,7 +130,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('imageBase64 or images array required');
+    expect(body.message).toContain('imageBase64, images array, or textContent required');
   });
 
   it('returns 400 when more than 3 images provided', async () => {
