@@ -81,6 +81,77 @@ STRICT OUTPUT RULES:
 - If no valid trade rows can be extracted, output an empty array \`[]\`.`;
 };
 
+const buildTextExtractionPrompt = () => {
+  // Same date vars as buildGeminiPrompt
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const monthName = monthNames[now.getUTCMonth()];
+
+  return `ROLE:
+You are an expert financial data normalization model. Your ONLY goal is to parse the provided CSV/tabular trade data and output a precise structured JSON array matching the target schema. You must be completely accurate and not hallucinate any data.
+
+TARGET SCHEMA (array of objects):
+json
+[
+  {
+    "symbol": "STRING",
+    "side": "BUY|SELL",
+    "quantity": NUMBER,
+    "openDate": "YYYY-MM-DDTHH:MM:SS",
+    "closeDate": "YYYY-MM-DDTHH:MM:SS",
+    "entryPrice": NUMBER,
+    "exitPrice": NUMBER,
+    "stopLoss": NUMBER,
+    "takeProfit": NUMBER,
+    "pnl": NUMBER
+  }
+]
+
+COLUMN MAPPING INTELLIGENCE:
+You must intelligently map ANY column naming convention to the target schema. Common variations include:
+- symbol: Symbol, Ticker, Instrument, Asset, Pair, Market, Product
+- side: Side, Direction, Type, Action, Buy/Sell, Long/Short, B/S, Position
+- quantity: Quantity, Qty, Size, Lots, Volume, Amount, Contracts, Units
+- openDate: Open Date, Entry Date, Open Time, Date Opened, Entry Time, Open, Date
+- closeDate: Close Date, Exit Date, Close Time, Date Closed, Exit Time, Close
+- entryPrice: Entry Price, Open Price, Entry, Buy Price, Sell Price, Avg Entry
+- exitPrice: Exit Price, Close Price, Exit, Avg Exit, Close Avg
+- stopLoss: Stop Loss, SL, Stop, S/L
+- takeProfit: Take Profit, TP, Target, T/P
+- pnl: PnL, P&L, Profit, Profit/Loss, Net P/L, Realized PnL, Net Profit, Gain/Loss, Result
+
+FIELD INTERPRETATION:
+- symbol: Instrument ticker as shown. Uppercase. Do NOT invent.
+- side: MUST be BUY or SELL. Map: LONG/Long/long -> BUY, SHORT/Short/short -> SELL, Buy/buy -> BUY, Sell/sell -> SELL. If the data uses "Type" with values like "Market Buy" or "Limit Sell", extract Buy/Sell.
+- quantity: Numeric size/lot. Accept decimals.
+- openDate/closeDate: See DATE COMPLETION ALGORITHM below.
+- entryPrice/exitPrice: Prices as decimals. Strip currency symbols and commas.
+- stopLoss: Default to 0 if absent.
+- takeProfit: Default to 0 if absent.
+- pnl: Profit/Loss value. Preserve sign. Parentheses mean negative. Strip currency symbols.
+
+DATE COMPLETION ALGORITHM:
+Current date: ${monthName} ${parseInt(day)}, ${year}.
+1. Full date with year: use exactly as provided.
+2. Date without year: add ${year}.
+3. Date without time: add T00:00:00.
+4. Always output ISO 8601: YYYY-MM-DDTHH:MM:SS.
+5. Blank close date: copy from open date.
+
+MISSING / BLANK HANDLING:
+- Required: symbol, side, quantity, openDate. Skip row if any missing.
+- If entryPrice AND exitPrice are both blank, skip the row.
+- Other numeric fields: default to 0 if blank.
+
+STRICT OUTPUT RULES:
+- Return ONLY a valid JSON array. No text, no markdown fences.
+- Every object must include all 10 keys in exact order.
+- If no valid rows, output [].`;
+};
+
 // Configurable upstream request timeout (ms) for Gemini fetch; default 80000 (80s)
 const REQUEST_TIMEOUT_MS = (() => {
   const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '80000', 10);
@@ -110,10 +181,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!event.body) return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Missing body' }, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS }, message: 'Missing body' });
     
     let images: string[] = [];
+    let textContent: string | null = null;
+
     try {
       const parsed = JSON.parse(event.body);
-      // Support both single image (imageBase64) and multiple images (images array)
-      if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
+      if (parsed.textContent && typeof parsed.textContent === 'string') {
+        textContent = parsed.textContent;
+      } else if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
         images = [parsed.imageBase64];
       } else if (parsed.images && Array.isArray(parsed.images)) {
         images = parsed.images;
@@ -121,11 +195,106 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } catch {
       return envelope({ statusCode: 400, error: { code: 'BadJSON', message: 'Body must be JSON' }, message: 'Body must be JSON' });
     }
-    
-    if (images.length === 0) {
-      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'imageBase64 or images array required' }, message: 'imageBase64 or images array required' });
+
+    if (!textContent && images.length === 0) {
+      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'imageBase64, images array, or textContent required' }, message: 'imageBase64, images array, or textContent required' });
     }
     
+    // --- Text content extraction path ---
+    if (textContent) {
+      const MAX_TEXT_LENGTH = 1_000_000;
+      if (textContent.length > MAX_TEXT_LENGTH) {
+        return envelope({ statusCode: 400, error: { code: 'BadRequest', message: `Text content exceeds ${MAX_TEXT_LENGTH} character limit` }, message: 'Text content too large' });
+      }
+
+      const started = Date.now();
+      let apiKey: string;
+      try { apiKey = await getApiKey(); } catch (e: any) {
+        return envelope({ statusCode: 500, error: { code: 'ConfigError', message: e.message }, message: e.message });
+      }
+
+      console.log('ExtractTrades processing text content', { chars: textContent.length });
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+        const fetchResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.HTTP_REFERER || 'https://tradehaven.app',
+            'X-Title': 'Trading Journal'
+          },
+          body: JSON.stringify({
+            model: MODEL_ID,
+            messages: [
+              {
+                role: 'user',
+                content: buildTextExtractionPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent
+              }
+            ]
+          }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!fetchResponse.ok) {
+          const errorText = await fetchResponse.text();
+          throw new Error(`OpenRouter API error: ${fetchResponse.status} ${fetchResponse.statusText} - ${errorText}`);
+        }
+
+        const data = await fetchResponse.json();
+        const text = data.choices[0].message.content.trim();
+        const extracted = extractJsonArray(text);
+        const elapsed = Date.now() - started;
+
+        if (!extracted.json) {
+          return envelope({
+            statusCode: 200,
+            data: { items: [] },
+            error: { code: 'ExtractionFailed', message: 'Could not extract any trade data from the provided content. Ensure it contains structured trade information with columns like Symbol, Side, Price, Date, etc.' },
+            meta: { elapsedMs: elapsed, source: 'text', rawPreview: text.slice(0, 300) },
+            message: 'No trades could be extracted from the provided data'
+          });
+        }
+
+        const items = JSON.parse(extracted.json);
+
+        if (items.length === 0) {
+          return envelope({
+            statusCode: 200,
+            data: { items: [] },
+            error: { code: 'NoTradesFound', message: 'The data was processed but no valid trade rows were found. Check that your data includes required fields: Symbol, Side (Buy/Sell), Quantity, and Date.' },
+            meta: { elapsedMs: elapsed, source: 'text', parseSteps: extracted.steps },
+            message: 'No valid trade rows found in the data'
+          });
+        }
+
+        return envelope({
+          statusCode: 200,
+          data: { items },
+          meta: { elapsedMs: elapsed, source: 'text', totalExtracted: items.length, parseSteps: extracted.steps },
+          message: 'Extraction successful'
+        });
+      } catch (err: any) {
+        const elapsed = Date.now() - started;
+        const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
+        return envelope({
+          statusCode: 500,
+          error: {
+            code: isAbort ? 'OpenRouterTimeout' : 'OpenRouterError',
+            message: isAbort ? `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Try with less data.` : (err?.message || 'AI processing failed')
+          },
+          meta: { elapsedMs: elapsed },
+          message: 'Extraction failed'
+        });
+      }
+    }
+    // --- End text content path ---
+
     if (images.length > 3) {
       return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Maximum 3 images allowed' }, meta: { maxImages: 3 }, message: 'Maximum 3 images allowed' });
     }
