@@ -373,6 +373,13 @@ function computeGoalProgress(stats: any, filteredGoals: any[]) {
 function computeRuleCompliance(stats: any, rules: any[], allRules: any[] = []) {
   const rawCounts: Record<string, number> = stats.brokenRulesCounts || {};
 
+  console.log('[computeRuleCompliance]', JSON.stringify({
+    rawCountsKeys: Object.keys(rawCounts),
+    rulesCount: rules.length,
+    allRulesCount: allRules.length,
+    periodRuleIds: rules.map((r: any) => r.ruleId),
+  }));
+
   // Remap broken rule IDs to period-specific rule IDs when needed
   let brokenRulesCounts = rawCounts;
   if (allRules.length > 0 && rules.length > 0) {
@@ -414,6 +421,11 @@ function computeRuleCompliance(stats: any, rules: any[], allRules: any[] = []) {
       }
     }
   }
+
+  console.log('[computeRuleCompliance] remapped', JSON.stringify({
+    brokenRulesCountsKeys: Object.keys(brokenRulesCounts),
+    brokenRulesCounts,
+  }));
 
   const brokenRuleIds = new Set(
     Object.entries(brokenRulesCounts)
