@@ -8,6 +8,10 @@ vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
+vi.mock('../../../shared/subscription', () => ({
+  checkSubscription: vi.fn().mockResolvedValue(null),
+}));
+
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -62,6 +66,21 @@ beforeEach(() => {
 });
 
 describe('delete-rule handler', () => {
+  it('returns 403 when subscription is inactive', async () => {
+    const { checkSubscription } = await import('../../../shared/subscription');
+    vi.mocked(checkSubscription).mockResolvedValueOnce({
+      statusCode: 403,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
+    } as any);
+
+    const res = await handler(makeEvent('rule-abc'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(403);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
+  });
+
   // ── Success ─────────────────────────────────────────────────
 
   it('deletes a rule and returns 200 with the deleted rule data', async () => {

@@ -8,6 +8,7 @@ import { tradeCreateSchema } from '../../schemas';
 import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -19,6 +20,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   log.info('create-trade invoked', { hasAuth: !!userId, isBulk: false });
   if (!userId) { log.warn('unauthorized request'); return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized'); }
+
+  const subError = await checkSubscription(userId);
+  if (subError) return subError;
 
   if (!event.body) { log.warn('missing body'); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body'); }
   let data: any;

@@ -1,6 +1,8 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const MODEL_ID = 'google/gemini-2.0-flash-lite-001';
 
@@ -35,6 +37,13 @@ async function getApiKey(): Promise<string> {
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  const userId = getUserId(event);
+
+  if (userId) {
+    const subError = await checkSubscription(userId);
+    if (subError) return subError;
+  }
+
   try {
     if (!event.body) {
       return envelope({ 

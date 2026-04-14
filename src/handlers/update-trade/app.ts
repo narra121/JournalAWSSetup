@@ -7,6 +7,7 @@ import { errorFromException, envelope, errorResponse, ErrorCodes } from '../../s
 import { v4 as uuid } from 'uuid';
 import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
 import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -18,6 +19,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const log = makeLogger({ requestId, userId });
   try {
     if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+
+    const subError = await checkSubscription(userId);
+    if (subError) return subError;
+
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');

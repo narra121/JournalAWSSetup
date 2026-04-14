@@ -4,6 +4,7 @@ import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
@@ -19,6 +20,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
+
+  const subError = await checkSubscription(userId);
+  if (subError) return subError;
 
   if (!event.body) {
     log.warn('missing body');

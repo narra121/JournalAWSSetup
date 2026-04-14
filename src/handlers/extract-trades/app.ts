@@ -1,6 +1,8 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const MODEL_ID = 'gemini-2.5-flash';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -231,6 +233,12 @@ async function callGemini(
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
+    const userId = getUserId(event);
+    if (userId) {
+      const subError = await checkSubscription(userId);
+      if (subError) return subError;
+    }
+
     if (!event.body) return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Missing body' }, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS }, message: 'Missing body' });
     
     let images: string[] = [];

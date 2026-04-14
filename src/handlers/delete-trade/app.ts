@@ -4,6 +4,7 @@ import { GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { removeImagesForTrade } from '../../shared/images';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
@@ -11,6 +12,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     const userId = getUserId(event);
     if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+
+    const subError = await checkSubscription(userId);
+    if (subError) return subError;
+
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
 

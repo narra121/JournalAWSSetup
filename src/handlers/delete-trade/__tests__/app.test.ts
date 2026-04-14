@@ -12,6 +12,10 @@ const s3Mock = mockClient(S3Client);
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
 
+vi.mock('../../../shared/subscription', () => ({
+  checkSubscription: vi.fn().mockResolvedValue(null),
+}));
+
 // Must import handler after mocks and env stubs are set up
 const { handler } = await import('../app.ts');
 
@@ -70,6 +74,21 @@ beforeEach(() => {
 });
 
 describe('delete-trade handler', () => {
+  it('returns 403 when subscription is inactive', async () => {
+    const { checkSubscription } = await import('../../../shared/subscription');
+    vi.mocked(checkSubscription).mockResolvedValueOnce({
+      statusCode: 403,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
+    } as any);
+
+    const res = await handler(makeEvent('trade-1'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(403);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
+  });
+
   // ── Success ─────────────────────────────────────────────────
 
   it('deletes a trade and returns 200 with the deleted trade', async () => {

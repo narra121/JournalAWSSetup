@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { checkSubscription } from '../../shared/subscription';
 
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 
@@ -65,6 +66,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
+
+  const subError = await checkSubscription(userId);
+  if (subError) return subError;
 
   if (!event.body) {
     log.warn('missing body');
