@@ -151,17 +151,13 @@ describe('checkSubscription', () => {
     expect(body.errors[0].reason).toBe('subscription_ended');
   });
 
-  // ── 8. Returns 503 (fail closed) when DynamoDB throws an error ──
+  // ── 8. Returns null (fail open) when DynamoDB throws an error ──
 
-  it('returns 503 (fail closed) when DynamoDB throws an error', async () => {
+  it('returns null (fail open) when DynamoDB throws an error', async () => {
     ddbMock.on(GetCommand).rejects(new Error('DynamoDB service unavailable'));
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(503);
-    const body = JSON.parse(result!.body as string);
-    expect(body.success).toBe(false);
-    expect(body.message).toBe('Service temporarily unavailable');
+    expect(result).toBeNull();
   });
 
   // ── Additional edge cases ──────────────────────────────────────

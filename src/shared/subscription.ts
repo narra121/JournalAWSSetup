@@ -2,7 +2,10 @@ import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from './dynamo';
 import { envelope } from './validation';
 
-const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
+// Read at call time (not module load) so tests can stub it
+function getSubscriptionsTable(): string {
+  return process.env.SUBSCRIPTIONS_TABLE || '';
+}
 
 export interface SubscriptionRecord {
   userId: string;
@@ -36,8 +39,14 @@ export type SubscriptionDenialReason =
  */
 export async function checkSubscription(userId: string): Promise<ReturnType<typeof envelope> | null> {
   try {
+    const tableName = getSubscriptionsTable();
+    if (!tableName) {
+      console.error('SUBSCRIPTIONS_TABLE env var is not set');
+      return null; // Fail open if misconfigured — don't lock out users
+    }
+
     const result = await ddb.send(new GetCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
+      TableName: tableName,
       Key: { userId },
     }));
 
@@ -106,14 +115,9 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
     return subscriptionRequiredResponse(mapped.reason, mapped.message);
   } catch (error) {
     console.error('Error checking subscription:', error);
-    return envelope({
-      statusCode: 503,
-      error: {
-        code: 'SUBSCRIPTION_CHECK_FAILED',
-        message: 'Unable to verify subscription. Please try again.',
-      },
-      message: 'Service temporarily unavailable',
-    });
+    // Fail open on transient errors to avoid locking users out of their data.
+    // The subscription status is still enforced on the next successful check.
+    return null;
   }
 }
 
