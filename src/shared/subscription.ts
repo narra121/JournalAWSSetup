@@ -42,7 +42,7 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
     const tableName = getSubscriptionsTable();
     if (!tableName) {
       console.error('SUBSCRIPTIONS_TABLE env var is not set');
-      return null; // Fail open if misconfigured — don't lock out users
+      return subscriptionErrorResponse();
     }
 
     const result = await ddb.send(new GetCommand({
@@ -115,10 +115,19 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
     return subscriptionRequiredResponse(mapped.reason, mapped.message);
   } catch (error) {
     console.error('Error checking subscription:', error);
-    // Fail open on transient errors to avoid locking users out of their data.
-    // The subscription status is still enforced on the next successful check.
-    return null;
+    return subscriptionErrorResponse();
   }
+}
+
+function subscriptionErrorResponse() {
+  return envelope({
+    statusCode: 503,
+    error: {
+      code: 'SUBSCRIPTION_CHECK_FAILED',
+      message: 'Unable to verify subscription. Please try again.',
+    },
+    message: 'Service temporarily unavailable',
+  });
 }
 
 function subscriptionRequiredResponse(reason: SubscriptionDenialReason, message: string) {
