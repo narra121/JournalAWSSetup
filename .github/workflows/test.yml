@@ -15,8 +15,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.12"
-      - name: Install dependencies (fresh lockfile for Linux native deps)
-        run: rm -f bun.lock && bun install
+      - name: Install dependencies (fresh for Linux native deps)
+        run: rm -rf node_modules bun.lock && bun install
       - run: bun run test
       - run: bun run test:coverage
       - name: Upload coverage
