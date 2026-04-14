@@ -12,7 +12,7 @@ vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
 vi.stubEnv('RULES_TABLE', 'test-rules');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('GOALS_TABLE', 'test-goals');
-vi.stubEnv('OPENROUTER_API_KEY_PARAM', '/test/openrouter-key');
+vi.stubEnv('GEMINI_API_KEY_PARAM', '/test/gemini-key');
 vi.stubEnv('GEMINI_REQUEST_TIMEOUT_MS', '5000');
 vi.stubEnv('SUBSCRIPTIONS_TABLE', 'test-subscriptions');
 
@@ -485,7 +485,7 @@ describe('JSON prototype pollution', () => {
   it('does not pollute prototype via __proto__ in enhance-text body', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ choices: [{ message: { content: 'enhanced' } }] }),
+      json: async () => ({ candidates: [{ content: { parts: [{ text: 'enhanced' }] } }] }),
     });
 
     const maliciousBody = '{"text":"test text","__proto__":{"isAdmin":true}}';

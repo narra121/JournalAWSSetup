@@ -4,7 +4,7 @@ import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Stub env before importing handler
-vi.stubEnv('OPENROUTER_API_KEY_PARAM', '/test/openrouter-key');
+vi.stubEnv('GEMINI_API_KEY_PARAM', '/test/gemini-key');
 vi.stubEnv('GEMINI_REQUEST_TIMEOUT_MS', '5000');
 
 // Mock SSM
@@ -53,7 +53,7 @@ function mockFetchSuccess(enhancedText: string) {
   fetchMock.mockResolvedValueOnce({
     ok: true,
     json: async () => ({
-      choices: [{ message: { content: enhancedText } }],
+      candidates: [{ content: { parts: [{ text: enhancedText }] } }],
     }),
   });
 }
@@ -142,7 +142,7 @@ describe('enhance-text handler', () => {
 
   // ── API errors ──────────────────────────────────────────────
 
-  it('returns 502 when OpenRouter API returns non-OK status', async () => {
+  it('returns 502 when Gemini API returns non-OK status', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 429,
@@ -161,7 +161,7 @@ describe('enhance-text handler', () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: '' } }],
+        candidates: [{ content: { parts: [{ text: '' }] } }],
       }),
     });
 
@@ -239,7 +239,7 @@ describe('enhance-text handler', () => {
     // Verify the text was forwarded to the API (check fetch was called with the text)
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(fetchCallBody.messages[1].content).toBe(xssText);
+    expect(fetchCallBody.contents[0].parts[0].text).toContain(xssText);
   });
 
   it('handles input with HTML event handlers safely', async () => {
@@ -256,7 +256,7 @@ describe('enhance-text handler', () => {
 
   // ── OpenRouter API returns malformed JSON ──────────────────
 
-  it('returns 500 when OpenRouter API returns malformed JSON', async () => {
+  it('returns 500 when Gemini API returns malformed JSON', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); },
@@ -269,9 +269,9 @@ describe('enhance-text handler', () => {
     expect(body.success).toBe(false);
   });
 
-  // ── OpenRouter API returns empty/null response structures ──
+  // ── Gemini API returns empty/null response structures ──
 
-  it('returns 502 when AI response has no choices array', async () => {
+  it('returns 502 when AI response has no candidates array', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({}),
@@ -284,10 +284,10 @@ describe('enhance-text handler', () => {
     expect(body.success).toBe(false);
   });
 
-  it('returns 502 when AI response has empty choices array', async () => {
+  it('returns 502 when AI response has empty candidates array', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ choices: [] }),
+      json: async () => ({ candidates: [] }),
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
@@ -297,10 +297,10 @@ describe('enhance-text handler', () => {
     expect(body.success).toBe(false);
   });
 
-  it('returns 502 when AI response choice has null message', async () => {
+  it('returns 502 when AI response candidate has null content', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ choices: [{ message: null }] }),
+      json: async () => ({ candidates: [{ content: null }] }),
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
@@ -314,7 +314,7 @@ describe('enhance-text handler', () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: '   \n\t  ' } }],
+        candidates: [{ content: { parts: [{ text: '   \n\t  ' }] } }],
       }),
     });
 
@@ -372,10 +372,10 @@ describe('enhance-text handler', () => {
     ) as any;
 
     expect(res.statusCode).toBe(200);
-    // Verify the system prompt includes motivational quote instruction
+    // Verify the prompt includes motivational quote instruction
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    const systemPrompt = fetchCallBody.messages[0].content;
-    expect(systemPrompt).toContain('motivational quote');
+    const prompt = fetchCallBody.contents[0].parts[0].text;
+    expect(prompt).toContain('motivational quote');
   });
 
   it('does not include motivational prompt when isTradingNotes is false', async () => {
@@ -388,8 +388,8 @@ describe('enhance-text handler', () => {
 
     expect(res.statusCode).toBe(200);
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    const systemPrompt = fetchCallBody.messages[0].content;
-    expect(systemPrompt).not.toContain('motivational quote');
+    const prompt = fetchCallBody.contents[0].parts[0].text;
+    expect(prompt).not.toContain('motivational quote');
   });
 
   // ── Error response does not leak API keys ──────────────────

@@ -4,35 +4,39 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 
-const MODEL_ID = 'google/gemini-2.0-flash-lite-001';
+const MODEL_ID = 'gemini-2.5-flash';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 const getSystemPrompt = (isTradingNotes: boolean) => {
   const basePrompt = `You are an expert trading journal assistant. Your task is to enhance the following text (trade note or image description). Improve grammar, clarity, and flow, but CRITICALLY, you must preserve the user's first-person narrative and the original emotional state (whether frustration, excitement, calm, or regret). Do not sanitize the emotion or make it sound overly formal. The goal is for the user to read this later and vividly recall their mindset and feelings at that moment.`;
-  
-  const motivationalPrompt = isTradingNotes 
+
+  const motivationalPrompt = isTradingNotes
     ? `\n\nAfter enhancing the text, add a double line break and append ONE short, powerful, and contextually relevant motivational quote (e.g., on discipline, patience, resilience, or humility).`
     : '';
-  
+
   return basePrompt + motivationalPrompt + `\n\nReturn ONLY the enhanced text${isTradingNotes ? ' followed by the quote' : ''}. No conversational filler.`;
 };
 
-// Configurable upstream request timeout (ms) for Gemini fetch; default 30000 (30s)
+// Configurable upstream request timeout (ms); default 30000 (30s)
 const REQUEST_TIMEOUT_MS = (() => {
   const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '30000', 10);
   return Number.isFinite(v) && v > 0 ? v : 30000;
 })();
 
 let cachedApiKey: string | undefined;
+let apiKeyExpiry = 0;
+const API_KEY_CACHE_TTL = 3600000; // 1 hour
 const ssm = new SSMClient({});
 
 async function getApiKey(): Promise<string> {
-  if (cachedApiKey) return cachedApiKey;
-  const paramName = process.env.OPENROUTER_API_KEY_PARAM || process.env.GEMINI_API_KEY_PARAM;
-  if (!paramName) throw new Error('Missing OPENROUTER_API_KEY_PARAM or GEMINI_API_KEY_PARAM');
+  if (cachedApiKey && Date.now() < apiKeyExpiry) return cachedApiKey;
+  const paramName = process.env.GEMINI_API_KEY_PARAM;
+  if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
   const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   const v = res.Parameter?.Value;
-  if (!v) throw new Error('OpenRouter API key parameter empty');
+  if (!v) throw new Error('Gemini API key parameter empty');
   cachedApiKey = v;
+  apiKeyExpiry = Date.now() + API_KEY_CACHE_TTL;
   return v;
 }
 
@@ -78,65 +82,58 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
+      const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent`;
+      const response = await fetch(url, {
+        method: 'POST',
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://trading-journal.com", // Placeholder
-          "X-Title": "Trading Journal",
-          "Content-Type": "application/json"
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
         },
         body: JSON.stringify({
-          "model": MODEL_ID,
-          "messages": [
-            {
-              "role": "system",
-              "content": getSystemPrompt(isTradingNotes)
-            },
-            {
-              "role": "user",
-              "content": text
-            }
-          ]
+          contents: [{
+            role: 'user',
+            parts: [{ text: `${getSystemPrompt(isTradingNotes)}\n\n${text}` }],
+          }],
+          generationConfig: { temperature: 0.7 },
         }),
-        signal: controller.signal
+        signal: controller.signal,
       });
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errText = await response.text();
-        console.error('OpenRouter API error:', response.status, errText);
-        return envelope({ 
-          statusCode: 502, 
-          error: { code: 'BadGateway', message: `OpenRouter API error: ${response.status}` }, 
-          message: 'Failed to enhance text' 
+        console.error('Gemini API error:', response.status, errText);
+        return envelope({
+          statusCode: 502,
+          error: { code: 'BadGateway', message: `Gemini API error: ${response.status}` },
+          message: 'Failed to enhance text',
         });
       }
 
       const data = await response.json();
-      const enhancedText = data.choices?.[0]?.message?.content?.trim();
+      const enhancedText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
       if (!enhancedText) {
-        return envelope({ 
-          statusCode: 502, 
-          error: { code: 'BadGateway', message: 'Empty response from AI model' }, 
-          message: 'Failed to enhance text' 
+        return envelope({
+          statusCode: 502,
+          error: { code: 'BadGateway', message: 'Empty response from AI model' },
+          message: 'Failed to enhance text',
         });
       }
 
       return envelope({
         statusCode: 200,
-        data: { enhancedText }
+        data: { enhancedText },
       });
 
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error.name === 'AbortError') {
-        return envelope({ 
-          statusCode: 504, 
-          error: { code: 'GatewayTimeout', message: 'AI request timed out' }, 
-          message: 'Request timed out' 
+        return envelope({
+          statusCode: 504,
+          error: { code: 'GatewayTimeout', message: 'AI request timed out' },
+          message: 'Request timed out',
         });
       }
       throw error;
