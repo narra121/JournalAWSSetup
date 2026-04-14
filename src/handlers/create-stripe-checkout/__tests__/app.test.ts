@@ -235,19 +235,22 @@ describe('create-stripe-checkout handler', () => {
     expect(body.message).toContain('Failed to create checkout session');
   });
 
-  // ── Blocked statuses ───────────────────────────────────────
+  // ── Allowed statuses (can create new checkout) ─────────────
 
-  it('returns 400 when user has trialing subscription', async () => {
+  it('allows checkout when user has trial subscription', async () => {
     ddbMock.on(GetCommand).resolves({
-      Item: { userId: 'user-1', status: 'trialing' },
+      Item: { userId: 'user-1', status: 'trial' },
     });
+    ddbMock.on(PutCommand).resolves({});
 
     const res = await handler(makeEvent({ planId: 'price_123' })) as any;
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.message).toContain('trialing');
+    expect(body.data.checkoutUrl).toBeDefined();
   });
+
+  // ── Blocked statuses ───────────────────────────────────────
 
   it('returns 400 when user has past_due subscription', async () => {
     ddbMock.on(GetCommand).resolves({
