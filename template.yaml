@@ -604,6 +604,8 @@ Resources:
       Handler: src/handlers/create-trade/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - Statement:
@@ -676,6 +678,8 @@ Resources:
       Handler: src/handlers/update-trade/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - Statement:
@@ -717,6 +721,8 @@ Resources:
         Variables:
           IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - Statement:
@@ -759,6 +765,8 @@ Resources:
         Variables:
           IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
         - Statement:
@@ -1223,6 +1231,8 @@ Resources:
       Description: Extract structured trades from an image using Gemini vision model
       Timeout: 900 # 15 minutes — max Lambda timeout for long-running Gemini processing
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - Statement:
             Effect: Allow
             Action:
@@ -1265,6 +1275,8 @@ Resources:
       Description: Enhance text (notes, descriptions) using Gemini model
       Timeout: 60
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - Statement:
             Effect: Allow
             Action:
@@ -1339,6 +1351,8 @@ Resources:
           ACCOUNTS_TABLE: !Ref AccountsTable
           GOALS_TABLE: !Ref GoalsTable
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
@@ -1369,6 +1383,8 @@ Resources:
       Handler: src/handlers/update-account/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
       Events:
@@ -1397,6 +1413,8 @@ Resources:
       Handler: src/handlers/update-account-status/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
       Events:
@@ -1431,6 +1449,8 @@ Resources:
           GOALS_TABLE: !Ref GoalsTable
           RULES_TABLE: !Ref RulesTable
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
@@ -1467,6 +1487,8 @@ Resources:
       CodeUri: .
       Handler: src/handlers/create-goal/app.handler
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref GoalsTable
       Events:
@@ -1495,6 +1517,8 @@ Resources:
       Handler: src/handlers/update-goal/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref GoalsTable
       Events:
@@ -1592,6 +1616,8 @@ Resources:
       Handler: src/handlers/create-rule/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref RulesTable
       Events:
@@ -1620,6 +1646,8 @@ Resources:
       Handler: src/handlers/update-rule/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref RulesTable
       Events:
@@ -1648,6 +1676,8 @@ Resources:
       Handler: src/handlers/toggle-rule/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref RulesTable
       Events:
@@ -1676,6 +1706,8 @@ Resources:
       Handler: src/handlers/delete-rule/app.handler
 
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref RulesTable
         - DynamoDBReadPolicy:
@@ -1890,6 +1922,8 @@ Resources:
         Variables:
           SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
         - DynamoDBCrudPolicy:
             TableName: !Ref SavedOptionsTable
       Events:
