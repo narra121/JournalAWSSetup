@@ -288,15 +288,15 @@ describe('manage-stripe-subscription handler', () => {
 
   // ── 10. Returns 404 when no subscription found ─────────────────
 
-  it('GET returns 404 when no subscription found', async () => {
+  it('GET returns 200 with null subscription when no record found', async () => {
     ddbMock.on(GetCommand).resolves({ Item: undefined });
 
     const res = await handler(makeEvent('GET')) as any;
 
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
-    expect(body.message).toContain('No subscription found');
+    expect(body.data.subscription).toBeNull();
+    expect(body.data.status).toBe('none');
   });
 
   it('PUT returns 404 when no subscription found', async () => {
