@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';

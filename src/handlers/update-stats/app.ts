@@ -31,12 +31,20 @@ async function queryTradesForDay(userId: string, accountId: string, date: string
   const keys = gsiItems.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
   const fullItems: any[] = [];
   for (let i = 0; i < keys.length; i += 100) {
-    const chunk = keys.slice(i, i + 100);
-    const batchResult = await ddb.send(new BatchGetCommand({
-      RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
-    }));
-    if (batchResult.Responses?.[TRADES_TABLE]) {
-      fullItems.push(...batchResult.Responses[TRADES_TABLE]);
+    let chunk = keys.slice(i, i + 100);
+    for (let attempt = 0; attempt < 3 && chunk.length > 0; attempt++) {
+      const batchResult = await ddb.send(new BatchGetCommand({
+        RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
+      }));
+      if (batchResult.Responses?.[TRADES_TABLE]) {
+        fullItems.push(...batchResult.Responses[TRADES_TABLE]);
+      }
+      const unprocessed = batchResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys;
+      if (!unprocessed || unprocessed.length === 0) break;
+      chunk = unprocessed as any[];
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
+      }
     }
   }
 
@@ -136,6 +144,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     const affectedDays = new Map<string, Set<string>>(); // "userId#accountId" → Set<date>
     const balanceDeltas = new Map<string, number>(); // "userId#accountId" → pnlDelta
     const symbolsByUser = new Map<string, Set<string>>(); // userId → Set<symbol>
+    const tupleToEventIds = new Map<string, Set<string>>(); // "userId#accountId#date" → Set<eventID>
 
     for (const record of event.Records) {
       if (!record.dynamodb) continue;
@@ -165,12 +174,16 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
 
       // --- Track affected days for DailyStats rebuild ---
+      const eventId = record.eventID || '';
       if (isValidAcct(newAcct)) {
         const date = extractDate(newImage!.openDate);
         if (date) {
           const key = `${userId}#${newAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
           affectedDays.get(key)!.add(date);
+          const tupleKey = `${userId}#${newAcct}#${date}`;
+          if (!tupleToEventIds.has(tupleKey)) tupleToEventIds.set(tupleKey, new Set());
+          if (eventId) tupleToEventIds.get(tupleKey)!.add(eventId);
         }
       }
       if (isValidAcct(oldAcct)) {
@@ -179,6 +192,9 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
           const key = `${userId}#${oldAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
           affectedDays.get(key)!.add(date);
+          const tupleKey = `${userId}#${oldAcct}#${date}`;
+          if (!tupleToEventIds.has(tupleKey)) tupleToEventIds.set(tupleKey, new Set());
+          if (eventId) tupleToEventIds.get(tupleKey)!.add(eventId);
         }
       }
 
@@ -219,26 +235,46 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     }
 
     // 2. Rebuild only the affected daily records in DailyStatsTable
+    const tupleFailures: string[] = [];
     for (const [userAccKey, dates] of affectedDays) {
       const [userId, accountId] = userAccKey.split('#', 2);
 
       for (const date of dates) {
-        const trades = await queryTradesForDay(userId, accountId, date);
+        try {
+          const trades = await queryTradesForDay(userId, accountId, date);
 
-        if (trades.length === 0) {
-          await ddb.send(new DeleteCommand({
-            TableName: DAILY_STATS_TABLE,
-            Key: { userId, sk: `${accountId}#${date}` },
-          }));
-        } else {
-          const record = computeDailyRecord(userId, accountId, date, trades);
-          if (record) {
-            await ddb.send(new PutCommand({
+          if (trades.length === 0) {
+            await ddb.send(new DeleteCommand({
               TableName: DAILY_STATS_TABLE,
-              Item: record,
+              Key: { userId, sk: `${accountId}#${date}` },
             }));
+          } else {
+            const record = computeDailyRecord(userId, accountId, date, trades);
+            if (record) {
+              await ddb.send(new PutCommand({
+                TableName: DAILY_STATS_TABLE,
+                Item: record,
+              }));
+            }
           }
+        } catch (tupleError) {
+          console.error(`Failed processing tuple ${userId}/${accountId}/${date}`, tupleError);
+          tupleFailures.push(`${userId}#${accountId}#${date}`);
         }
+      }
+    }
+
+    // Mark failed tuples as batch item failures
+    if (tupleFailures.length > 0) {
+      const failedEventIds = new Set<string>();
+      for (const tupleKey of tupleFailures) {
+        const eventIds = tupleToEventIds.get(tupleKey);
+        if (eventIds) {
+          for (const eid of eventIds) failedEventIds.add(eid);
+        }
+      }
+      for (const eid of failedEventIds) {
+        failures.push({ itemIdentifier: eid });
       }
     }
 

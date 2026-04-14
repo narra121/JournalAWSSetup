@@ -101,7 +101,7 @@ export class PnlSequenceAggregator implements AggregationProcessor {
   private allPnls: number[] = [];
   private allEquityPoints: Array<{ pnl: number; symbol: string; dateTime: string }> = [];
   private dailyPnlMap: Map<string, number> = new Map();
-  private recordDates: string[] = [];
+  private recordDates: Set<string> = new Set();
 
   merge(record: Record<string, any>): void {
     const seq = record.pnlSequence || [];
@@ -112,7 +112,7 @@ export class PnlSequenceAggregator implements AggregationProcessor {
     const date = record.date as string;
     if (date) {
       this.dailyPnlMap.set(date, (this.dailyPnlMap.get(date) || 0) + (record.totalPnl || 0));
-      if (!this.recordDates.includes(date)) this.recordDates.push(date);
+      this.recordDates.add(date);
     }
   }
 
@@ -157,6 +157,6 @@ export class PnlSequenceAggregator implements AggregationProcessor {
     this.allPnls = [];
     this.allEquityPoints = [];
     this.dailyPnlMap = new Map();
-    this.recordDates = [];
+    this.recordDates = new Set();
   }
 }

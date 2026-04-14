@@ -80,7 +80,7 @@ export class CoreStatsAggregator implements AggregationProcessor {
       totalPnl,
       totalVolume: this.totalVolume,
       winRate: this.totalTrades > 0 ? (this.wins / this.totalTrades) * 100 : 0,
-      profitFactor: this.grossLoss > 0 ? this.grossProfit / this.grossLoss : (this.grossProfit > 0 ? null : 0),
+      profitFactor: this.grossLoss > 0 ? this.grossProfit / this.grossLoss : (this.grossProfit > 0 ? 999.99 : 0),
       avgWin: this.wins > 0 ? this.grossProfit / this.wins : 0,
       avgLoss: this.losses > 0 ? this.grossLoss / this.losses : 0,
       expectancy: this.totalTrades > 0 ? totalPnl / this.totalTrades : 0,

@@ -87,17 +87,23 @@ export const handler = async (
       const status = existing.Item.status;
 
       // If there's already a pending checkout, return the existing session URL
+      // But only if it's less than 23 hours old (Stripe sessions expire after 24h)
       if (status === 'created' && existing.Item.checkoutUrl) {
-        log.info('returning existing pending checkout session');
-        return envelope({
-          statusCode: 200,
-          data: {
-            checkoutSessionId: existing.Item.checkoutSessionId,
-            checkoutUrl: existing.Item.checkoutUrl,
-            status: 'created',
-          },
-          message: 'Using existing pending checkout session',
-        });
+        const createdAt = existing.Item.createdAt;
+        const ageMs = createdAt ? Date.now() - new Date(createdAt).getTime() : Infinity;
+        if (ageMs < 23 * 60 * 60 * 1000) {
+          log.info('returning existing pending checkout session');
+          return envelope({
+            statusCode: 200,
+            data: {
+              checkoutSessionId: existing.Item.checkoutSessionId,
+              checkoutUrl: existing.Item.checkoutUrl,
+              status: 'created',
+            },
+            message: 'Using existing pending checkout session',
+          });
+        }
+        log.info('existing checkout session is stale, creating new one');
       }
 
       // Block if subscription is already active or pending cancellation
@@ -115,6 +121,11 @@ export const handler = async (
     // Initialize Stripe
     const stripeClient = await getStripeInstance();
 
+    // Whitelist allowed origins for checkout URLs
+    const ALLOWED_ORIGINS = ['https://tradequt.com', 'https://www.tradequt.com', 'http://localhost:3000'];
+    const requestOrigin = event.headers?.origin;
+    const origin = requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://tradequt.com';
+
     // Create Stripe Checkout Session
     const session = await stripeClient.checkout.sessions.create({
       mode: 'subscription',
@@ -124,12 +135,18 @@ export const handler = async (
           quantity: 1,
         },
       ],
-      success_url: successUrl || `${event.headers?.origin || 'https://tradequt.com'}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: cancelUrl || `${event.headers?.origin || 'https://tradequt.com'}/payment/cancel`,
+      success_url: successUrl || `${origin}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: cancelUrl || `${origin}/payment/cancel`,
       client_reference_id: userId,
       metadata: {
         userId,
         planId,
+      },
+      subscription_data: {
+        metadata: {
+          userId,
+          planId,
+        },
       },
     });
 

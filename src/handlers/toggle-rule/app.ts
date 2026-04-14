@@ -28,6 +28,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing ruleId');
   }
 
+  // Parse body if provided (for explicit completed value)
+  let body: any = null;
+  if (event.body) {
+    try {
+      body = JSON.parse(event.body);
+    } catch (e) {
+      // Ignore parse errors — body is optional for toggle
+    }
+  }
+
   try {
     // Get current rule state
     const existing = await ddb.send(new GetCommand({
@@ -41,7 +51,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const now = new Date().toISOString();
-    const newCompleted = !existing.Item.completed;
+    const newCompleted = body && typeof body.completed === 'boolean' ? body.completed : !existing.Item.completed;
     
     const result = await ddb.send(new UpdateCommand({
       TableName: RULES_TABLE,

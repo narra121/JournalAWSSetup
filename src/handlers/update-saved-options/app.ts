@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
@@ -61,16 +61,23 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
+    // Read existing item first to merge
+    const existingResult = await ddb.send(new GetCommand({
+      TableName: SAVED_OPTIONS_TABLE,
+      Key: { userId }
+    }));
+    const existing = existingResult.Item || {};
+
     const options = {
       userId,
-      symbols: data.symbols || [],
-      strategies: data.strategies || [],
-      sessions: data.sessions || [],
-      marketConditions: data.marketConditions || [],
-      newsEvents: data.newsEvents || [],
-      mistakes: data.mistakes || [],
-      lessons: data.lessons || [],
-      timeframes: data.timeframes || [],
+      symbols: data.symbols ?? existing.symbols ?? [],
+      strategies: data.strategies ?? existing.strategies ?? [],
+      sessions: data.sessions ?? existing.sessions ?? [],
+      marketConditions: data.marketConditions ?? existing.marketConditions ?? [],
+      newsEvents: data.newsEvents ?? existing.newsEvents ?? [],
+      mistakes: data.mistakes ?? existing.mistakes ?? [],
+      lessons: data.lessons ?? existing.lessons ?? [],
+      timeframes: data.timeframes ?? existing.timeframes ?? [],
       updatedAt: new Date().toISOString()
     };
 
@@ -80,7 +87,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     log.info('saved options updated');
-    
+
     return envelope({ statusCode: 200, data: options, message: 'Saved options updated' });
   } catch (error: any) {
     log.error('failed to update saved options', { error: error.message });

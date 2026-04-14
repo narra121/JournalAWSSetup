@@ -64,6 +64,14 @@ async function handleCheckoutSessionCompleted(
 
   // Retrieve full subscription from Stripe for period details
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+  // Safety net: ensure subscription has userId in metadata for future webhook events
+  if (!subscription.metadata?.userId) {
+    await stripe.subscriptions.update(subscriptionId, {
+      metadata: { userId },
+    });
+  }
+
   const priceId = subscription.items.data[0]?.price.id;
   const currentStart = unixToISO(subscription.current_period_start);
   const currentEnd = unixToISO(subscription.current_period_end);
@@ -74,14 +82,13 @@ async function handleCheckoutSessionCompleted(
       TableName: SUBSCRIPTIONS_TABLE,
       Key: { userId },
       UpdateExpression:
-        'SET stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, paidCount = :paidCount, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, updatedAt = :updatedAt',
+        'SET stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, updatedAt = :updatedAt',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
         ':subId': subscriptionId,
         ':custId': customerId,
         ':status': 'active',
         ':planId': priceId,
-        ':paidCount': 1,
         ':currentStart': currentStart,
         ':currentEnd': currentEnd,
         ':chargeAt': currentEnd,
@@ -105,6 +112,12 @@ async function handleInvoicePaid(
   const subscriptionId = invoice.subscription as string;
   if (!subscriptionId) {
     console.warn('invoice.paid: no subscription on invoice');
+    return;
+  }
+
+  // Skip initial subscription creation invoice — handleCheckoutSessionCompleted handles that
+  if (invoice.billing_reason === 'subscription_create') {
+    console.log('invoice.paid: skipping subscription_create invoice (handled by checkout)', { subscriptionId });
     return;
   }
 
@@ -226,11 +239,11 @@ async function handleSubscriptionUpdated(
   values[':currentEnd'] = unixToISO(subscription.current_period_end);
   values[':chargeAt'] = unixToISO(subscription.current_period_end);
 
-  // If no status was set above (no cancel/pause), keep status as active
+  // If no status was set above (no cancel/pause), use subscription.status from Stripe
   if (!values[':status']) {
     updates.push('#status = :status');
     names['#status'] = 'status';
-    values[':status'] = 'active';
+    values[':status'] = subscription.status === 'active' ? 'active' : subscription.status;
   }
 
   await ddb.send(
@@ -295,8 +308,10 @@ export const handler = async (
       path: event.path,
     });
 
-    // Get raw body for signature verification
-    const rawBody = event.body || '';
+    // Get raw body for signature verification (handle API Gateway base64 encoding)
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || '', 'base64').toString('utf-8')
+      : (event.body || '');
     const signature =
       event.headers['stripe-signature'] || event.headers['Stripe-Signature'] || '';
 

@@ -303,10 +303,13 @@ async function queryRulesByPeriod(userId: string, periodKey: string): Promise<an
  * If accountId='ALL': group goals by goalType, sum targets across accounts.
  * If specific account: filter goals where accountId matches and period matches.
  */
+const PERCENTAGE_GOAL_TYPES = new Set(['winRate', 'maxDrawdown']);
+
 function filterGoalsByPeriodAndAccount(goals: any[], period: string, accountId: string): any[] {
   if (accountId === 'ALL') {
-    // Group goals by goalType, sum targets across all accounts for this period
+    // Group goals by goalType; average percentage types, sum absolute types
     const grouped: Record<string, any> = {};
+    const counts: Record<string, number> = {};
 
     for (const g of goals) {
       if (g.period !== period) continue;
@@ -314,8 +317,17 @@ function filterGoalsByPeriodAndAccount(goals: any[], period: string, accountId: 
       const type = g.goalType;
       if (!grouped[type]) {
         grouped[type] = { ...g, target: 0 };
+        counts[type] = 0;
       }
       grouped[type].target += (g.target || 0);
+      counts[type]++;
+    }
+
+    // Average percentage-based types instead of leaving them summed
+    for (const type of Object.keys(grouped)) {
+      if (PERCENTAGE_GOAL_TYPES.has(type) && counts[type] > 1) {
+        grouped[type].target = grouped[type].target / counts[type];
+      }
     }
 
     return Object.values(grouped);
@@ -330,7 +342,12 @@ function filterGoalsByPeriodAndAccount(goals: any[], period: string, accountId: 
  * isInverse: true means lower is better (e.g. maxDrawdown, tradeCount limit).
  */
 function computeProgress(current: number, target: number, isInverse: boolean) {
-  const progress = target > 0 ? Math.min((current / target) * 100, 100) : 0;
+  let progress: number;
+  if (isInverse) {
+    progress = target > 0 ? Math.max(0, Math.min(100, (1 - Math.max(0, current - target) / target) * 100)) : 0;
+  } else {
+    progress = target > 0 ? Math.min((current / target) * 100, 100) : 0;
+  }
   const achieved = isInverse ? current <= target : current >= target;
   return {
     current: Math.round(current * 100) / 100,
@@ -373,13 +390,6 @@ function computeGoalProgress(stats: any, filteredGoals: any[]) {
 function computeRuleCompliance(stats: any, rules: any[], allRules: any[] = []) {
   const rawCounts: Record<string, number> = stats.brokenRulesCounts || {};
 
-  console.log('[computeRuleCompliance]', JSON.stringify({
-    rawCountsKeys: Object.keys(rawCounts),
-    rulesCount: rules.length,
-    allRulesCount: allRules.length,
-    periodRuleIds: rules.map((r: any) => r.ruleId),
-  }));
-
   // Remap broken rule IDs to period-specific rule IDs when needed
   let brokenRulesCounts = rawCounts;
   if (allRules.length > 0 && rules.length > 0) {
@@ -421,11 +431,6 @@ function computeRuleCompliance(stats: any, rules: any[], allRules: any[] = []) {
       }
     }
   }
-
-  console.log('[computeRuleCompliance] remapped', JSON.stringify({
-    brokenRulesCountsKeys: Object.keys(brokenRulesCounts),
-    brokenRulesCounts,
-  }));
 
   const brokenRuleIds = new Set(
     Object.entries(brokenRulesCounts)

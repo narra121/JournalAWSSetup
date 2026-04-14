@@ -19,15 +19,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    const result = await ddb.send(new QueryCommand({
-      TableName: RULES_TABLE,
-      KeyConditionExpression: 'userId = :userId',
-      ExpressionAttributeValues: {
-        ':userId': userId
-      }
-    }));
-
-    const rules = result.Items || [];
+    const rules: any[] = [];
+    let lastEvaluatedKey: any;
+    do {
+      const result = await ddb.send(new QueryCommand({
+        TableName: RULES_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: {
+          ':userId': userId
+        },
+        ExclusiveStartKey: lastEvaluatedKey
+      }));
+      if (result.Items) rules.push(...result.Items);
+      lastEvaluatedKey = result.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
     log.info('rules listed', { count: rules.length });
     
     return envelope({ statusCode: 200, data: { rules }, message: 'Rules retrieved' });

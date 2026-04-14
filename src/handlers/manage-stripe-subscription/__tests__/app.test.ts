@@ -227,7 +227,7 @@ describe('manage-stripe-subscription handler', () => {
     expect(body.data.status).toBe('active');
     expect(body.data.message).toContain('resumed');
     expect(mockSubscriptionsUpdate).toHaveBeenCalledWith('sub_test123', {
-      pause_collection: '' as any,
+      pause_collection: null,
     });
   });
 
@@ -306,7 +306,7 @@ describe('manage-stripe-subscription handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
+    expect(body.errorCode).toBe('NOT_FOUND');
   });
 
   it('DELETE returns 404 when no subscription found', async () => {
@@ -316,7 +316,7 @@ describe('manage-stripe-subscription handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
+    expect(body.errorCode).toBe('NOT_FOUND');
   });
 
   // ── 11. Returns 405 for unsupported HTTP method ────────────────

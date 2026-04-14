@@ -5,6 +5,32 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 const ssmClient = new SSMClient({});
 const STAGE_NAME = process.env.STAGE_NAME || 'dev';
 
+// Module-scope SSM cache with 1-hour TTL
+const ssmCache = new Map<string, { value: string; expiresAt: number }>();
+const SSM_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/** @internal Exposed for testing only */
+export function _clearSSMCache(): void {
+  ssmCache.clear();
+}
+
+async function getCachedSSMParam(name: string): Promise<string | undefined> {
+  const cached = ssmCache.get(name);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
+  }
+
+  const result = await ssmClient.send(
+    new GetParameterCommand({ Name: name })
+  );
+
+  const value = result.Parameter?.Value;
+  if (value) {
+    ssmCache.set(name, { value, expiresAt: Date.now() + SSM_CACHE_TTL_MS });
+  }
+  return value;
+}
+
 /**
  * Get available subscription plans
  * Returns Stripe Price IDs grouped by currency (INR or USD).
@@ -85,11 +111,8 @@ async function getPlanDetails(
   try {
     const paramName = `/tradequt/${STAGE_NAME}/stripe/price/${period}_${suffix}`;
     console.log(`Fetching SSM parameter: ${paramName}`);
-    const result = await ssmClient.send(
-      new GetParameterCommand({ Name: paramName })
-    );
 
-    const planId = result.Parameter?.Value;
+    const planId = await getCachedSSMParam(paramName);
     if (!planId) return null;
 
     const config = PLAN_CONFIG[suffix]?.[period];

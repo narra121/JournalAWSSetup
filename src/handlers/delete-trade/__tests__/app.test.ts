@@ -174,7 +174,7 @@ describe('delete-trade handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
+    expect(body.errorCode).toBe('NOT_FOUND');
   });
 
   it('returns 404 when delete ConditionalCheckFailedException occurs', async () => {
@@ -187,7 +187,7 @@ describe('delete-trade handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
+    expect(body.errorCode).toBe('NOT_FOUND');
   });
 
   // ── DynamoDB errors ─────────────────────────────────────────

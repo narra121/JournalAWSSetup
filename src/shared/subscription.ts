@@ -2,7 +2,7 @@ import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from './dynamo';
 import { envelope } from './validation';
 
-const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE || 'Subscriptions-tradeflow-dev';
+const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 
 export interface SubscriptionRecord {
   userId: string;
@@ -106,8 +106,14 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
     return subscriptionRequiredResponse(mapped.reason, mapped.message);
   } catch (error) {
     console.error('Error checking subscription:', error);
-    // On error, allow access (fail open) to avoid blocking users due to DB issues
-    return null;
+    return envelope({
+      statusCode: 503,
+      error: {
+        code: 'SUBSCRIPTION_CHECK_FAILED',
+        message: 'Unable to verify subscription. Please try again.',
+      },
+      message: 'Service temporarily unavailable',
+    });
   }
 }
 

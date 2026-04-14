@@ -56,14 +56,15 @@ export function envelope(params: { statusCode: number; data?: any; error?: any; 
 
 export enum ErrorCodes {
   UNAUTHORIZED = 'UNAUTHORIZED',
-  NOT_FOUND = 'TRADE_NOT_FOUND',
+  NOT_FOUND = 'NOT_FOUND',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
   ITEM_TOO_LARGE = 'ITEM_TOO_LARGE',
   EMAIL_NOT_VERIFIED = 'EMAIL_NOT_VERIFIED',
   USER_EXISTS = 'USER_EXISTS',
   RULE_IN_USE = 'RULE_IN_USE',
-  SUBSCRIPTION_REQUIRED = 'SUBSCRIPTION_REQUIRED'
+  SUBSCRIPTION_REQUIRED = 'SUBSCRIPTION_REQUIRED',
+  RATE_LIMITED = 'RATE_LIMITED'
 }
 
 export function errorResponse(statusCode: number, code: ErrorCodes, message: string, details?: any) {

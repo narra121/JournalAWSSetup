@@ -75,14 +75,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
     }
 
+    const ALLOWED_FIELDS = ['name', 'broker', 'type', 'status', 'balance', 'initialBalance', 'currency', 'notes'];
+
     const now = new Date().toISOString();
     const updateExpressions: string[] = [];
     const expressionAttributeNames: any = {};
     const expressionAttributeValues: any = {};
-    
+
     let index = 0;
     for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) {
+      if (value !== undefined && ALLOWED_FIELDS.includes(key)) {
         const attrName = `#attr${index}`;
         const attrValue = `:val${index}`;
         updateExpressions.push(`${attrName} = ${attrValue}`);
@@ -90,6 +92,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         expressionAttributeValues[attrValue] = value;
         index++;
       }
+    }
+
+    if (index === 0) {
+      log.warn('no valid fields to update');
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No valid fields to update');
     }
 
     updateExpressions.push(`#updatedAt = :updatedAt`);

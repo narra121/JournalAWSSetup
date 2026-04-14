@@ -211,8 +211,10 @@ describe('update-trade handler', () => {
     event.body = '{not valid json}';
     const res = await handler(event, {} as any, () => {}) as any;
 
-    // JSON.parse throws inside the try/catch → errorFromException → 500
-    expect(res.statusCode).toBe(500);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(body.message).toContain('Invalid JSON');
   });
 
   // ── S3 image errors ───────────────────────────────────────────

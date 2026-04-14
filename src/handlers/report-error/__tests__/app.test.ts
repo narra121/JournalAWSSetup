@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('ERROR_REPORTS_BUCKET', 'test-error-bucket');
@@ -65,7 +65,10 @@ function makeAuthEvent(body: any, userId: string): APIGatewayProxyEventV2 {
 beforeEach(() => {
   s3Mock.reset();
   ddbMock.reset();
-  // Rate limit defaults: allow
+  // Rate limit defaults: allow (atomic UpdateCommand returns count=1, ttl in future)
+  ddbMock.on(UpdateCommand).resolves({
+    Attributes: { key: 'error-report:127.0.0.1', count: 1, ttl: Math.floor(Date.now() / 1000) + 3600 },
+  });
   ddbMock.on(GetCommand).resolves({ Item: undefined });
   ddbMock.on(PutCommand).resolves({});
   // S3 defaults: success
@@ -134,8 +137,9 @@ describe('report-error handler', () => {
   // ── 5. Rate limited ──────────────────────────────────────────
 
   it('returns 429 when rate limited', async () => {
-    ddbMock.on(GetCommand).resolves({
-      Item: { key: 'error-report:127.0.0.1', count: 10, ttl: Math.floor(Date.now() / 1000) + 3600 },
+    // Atomic UpdateCommand returns count exceeding limit (11 > 10)
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { key: 'error-report:127.0.0.1', count: 11, ttl: Math.floor(Date.now() / 1000) + 3600 },
     });
 
     const res = await handler(makeEvent(validPayload()), {} as any, () => {}) as any;

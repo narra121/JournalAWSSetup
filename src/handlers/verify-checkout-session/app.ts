@@ -73,7 +73,6 @@ export const handler = async (
               stripeSubscriptionId = :subId,
               stripeCustomerId = :custId,
               planId = :planId,
-              paidCount = if_not_exists(paidCount, :zero) + :one,
               currentStart = :periodStart,
               currentEnd = :periodEnd,
               chargeAt = :periodEnd,
@@ -87,8 +86,6 @@ export const handler = async (
               ':periodStart': new Date((sub.current_period_start || 0) * 1000).toISOString(),
               ':periodEnd': new Date((sub.current_period_end || 0) * 1000).toISOString(),
               ':now': now,
-              ':zero': 0,
-              ':one': 1,
             },
           })
         );

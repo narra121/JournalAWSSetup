@@ -26,7 +26,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
-    const data = JSON.parse(event.body);
+    let data: any;
+    try { data = JSON.parse(event.body); } catch { return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON'); }
 
     // Fetch current item for merging arrays/images if needed (scoped by userId + tradeId)
     const current = await ddb.send(new GetCommand({ TableName: TRADES_TABLE, Key: { userId, tradeId } }));
@@ -112,12 +113,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         incomingById.set(imgId, merged);
         finalImages.push(merged);
       }
-      // Determine deletions: any previous image id not present in incoming list -> delete object
+      // Determine deletions: any previous image id not present in final list -> delete object
+      const finalImageIds = new Set(finalImages.map(img => img.id));
       const toDeleteKeys = prevImages
-        .filter(img => !incomingById.has(img.id) && typeof img.url === 'string')
-        .map(img => normalizePotentialKey(img.url, IMAGES_BUCKET))
-        .filter((k): k is string => !!k)
-        .map(Key => ({ Key }));
+        .filter(img => !finalImageIds.has(img.id))
+        .map(img => {
+          const k = img.key || normalizePotentialKey(img.url, IMAGES_BUCKET);
+          return k ? { Key: k } : null;
+        })
+        .filter((entry): entry is { Key: string } => !!entry);
       if (toDeleteKeys.length) {
         await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: toDeleteKeys } }));
       }
@@ -131,7 +135,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Direct field mapping helper - only fields from UI
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','pnl','riskRewardRatio','setupType','tradingSession','marketCondition','tradeNotes'];
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','setupType','tradingSession','marketCondition','tradeNotes'];
     
     // Normalize numeric fields if provided as string
     if (data.pnl !== undefined) {

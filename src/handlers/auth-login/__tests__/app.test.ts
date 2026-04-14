@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProviderClient, InitiateAuthCommand, GetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -37,8 +37,8 @@ function makeEvent(body: any): APIGatewayProxyEventV2 {
 beforeEach(() => {
   cognitoMock.reset();
   ddbMock.reset();
-  ddbMock.on(GetCommand).resolves({ Item: undefined });
-  ddbMock.on(PutCommand).resolves({});
+  // Rate limit defaults: allow (count=1, fresh ttl)
+  ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'test', count: 1, ttl: Math.floor(Date.now() / 1000) + 300 } });
 });
 
 describe('auth-login handler', () => {
@@ -101,7 +101,7 @@ describe('auth-login handler', () => {
   // ── Rate limiting ───────────────────────────────────────────
 
   it('returns 429 when rate limited', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: { key: 'login:test@example.com', count: 10, ttl: Math.floor(Date.now() / 1000) + 300 } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'login:test@example.com', count: 11, ttl: Math.floor(Date.now() / 1000) + 300 } });
 
     const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
 

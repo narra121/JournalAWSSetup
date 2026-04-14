@@ -24,7 +24,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!email || !password || !name) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email, name, and password required');
   if (password.length < 8 || password.length > 128) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Password must be 8-128 characters');
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
-    if (!rl.allowed) return errorResponse(429, ErrorCodes.INTERNAL_ERROR, 'Too many attempts', { retryAfter: rl.retryAfter });
+    if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
     const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }, { Name: 'name', Value: name }] });
     const r = await client.send(cmd);
     return envelope({ statusCode: 200, data: { user: { id: r.UserSub, name, email } }, message: 'User created. Please check your email for a confirmation code.' });
@@ -35,6 +35,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (e.name === 'UsernameExistsException') {
       try {
         const { email } = JSON.parse(event.body!);
+        const resendRl = await checkRateLimit({ key: `resend:${email}`, limit: 3, windowSeconds: 900 });
+        if (!resendRl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts');
         await client.send(new ResendConfirmationCodeCommand({ ClientId: CLIENT_ID, Username: email }));
         return envelope({ 
           statusCode: 200, 

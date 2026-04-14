@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
@@ -66,6 +66,7 @@ const validOptions = {
 
 beforeEach(() => {
   ddbMock.reset();
+  ddbMock.on(GetCommand).resolves({ Item: undefined });
   ddbMock.on(PutCommand).resolves({});
 });
 

@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, BatchWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { normalizePotentialKey } from '../../shared/s3';
@@ -13,6 +13,27 @@ import { checkSubscription } from '../../shared/subscription';
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
+
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/** Shared risk/reward calculation for both bulk and single paths */
+function calculateRiskReward(t: { riskRewardRatio?: any; entryPrice?: any; exitPrice?: any; stopLoss?: any }): number | null {
+  const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
+  const rr = num(t.riskRewardRatio);
+  if (rr != null) return rr;
+  const entry = num(t.entryPrice);
+  const exit = num(t.exitPrice);
+  if (entry != null && exit != null) {
+    const sl = num(t.stopLoss);
+    if (sl != null && sl !== entry) {
+      const risk = Math.abs(entry - sl);
+      const reward = Math.abs(exit - entry);
+      return risk > 0 ? Number((reward / risk).toFixed(4)) : 0;
+    }
+    return 0;
+  }
+  return null;
+}
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
@@ -49,9 +70,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       if (itemsArr.length > MAX_BULK) { log.warn('bulk over limit', { count: itemsArr.length }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Too many items (max ${MAX_BULK})`); }
 
       const created: any[] = []; const skipped: any[] = []; const errors: any[] = [];
-      // Lazy import for idempotency queries once
-      const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
-
       // Helper to process single trade definition
   const processOne = async (t: any, index: number) => {
         try {
@@ -84,11 +102,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               const match = /^data:(.+);base64,(.*)$/i.exec(b64);
               let contentType = 'image/jpeg';
               if (match) { contentType = match[1]; b64 = match[2]; }
+              if (!ALLOWED_IMAGE_TYPES.includes(contentType)) {
+                throw new Error(`Unsupported image type: ${contentType}`);
+              }
               const buffer = Buffer.from(b64, 'base64');
               if (buffer.byteLength > MAX_IMAGE_BYTES) {
                 throw new Error('Inline image exceeds 5MB limit');
               }
-              const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
+              const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : contentType === 'image/webp' ? '.webp' : '.jpg';
               const key = `images/${userId}/${tradeIdLocal}/${imgId}${ext}`;
               bulkUploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
             } else if (img.url) {
@@ -119,8 +140,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
             else if (t.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
           }
           
-          // Use riskRewardRatio from frontend if provided (already calculated in UI)
-          const riskRewardRatio = num(t.riskRewardRatio);
+          // Use riskRewardRatio from frontend if provided, otherwise calculate from SL
+          const riskRewardRatio = calculateRiskReward(t);
           const outcome = t.outcome;
           const nowLocal = new Date().toISOString();
           
@@ -236,7 +257,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     let tradeId = uuid();
     if (idemKey) {
       try {
-        const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
         const existing = await ddb.send(new QueryCommand({
           TableName: TRADES_TABLE,
           IndexName: 'user-idempotency-gsi',
@@ -280,11 +300,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const match = /^data:(.+);base64,(.*)$/i.exec(b64);
         let contentType = 'image/jpeg';
         if (match) { contentType = match[1]; b64 = match[2]; }
+        if (!ALLOWED_IMAGE_TYPES.includes(contentType)) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Unsupported image type: ${contentType}`);
+        }
         const buffer = Buffer.from(b64, 'base64');
         if (buffer.byteLength > MAX_IMAGE_BYTES) {
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Inline image exceeds 5MB limit');
         }
-        const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
+        const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : contentType === 'image/webp' ? '.webp' : '.jpg';
         const key = `images/${userId}/${tradeId}/${imgId}${ext}`;
         uploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
       } else if (img.url) {
@@ -318,17 +341,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
   
   // Use riskRewardRatio from frontend if provided, otherwise calculate from SL
-  let riskRewardRatio = num(data.riskRewardRatio);
-  if (riskRewardRatio == null && entryPrice != null && exitPrice != null) {
-    const sl = num(data.stopLoss);
-    if (sl != null && sl !== entryPrice) {
-      const risk = Math.abs(entryPrice - sl);
-      const reward = Math.abs(exitPrice - entryPrice);
-      riskRewardRatio = risk > 0 ? Number((reward / risk).toFixed(4)) : 0;
-    } else {
-      riskRewardRatio = 0;
-    }
-  }
+  const riskRewardRatio = calculateRiskReward(data);
   const outcome = data.outcome;
 
     const now = new Date().toISOString();

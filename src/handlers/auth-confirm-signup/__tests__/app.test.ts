@@ -1,16 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, BatchWriteCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, ConfirmSignUpCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, ConfirmSignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('USER_POOL_CLIENT_ID', 'test-client-id');
-vi.stubEnv('USER_POOL_ID', 'test-pool-id');
-vi.stubEnv('RULES_TABLE', 'test-rules');
-vi.stubEnv('SAVED_OPTIONS_TABLE', 'test-saved-options');
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
-const ddbMock = mockClient(DynamoDBDocumentClient);
 
 const { handler } = await import('../app.ts');
 
@@ -38,11 +33,6 @@ function makeEvent(body: any): APIGatewayProxyEventV2 {
 
 beforeEach(() => {
   cognitoMock.reset();
-  ddbMock.reset();
-  // Idempotency checks return empty (no existing data)
-  ddbMock.on(QueryCommand).resolves({ Items: [] });
-  ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
-  ddbMock.on(PutCommand).resolves({});
 });
 
 describe('auth-confirm-signup handler', () => {
@@ -50,9 +40,6 @@ describe('auth-confirm-signup handler', () => {
 
   it('confirms signup and returns 200', async () => {
     cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-123' }],
-    });
 
     const res = await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {}) as any;
 
@@ -62,59 +49,16 @@ describe('auth-confirm-signup handler', () => {
     expect(body.data.confirmed).toBe(true);
   });
 
-  it('creates default rules after confirmation', async () => {
+  it('calls ConfirmSignUpCommand with correct params', async () => {
     cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-123' }],
-    });
 
     await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
 
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls.length).toBeGreaterThanOrEqual(1);
-    // Should write 6 default rules
-    const items = batchCalls[0].args[0].input.RequestItems?.['test-rules'];
-    expect(items).toHaveLength(6);
-  });
-
-  it('creates default saved options after confirmation', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-123' }],
-    });
-
-    await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
-
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
-    const savedOptions = putCalls[0].args[0].input.Item;
-    expect(savedOptions?.userId).toBe('user-sub-123');
-    expect(savedOptions?.strategies).toBeDefined();
-  });
-
-  it('succeeds even if default rules creation fails', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).rejects(new Error('Admin error'));
-
-    const res = await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.confirmed).toBe(true);
-  });
-
-  it('succeeds when AdminGetUser returns no sub attribute', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'email', Value: 'test@example.com' }],
-    });
-
-    const res = await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(200);
-    // No batch writes should happen without a sub
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls).toHaveLength(0);
+    const calls = cognitoMock.commandCalls(ConfirmSignUpCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0].input.ClientId).toBe('test-client-id');
+    expect(calls[0].args[0].input.Username).toBe('test@example.com');
+    expect(calls[0].args[0].input.ConfirmationCode).toBe('123456');
   });
 
   // ── Validation errors ───────────────────────────────────────
@@ -215,92 +159,11 @@ describe('auth-confirm-signup handler', () => {
     expect(body.errorCode).toBe('VALIDATION_ERROR');
   });
 
-  // ── Default data initialization details ─────────────────────
-
-  it('creates default saved options with expected categories', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-456' }],
-    });
-
-    await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
-
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
-    const savedOptions = putCalls[0].args[0].input.Item;
-    expect(savedOptions?.strategies).toEqual(expect.arrayContaining(['Breakout', 'Support Bounce']));
-    expect(savedOptions?.newsEvents).toEqual(expect.arrayContaining(['NFP Release', 'FOMC Meeting']));
-    expect(savedOptions?.sessions).toEqual(expect.arrayContaining(['Asian', 'London Open']));
-    expect(savedOptions?.marketConditions).toEqual(expect.arrayContaining(['Trending', 'Ranging']));
-    expect(savedOptions?.mistakes).toEqual(expect.arrayContaining(['FOMO', 'Early Entry']));
-    expect(savedOptions?.createdAt).toBeDefined();
-    expect(savedOptions?.updatedAt).toBeDefined();
-  });
-
-  it('creates default rules with correct structure', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-789' }],
-    });
-
-    await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
-
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls).toHaveLength(1);
-    const items = batchCalls[0].args[0].input.RequestItems?.['test-rules'];
-    expect(items).toHaveLength(6);
-    const firstRule = items![0].PutRequest?.Item;
-    expect(firstRule?.userId).toBe('user-sub-789');
-    expect(firstRule?.ruleId).toBeDefined();
-    expect(firstRule?.completed).toBe(false);
-    expect(firstRule?.isActive).toBe(true);
-    expect(firstRule?.createdAt).toBeDefined();
-  });
-
   it('returns 400 when body is not valid JSON', async () => {
     const event = makeEvent({ email: 'test@example.com', code: '123456' });
     event.body = '{not-valid-json';
     const res = await handler(event, {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(400);
-  });
-
-  it('succeeds even when DynamoDB BatchWriteCommand fails', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-fail' }],
-    });
-    ddbMock.on(BatchWriteCommand).rejects(new Error('DynamoDB error'));
-
-    const res = await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {}) as any;
-
-    // Confirmation should still succeed even if default data creation fails
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.confirmed).toBe(true);
-  });
-
-  // ── Idempotency ─────────────────────────────────────────────
-
-  it('skips creating rules when user already has rules', async () => {
-    cognitoMock.on(ConfirmSignUpCommand).resolves({});
-    cognitoMock.on(AdminGetUserCommand).resolves({
-      UserAttributes: [{ Name: 'sub', Value: 'user-sub-existing' }],
-    });
-    // Return existing items for rules query
-    ddbMock.on(QueryCommand, { TableName: 'test-rules' }).resolves({
-      Items: [{ userId: 'user-sub-existing', ruleId: 'existing-rule' }],
-    });
-    // Return empty for saved options query
-    ddbMock.on(QueryCommand, { TableName: 'test-saved-options' }).resolves({ Items: [] });
-
-    await handler(makeEvent({ email: 'test@example.com', code: '123456' }), {} as any, () => {});
-
-    // No batch write for rules since they already exist
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls).toHaveLength(0);
-    // Saved options should still be created
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls).toHaveLength(1);
   });
 });

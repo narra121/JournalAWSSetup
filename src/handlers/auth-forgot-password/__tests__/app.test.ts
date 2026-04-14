@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProviderClient, ForgotPasswordCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -30,8 +30,8 @@ function makeEvent(body: any): APIGatewayProxyEventV2 {
 beforeEach(() => {
   cognitoMock.reset();
   ddbMock.reset();
-  ddbMock.on(GetCommand).resolves({ Item: undefined });
-  ddbMock.on(PutCommand).resolves({});
+  // Rate limit defaults: allow (count=1, fresh ttl)
+  ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'test', count: 1, ttl: Math.floor(Date.now() / 1000) + 900 } });
 });
 
 describe('auth-forgot-password handler', () => {
@@ -45,7 +45,7 @@ describe('auth-forgot-password handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.message).toContain('t***@example.com');
+    expect(body.data.message).toContain('If an account exists');
   });
 
   it('returns 400 when body is missing', async () => {
@@ -64,34 +64,38 @@ describe('auth-forgot-password handler', () => {
   });
 
   it('returns 429 when rate limited', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: { key: 'forgot:test@example.com', count: 5, ttl: Math.floor(Date.now() / 1000) + 900 } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'forgot:test@example.com', count: 6, ttl: Math.floor(Date.now() / 1000) + 900 } });
 
     const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(429);
   });
 
-  it('returns 400 when Cognito fails', async () => {
+  it('returns 200 even when Cognito fails (prevents user enumeration)', async () => {
     cognitoMock.on(ForgotPasswordCommand).rejects(new Error('UserNotFoundException'));
 
     const res = await handler(makeEvent({ email: 'nonexistent@example.com' }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.message).toContain('If an account exists');
   });
 
   // ── Email not found (should not leak user existence) ────────
 
-  it('returns error without leaking whether the email exists in Cognito', async () => {
+  it('returns success without leaking whether the email exists in Cognito', async () => {
     const error = new Error('Username/client id combination not found.');
     (error as any).name = 'UserNotFoundException';
     cognitoMock.on(ForgotPasswordCommand).rejects(error);
 
     const res = await handler(makeEvent({ email: 'unknown@example.com' }), {} as any, () => {}) as any;
 
-    // Handler returns 400, but message comes from Cognito - it should NOT be 200 pretending success
-    expect(res.statusCode).toBe(400);
+    // Handler always returns 200 to prevent user enumeration
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.success).toBe(true);
+    expect(body.data.message).toContain('If an account exists');
   });
 
   // ── Empty / invalid email ───────────────────────────────────
@@ -114,33 +118,34 @@ describe('auth-forgot-password handler', () => {
 
   // ── Cognito API failures ────────────────────────────────────
 
-  it('returns 400 when Cognito throws InternalErrorException', async () => {
+  it('returns 200 even when Cognito throws InternalErrorException', async () => {
     cognitoMock.on(ForgotPasswordCommand).rejects(new Error('InternalErrorException'));
 
     const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('INTERNAL_ERROR');
+    expect(body.success).toBe(true);
+    expect(body.data.message).toContain('If an account exists');
   });
 
-  it('returns 400 when Cognito throws LimitExceededException', async () => {
+  it('returns 200 even when Cognito throws LimitExceededException', async () => {
     const error = new Error('Attempt limit exceeded, please try after some time.');
     (error as any).name = 'LimitExceededException';
     cognitoMock.on(ForgotPasswordCommand).rejects(error);
 
     const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.success).toBe(true);
   });
 
   // ── Rate limiting details ───────────────────────────────────
 
   it('includes retryAfter in rate limit response', async () => {
     const futureEpoch = Math.floor(Date.now() / 1000) + 600;
-    ddbMock.on(GetCommand).resolves({ Item: { key: 'forgot:test@example.com', count: 5, ttl: futureEpoch } });
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'forgot:test@example.com', count: 6, ttl: futureEpoch } });
 
     const res = await handler(makeEvent({ email: 'test@example.com' }), {} as any, () => {}) as any;
 
@@ -161,19 +166,21 @@ describe('auth-forgot-password handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.message).toContain('c***@example.com');
+    expect(body.data.message).toContain('If an account exists');
   });
 
-  it('returns error when unverified user requests reset', async () => {
+  it('returns success even when unverified user requests reset (prevents enumeration)', async () => {
     const error = new Error('Cannot reset password for the user as there is no registered/verified email');
     (error as any).name = 'InvalidParameterException';
     cognitoMock.on(ForgotPasswordCommand).rejects(error);
 
     const res = await handler(makeEvent({ email: 'unverified@example.com' }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(400);
+    // Always return 200 to prevent user enumeration
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.success).toBe(true);
+    expect(body.data.message).toContain('If an account exists');
   });
 
   it('returns 400 when body is not valid JSON', async () => {

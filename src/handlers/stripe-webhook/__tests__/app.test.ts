@@ -18,6 +18,7 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 // Mock Stripe
 const mockConstructEvent = vi.fn();
 const mockSubscriptionsRetrieve = vi.fn();
+const mockSubscriptionsUpdate = vi.fn();
 
 vi.mock('stripe', () => {
   return {
@@ -27,6 +28,7 @@ vi.mock('stripe', () => {
       },
       subscriptions: {
         retrieve: mockSubscriptionsRetrieve,
+        update: mockSubscriptionsUpdate,
       },
     })),
   };
@@ -81,6 +83,7 @@ beforeEach(() => {
   ssmMock.reset();
   mockConstructEvent.mockReset();
   mockSubscriptionsRetrieve.mockReset();
+  mockSubscriptionsUpdate.mockReset();
 
   // Default SSM returns valid secrets
   ssmMock.on(GetParameterCommand).resolves({
@@ -129,6 +132,7 @@ describe('stripe-webhook handler', () => {
 
     mockSubscriptionsRetrieve.mockResolvedValue({
       id: 'sub_stripe_789',
+      metadata: { userId: 'user-1' },
       items: { data: [{ price: { id: 'price_pro_monthly' } }] },
       current_period_start: 1700000000,
       current_period_end: 1702592000,
@@ -150,7 +154,9 @@ describe('stripe-webhook handler', () => {
     expect(updateInput.ExpressionAttributeValues[':custId']).toBe('cus_stripe_456');
     expect(updateInput.ExpressionAttributeValues[':status']).toBe('active');
     expect(updateInput.ExpressionAttributeValues[':planId']).toBe('price_pro_monthly');
-    expect(updateInput.ExpressionAttributeValues[':paidCount']).toBe(1);
+    // paidCount is no longer set by checkout handler (handleInvoicePaid is sole owner)
+    expect(updateInput.ExpressionAttributeValues[':paidCount']).toBeUndefined();
+    expect(updateInput.UpdateExpression).not.toContain('paidCount');
   });
 
   // ── invoice.paid ───────────────────────────────────────────
@@ -183,6 +189,25 @@ describe('stripe-webhook handler', () => {
     expect(updateInput.ExpressionAttributeValues[':status']).toBe('active');
     expect(updateInput.ExpressionAttributeValues[':currentStart']).toBeDefined();
     expect(updateInput.ExpressionAttributeValues[':currentEnd']).toBeDefined();
+  });
+
+  it('skips invoice.paid when billing_reason is subscription_create', async () => {
+    const invoiceData = {
+      id: 'inv_initial_123',
+      subscription: 'sub_stripe_789',
+      billing_reason: 'subscription_create',
+    };
+    const webhookEvent = makeWebhookEvent('invoice.paid', invoiceData);
+    mockConstructEvent.mockReturnValue(webhookEvent);
+
+    const res = await handler(makeEvent('{"raw":"body"}')) as any;
+
+    expect(res.statusCode).toBe(200);
+
+    // No DDB update or Stripe retrieve should happen
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(0);
+    expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled();
   });
 
   // ── invoice.payment_failed ─────────────────────────────────

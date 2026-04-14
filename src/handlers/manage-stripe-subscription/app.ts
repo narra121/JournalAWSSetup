@@ -200,7 +200,12 @@ function resolveStatus(stripeSub: Stripe.Subscription, dbStatus: string): string
 // ─── PUT: Pause / Resume ────────────────────────────────────────────────────
 
 async function handlePut(userId: string, rawBody: string | null): Promise<APIGatewayProxyResult> {
-  const body = JSON.parse(rawBody || '{}');
+  let body: any;
+  try {
+    body = JSON.parse(rawBody || '{}');
+  } catch {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON body');
+  }
   const { action } = body;
 
   if (!['pause', 'resume'].includes(action)) {
@@ -238,7 +243,7 @@ async function handlePut(userId: string, rawBody: string | null): Promise<APIGat
 
   // Resume
   await stripeClient.subscriptions.update(stripeSubId, {
-    pause_collection: '' as any, // Clear pause_collection to resume
+    pause_collection: null, // Clear pause_collection to resume
   });
 
   await updateSubscriptionStatus(userId, 'active');
@@ -256,7 +261,12 @@ async function handlePut(userId: string, rawBody: string | null): Promise<APIGat
 // ─── PATCH: Undo cancellation ───────────────────────────────────────────────
 
 async function handlePatch(userId: string, rawBody: string | null): Promise<APIGatewayProxyResult> {
-  const body = JSON.parse(rawBody || '{}');
+  let body: any;
+  try {
+    body = JSON.parse(rawBody || '{}');
+  } catch {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON body');
+  }
   const { action } = body;
 
   if (action !== 'undo_cancellation') {
@@ -316,7 +326,12 @@ async function handlePatch(userId: string, rawBody: string | null): Promise<APIG
 // ─── DELETE: Cancel subscription ────────────────────────────────────────────
 
 async function handleDelete(userId: string, rawBody: string | null): Promise<APIGatewayProxyResult> {
-  const body = JSON.parse(rawBody || '{}');
+  let body: any;
+  try {
+    body = JSON.parse(rawBody || '{}');
+  } catch {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON body');
+  }
   const { cancelAtCycleEnd = true } = body;
 
   const record = await getSubscriptionRecord(userId);

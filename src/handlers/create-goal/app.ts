@@ -6,55 +6,10 @@ import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
+import { GOAL_TYPE_CONFIG, VALID_GOAL_TYPES, VALID_PERIODS } from '../../shared/goalDefaults';
+import type { GoalType } from '../../shared/goalDefaults';
 
 const GOALS_TABLE = process.env.GOALS_TABLE!;
-
-const VALID_GOAL_TYPES = ['profit', 'winRate', 'maxDrawdown', 'maxTrades'] as const;
-const VALID_PERIODS = ['weekly', 'monthly'] as const;
-
-type GoalType = typeof VALID_GOAL_TYPES[number];
-
-const GOAL_TYPE_CONFIG: Record<GoalType, {
-  title: string;
-  description: string;
-  unit: string;
-  icon: string;
-  color: string;
-  isInverse: boolean;
-}> = {
-  profit: {
-    title: 'Profit Target',
-    description: 'Reach your profit goal',
-    unit: '$',
-    icon: 'target',
-    color: 'text-primary',
-    isInverse: false
-  },
-  winRate: {
-    title: 'Win Rate',
-    description: 'Maintain win rate goal',
-    unit: '%',
-    icon: 'trending-up',
-    color: 'text-success',
-    isInverse: false
-  },
-  maxDrawdown: {
-    title: 'Max Drawdown',
-    description: 'Keep drawdown under limit',
-    unit: '%',
-    icon: 'shield',
-    color: 'text-warning',
-    isInverse: true
-  },
-  maxTrades: {
-    title: 'Max Trades',
-    description: 'Stay under trade limit',
-    unit: ' trades',
-    icon: 'award',
-    color: 'text-accent',
-    isInverse: true
-  }
-};
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
@@ -96,6 +51,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (data.target === undefined || data.target === null || typeof data.target !== 'number') {
     log.warn('invalid target', { target: data.target });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'target is required and must be a number');
+  }
+
+  const periodKeyRegex = /^(week#\d{4}-\d{2}-\d{2}|month#\d{4}-\d{2})$/;
+  if (data.periodKey && !periodKeyRegex.test(data.periodKey)) {
+    log.warn('invalid periodKey format', { periodKey: data.periodKey });
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid periodKey format');
   }
 
   try {

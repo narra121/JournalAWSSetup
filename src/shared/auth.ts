@@ -23,3 +23,24 @@ export function getUserId(event: any): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * Extract the full JWT claims object from an API Gateway event.
+ *
+ * Production: Cognito authorizer populates requestContext.authorizer.jwt.claims
+ * SAM local: decode the JWT from the Authorization header.
+ */
+export function getClaims(event: any): Record<string, string> {
+  const authClaims = (event.requestContext as any)?.authorizer?.jwt?.claims;
+  if (authClaims) return authClaims;
+
+  const authHeader = event.headers?.authorization || event.headers?.Authorization;
+  if (!authHeader) return {};
+  try {
+    const payload = authHeader.replace(/^Bearer\s+/i, '').split('.')[1];
+    if (!payload) return {};
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return {};
+  }
+}

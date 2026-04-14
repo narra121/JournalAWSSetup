@@ -8,7 +8,7 @@ vi.stubEnv('STAGE_NAME', 'test');
 
 const ssmMock = mockClient(SSMClient);
 
-const { handler } = await import('../app.ts');
+const { handler, _clearSSMCache } = await import('../app.ts');
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -54,6 +54,7 @@ function mockSSMPrices(currency: 'usd' | 'inr') {
 
 beforeEach(() => {
   ssmMock.reset();
+  _clearSSMCache();
 });
 
 describe('get-subscription-plans handler', () => {

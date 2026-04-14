@@ -6,6 +6,7 @@ import { makeLogger } from '../../shared/logger';
 import { v4 as uuid } from 'uuid';
 import { batchWritePutAll } from '../../shared/batchWrite';
 import { getUserId } from '../../shared/auth';
+import { GOAL_TYPE_CONFIG, DEFAULT_GOAL_TARGETS } from '../../shared/goalDefaults';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -19,53 +20,6 @@ const DEFAULT_RULES = [
   'Review trades weekly',
   'Stick to my trading plan'
 ];
-
-const DEFAULT_GOAL_TARGETS: Record<string, Record<string, number>> = {
-  weekly: { profit: 500, winRate: 65, maxDrawdown: 3, maxTrades: 8 },
-  monthly: { profit: 2000, winRate: 70, maxDrawdown: 10, maxTrades: 30 },
-};
-
-const GOAL_TYPE_CONFIG: Record<string, {
-  title: string;
-  description: string;
-  unit: string;
-  icon: string;
-  color: string;
-  isInverse: boolean;
-}> = {
-  profit: {
-    title: 'Profit Target',
-    description: 'Reach your profit goal',
-    unit: '$',
-    icon: 'target',
-    color: 'text-primary',
-    isInverse: false,
-  },
-  winRate: {
-    title: 'Win Rate',
-    description: 'Maintain win rate goal',
-    unit: '%',
-    icon: 'trending-up',
-    color: 'text-success',
-    isInverse: false,
-  },
-  maxDrawdown: {
-    title: 'Max Drawdown',
-    description: 'Keep drawdown under limit',
-    unit: '%',
-    icon: 'shield',
-    color: 'text-warning',
-    isInverse: true,
-  },
-  maxTrades: {
-    title: 'Max Trades',
-    description: 'Stay under trade limit',
-    unit: ' trades',
-    icon: 'award',
-    color: 'text-accent',
-    isInverse: true,
-  },
-};
 
 function getPreviousPeriodKey(periodKey: string): string {
   if (periodKey.startsWith('week#')) {
@@ -426,6 +380,7 @@ function cloneRules(sourceRules: any[], userId: string, periodKey: string): any[
     ...rule,
     userId,
     ruleId: `${periodKey}#${uuid()}`,
+    completed: false,
     createdAt: now,
     updatedAt: now,
   }));

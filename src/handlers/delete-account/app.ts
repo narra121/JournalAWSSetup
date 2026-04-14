@@ -1,11 +1,12 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { DeleteCommand, GetCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { removeImagesForTrade } from '../../shared/images';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
+import { batchWriteDeleteAll } from '../../shared/batchWrite';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -87,42 +88,21 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       log.info('deleted all trade images', { count: tradesToDelete.length });
     }
     
-    // Delete trades and goals in parallel (different tables, no contention)
-    const deleteTrades = async () => {
-      const batchSize = 25;
-      for (let i = 0; i < tradesToDelete.length; i += batchSize) {
-        const batch = tradesToDelete.slice(i, i + batchSize);
-        await ddb.send(new BatchWriteCommand({
-          RequestItems: {
-            [TRADES_TABLE]: batch.map(trade => ({
-              DeleteRequest: {
-                Key: { userId, tradeId: trade.tradeId }
-              }
-            }))
-          }
-        }));
-        log.info('deleted trade batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
-      }
-    };
-
-    const deleteGoals = async () => {
-      const batchSize = 25;
-      for (let i = 0; i < goalsToDelete.length; i += batchSize) {
-        const batch = goalsToDelete.slice(i, i + batchSize);
-        await ddb.send(new BatchWriteCommand({
-          RequestItems: {
-            [GOALS_TABLE]: batch.map(goal => ({
-              DeleteRequest: {
-                Key: { userId, goalId: goal.goalId }
-              }
-            }))
-          }
-        }));
-        log.info('deleted goal batch', { batchNumber: Math.floor(i / batchSize) + 1, batchSize: batch.length });
-      }
-    };
-
-    await Promise.all([deleteTrades(), deleteGoals()]);
+    // Delete trades and goals in parallel using batchWriteDeleteAll
+    await Promise.all([
+      batchWriteDeleteAll({
+        ddb,
+        tableName: TRADES_TABLE,
+        keys: tradesToDelete.map(trade => ({ userId, tradeId: trade.tradeId })),
+        log
+      }),
+      batchWriteDeleteAll({
+        ddb,
+        tableName: GOALS_TABLE,
+        keys: goalsToDelete.map(goal => ({ userId, goalId: goal.goalId })),
+        log
+      })
+    ]);
 
     // Delete the account
     await ddb.send(new DeleteCommand({

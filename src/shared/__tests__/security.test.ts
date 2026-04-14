@@ -14,6 +14,7 @@ vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('GOALS_TABLE', 'test-goals');
 vi.stubEnv('OPENROUTER_API_KEY_PARAM', '/test/openrouter-key');
 vi.stubEnv('GEMINI_REQUEST_TIMEOUT_MS', '5000');
+vi.stubEnv('SUBSCRIPTIONS_TABLE', 'test-subscriptions');
 
 // ─── AWS mocks ─────────────────────────────────────────────────
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -140,6 +141,8 @@ beforeEach(() => {
   fetchMock.mockReset();
 
   ddbMock.on(PutCommand).resolves({});
+  // Mock subscription check to return active subscription
+  ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'active' } });
   s3Mock.on(PutObjectCommand).resolves({});
   ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: 'test-api-key' } });
 });

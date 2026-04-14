@@ -41,6 +41,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
 
+  if (!data.rule || typeof data.rule !== 'string' || data.rule.trim().length === 0) {
+    log.warn('invalid rule text');
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Rule text is required');
+  }
+  data.rule = data.rule.trim();
+
   try {
     // Verify rule exists and belongs to user
     const existing = await ddb.send(new GetCommand({
@@ -54,7 +60,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const now = new Date().toISOString();
-    
+
     const result = await ddb.send(new UpdateCommand({
       TableName: RULES_TABLE,
       Key: { userId, ruleId },

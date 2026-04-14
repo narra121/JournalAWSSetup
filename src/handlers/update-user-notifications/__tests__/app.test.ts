@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
@@ -62,8 +62,21 @@ const existingPreferences = {
 
 beforeEach(() => {
   ddbMock.reset();
-  ddbMock.on(GetCommand).resolves({ Item: JSON.parse(JSON.stringify(existingPreferences)) });
-  ddbMock.on(PutCommand).resolves({});
+  // UpdateCommand with ReturnValues: 'ALL_NEW' returns Attributes
+  ddbMock.on(UpdateCommand).callsFake((input: any) => {
+    const notifications = { ...existingPreferences.notifications };
+    const values = input.ExpressionAttributeValues || {};
+    if (values[':tradeReminders'] !== undefined) notifications.tradeReminders = values[':tradeReminders'];
+    if (values[':weeklyReport'] !== undefined) notifications.weeklyReport = values[':weeklyReport'];
+    if (values[':goalAlerts'] !== undefined) notifications.goalAlerts = values[':goalAlerts'];
+    return {
+      Attributes: {
+        ...existingPreferences,
+        notifications,
+        updatedAt: values[':updatedAt'],
+      }
+    };
+  });
 });
 
 describe('update-user-notifications handler', () => {
@@ -79,8 +92,8 @@ describe('update-user-notifications handler', () => {
     expect(body.data.notifications.weeklyReport).toBe(false);
     expect(body.data.notifications.goalAlerts).toBe(false);
 
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls).toHaveLength(1);
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(1);
   });
 
   it('handles partial update with only tradeReminders', async () => {
@@ -95,13 +108,23 @@ describe('update-user-notifications handler', () => {
   });
 
   it('initializes empty notifications if missing from preferences', async () => {
-    const prefsWithoutNotifications = {
-      userId: 'user-1',
-      darkMode: false,
-      currency: 'USD',
-      timezone: 'UTC',
-    };
-    ddbMock.on(GetCommand).resolves({ Item: { ...prefsWithoutNotifications } });
+    ddbMock.on(UpdateCommand).callsFake((input: any) => {
+      const notifications: any = {};
+      const values = input.ExpressionAttributeValues || {};
+      if (values[':tradeReminders'] !== undefined) notifications.tradeReminders = values[':tradeReminders'];
+      if (values[':weeklyReport'] !== undefined) notifications.weeklyReport = values[':weeklyReport'];
+      if (values[':goalAlerts'] !== undefined) notifications.goalAlerts = values[':goalAlerts'];
+      return {
+        Attributes: {
+          userId: 'user-1',
+          darkMode: false,
+          currency: 'USD',
+          timezone: 'UTC',
+          notifications,
+          updatedAt: values[':updatedAt'],
+        }
+      };
+    });
 
     const res = await handler(makeEvent({ tradeReminders: true }), {} as any, () => {}) as any;
 
@@ -149,7 +172,7 @@ describe('update-user-notifications handler', () => {
   // ── DynamoDB errors ─────────────────────────────────────────
 
   it('returns 500 when DynamoDB fails', async () => {
-    ddbMock.on(GetCommand).rejects(new Error('DynamoDB error'));
+    ddbMock.on(UpdateCommand).rejects(new Error('DynamoDB error'));
 
     const res = await handler(makeEvent({ tradeReminders: false }), {} as any, () => {}) as any;
 

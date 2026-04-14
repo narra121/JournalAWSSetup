@@ -31,6 +31,21 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
 
+  // Validate name if provided
+  if (data.name !== undefined && typeof data.name !== 'string') {
+    log.warn('invalid name type');
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name must be a string');
+  }
+
+  // Validate email if provided
+  if (data.email !== undefined) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (typeof data.email !== 'string' || !emailRegex.test(data.email)) {
+      log.warn('invalid email format');
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid email format');
+    }
+  }
+
   try {
     // Update Cognito user attributes using Admin API (works with userId/sub, no access token needed)
     if (data.name || data.email) {
@@ -47,6 +62,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         log.info('cognito attributes updated');
       } catch (cognitoError: any) {
         log.warn('failed to update cognito', { error: cognitoError.message });
+        return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update profile attributes');
       }
     }
 

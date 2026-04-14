@@ -41,6 +41,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Rule text is required');
   }
 
+  const periodKeyRegex = /^(week#\d{4}-\d{2}-\d{2}|month#\d{4}-\d{2})$/;
+  if (data.periodKey && !periodKeyRegex.test(data.periodKey)) {
+    log.warn('invalid periodKey format', { periodKey: data.periodKey });
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid periodKey format');
+  }
+
   try {
     const baseId = uuid();
     const ruleId = data.periodKey ? `${data.periodKey}#${baseId}` : baseId;

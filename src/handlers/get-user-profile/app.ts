@@ -3,27 +3,10 @@ import { ddb } from '../../shared/dynamo';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
-import { getUserId } from '../../shared/auth';
+import { getUserId, getClaims } from '../../shared/auth';
+import { DEFAULT_USER_PREFERENCES } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
-
-/** Extract claims from the Cognito JWT (authorizer or manual decode). */
-function getClaims(event: any): Record<string, string> {
-  // Production: API Gateway Cognito authorizer populates claims
-  const authClaims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-  if (authClaims) return authClaims;
-
-  // SAM local fallback: decode JWT payload from Authorization header
-  const authHeader = event.headers?.authorization || event.headers?.Authorization;
-  if (!authHeader) return {};
-  try {
-    const payload = authHeader.replace(/^Bearer\s+/i, '').split('.')[1];
-    if (!payload) return {};
-    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
-  } catch {
-    return {};
-  }
-}
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = getUserId(event);
@@ -51,14 +34,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const preferences = prefsResult.Item || {
       userId,
-      darkMode: false,
-      currency: 'USD',
-      timezone: 'UTC',
-      notifications: {
-        tradeReminders: true,
-        weeklyReport: true,
-        goalAlerts: true
-      }
+      ...DEFAULT_USER_PREFERENCES
     };
 
     const user = {

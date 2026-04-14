@@ -15,7 +15,7 @@ export const handler = async () => {
     const resp: any = await ddb.send(new ScanCommand({
       TableName: TRADES_TABLE,
       ExclusiveStartKey: lastEvaluatedKey,
-      ProjectionExpression: 'userId, tradeId, accountId, symbol, side, quantity, openDate, closeDate, entryPrice, exitPrice, stopLoss, takeProfit, pnl, riskRewardRatio, outcome, setupType, tradingSession, marketCondition, brokenRuleIds, tags',
+      ProjectionExpression: 'userId, tradeId, accountId, symbol, side, quantity, openDate, closeDate, entryPrice, exitPrice, stopLoss, takeProfit, pnl, riskRewardRatio, outcome, setupType, tradingSession, marketCondition, brokenRuleIds, tags, mistakes, lessons',
     }));
     const items = resp.Items || [];
     allTrades.push(...items);

@@ -12,9 +12,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const { email } = JSON.parse(event.body);
     if (!email) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email required');
     const rl = await checkRateLimit({ key: `forgot:${email}`, limit: 5, windowSeconds: 900 });
-    if (!rl.allowed) return errorResponse(429, ErrorCodes.INTERNAL_ERROR, 'Too many attempts', { retryAfter: rl.retryAfter });
-    const cmd = new ForgotPasswordCommand({ ClientId: CLIENT_ID, Username: email });
-    const r = await client.send(cmd);
-    return envelope({ statusCode: 200, data: { message: `Password reset code sent to ${r.CodeDeliveryDetails?.Destination}.` }, message: 'Reset code sent' });
+    if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
+    try {
+      const cmd = new ForgotPasswordCommand({ ClientId: CLIENT_ID, Username: email });
+      await client.send(cmd);
+    } catch (err: any) {
+      // Log but always return success to prevent user enumeration
+      console.error('ForgotPassword Cognito error', { error: err.message });
+    }
+    return envelope({ statusCode: 200, data: { message: 'If an account exists with this email, a reset code has been sent.' }, message: 'If an account exists with this email, a reset code has been sent.' });
   } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.INTERNAL_ERROR, e.message || 'Forgot password failed'); }
 };

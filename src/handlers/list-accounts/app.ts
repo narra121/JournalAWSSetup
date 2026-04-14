@@ -19,15 +19,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    const result = await ddb.send(new QueryCommand({
-      TableName: ACCOUNTS_TABLE,
-      KeyConditionExpression: 'userId = :userId',
-      ExpressionAttributeValues: {
-        ':userId': userId
-      }
-    }));
-
-    const accounts = result.Items || [];
+    const accounts: any[] = [];
+    let lastEvaluatedKey: any;
+    do {
+      const result = await ddb.send(new QueryCommand({
+        TableName: ACCOUNTS_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: {
+          ':userId': userId
+        },
+        ExclusiveStartKey: lastEvaluatedKey
+      }));
+      if (result.Items) accounts.push(...result.Items);
+      lastEvaluatedKey = result.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
     
     // Calculate totals
     const totalBalance = accounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);

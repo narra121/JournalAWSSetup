@@ -148,7 +148,7 @@ describe('errorResponse', () => {
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('TRADE_NOT_FOUND');
+    expect(body.errorCode).toBe('NOT_FOUND');
     expect(body.message).toBe('Not found');
   });
 
@@ -229,7 +229,7 @@ describe('errorFromException', () => {
 describe('ErrorCodes', () => {
   it('has expected values', () => {
     expect(ErrorCodes.UNAUTHORIZED).toBe('UNAUTHORIZED');
-    expect(ErrorCodes.NOT_FOUND).toBe('TRADE_NOT_FOUND');
+    expect(ErrorCodes.NOT_FOUND).toBe('NOT_FOUND');
     expect(ErrorCodes.VALIDATION_ERROR).toBe('VALIDATION_ERROR');
     expect(ErrorCodes.INTERNAL_ERROR).toBe('INTERNAL_ERROR');
     expect(ErrorCodes.EMAIL_NOT_VERIFIED).toBe('EMAIL_NOT_VERIFIED');

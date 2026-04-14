@@ -66,6 +66,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
         ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
         ExpressionAttributeNames: { '#od': 'openDate' },
+        Limit: limit * 3,
         ExclusiveStartKey: exclusiveStartKey,
       });
     } else {
@@ -89,7 +90,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const result = await ddb.send(command);
+    let result = await ddb.send(command);
     let items = result.Items || [];
 
     // GSI returns KEYS_ONLY — BatchGet full records from main table (parallel chunks)
@@ -146,6 +147,43 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Account filter applied AFTER full data is fetched (GSI doesn't have accountId)
     if (shouldFilterByAccount) {
       items = items.filter((it: any) => it.accountId === accountId);
+    }
+
+    // If GSI path returned fewer results than limit after filtering, loop to fill the page
+    if (startDate && endDate && shouldFilterByAccount && items.length < limit && result.LastEvaluatedKey) {
+      const MAX_FILL_LOOPS = 5;
+      for (let loop = 0; loop < MAX_FILL_LOOPS && items.length < limit && result.LastEvaluatedKey; loop++) {
+        const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
+        const fillCmd = new QueryCommand({
+          TableName: TRADES_TABLE,
+          IndexName: 'trades-by-date-gsi',
+          KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
+          ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
+          ExpressionAttributeNames: { '#od': 'openDate' },
+          Limit: limit * 3,
+          ExclusiveStartKey: result.LastEvaluatedKey,
+        });
+        result = await ddb.send(fillCmd);
+        let moreItems = result.Items || [];
+        if (moreItems.length > 0) {
+          const moreKeys = moreItems.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
+          const moreChunks: Record<string, any>[][] = [];
+          for (let i = 0; i < moreKeys.length; i += 100) moreChunks.push(moreKeys.slice(i, i + 100));
+          const moreBatchResults = await Promise.all(
+            moreChunks.map(chunk => ddb.send(new BatchGetCommand({ RequestItems: { [TRADES_TABLE]: { Keys: chunk } } })))
+          );
+          const moreFullItems: any[] = [];
+          for (const br of moreBatchResults) {
+            if (br.Responses?.[TRADES_TABLE]) moreFullItems.push(...br.Responses[TRADES_TABLE]);
+          }
+          const moreMap = new Map(moreFullItems.map((it: any) => [it.tradeId, it]));
+          moreItems = moreItems.map((it: any) => moreMap.get(it.tradeId) || it);
+          moreItems = moreItems.filter((it: any) => it.accountId === accountId);
+          items.push(...moreItems);
+        }
+      }
+      // Trim to requested limit
+      if (items.length > limit) items = items.slice(0, limit);
     }
 
     log.info('Query results', {

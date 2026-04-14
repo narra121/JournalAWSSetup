@@ -14,9 +14,10 @@ export const handler = async (event: any) => {
 
     if (email && USER_POOL_ID) {
       try {
+        const safeEmail = email.replace(/"/g, '\\"');
         const existing = await cognito.send(new ListUsersCommand({
           UserPoolId: USER_POOL_ID,
-          Filter: `email = "${email}"`,
+          Filter: `email = "${safeEmail}"`,
           Limit: 10,
         }));
 
@@ -61,9 +62,10 @@ export const handler = async (event: any) => {
   if (event.triggerSource === 'PreSignUp_SignUp') {
     if (email && USER_POOL_ID) {
       try {
+        const safeEmail = email.replace(/"/g, '\\"');
         const existing = await cognito.send(new ListUsersCommand({
           UserPoolId: USER_POOL_ID,
-          Filter: `email = "${email}"`,
+          Filter: `email = "${safeEmail}"`,
           Limit: 10,
         }));
 

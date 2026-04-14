@@ -74,14 +74,15 @@ describe('update-user-profile handler', () => {
     );
   });
 
-  it('handles Cognito update failure gracefully', async () => {
+  it('returns 500 when Cognito update fails', async () => {
     cognitoMock.on(AdminUpdateUserAttributesCommand).rejects(new Error('Cognito update failed'));
 
     const res = await handler(makeEvent({ name: 'New Name' }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
 
   // ── Auth errors ─────────────────────────────────────────────

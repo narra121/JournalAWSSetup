@@ -12,7 +12,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const { email, password } = JSON.parse(event.body);
     if (!email || !password) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email and password required');
     const rl = await checkRateLimit({ key: `login:${email}`, limit: 10, windowSeconds: 300 });
-    if (!rl.allowed) return errorResponse(429, ErrorCodes.INTERNAL_ERROR, 'Too many attempts', { retryAfter: rl.retryAfter });
+    if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
     const cmd = new InitiateAuthCommand({
       AuthFlow: 'USER_PASSWORD_AUTH',
       ClientId: CLIENT_ID,
@@ -40,6 +40,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(403, ErrorCodes.EMAIL_NOT_VERIFIED, 'Please verify your email before logging in. Check your inbox for the verification code.');
     }
     
-    return errorResponse(400, ErrorCodes.UNAUTHORIZED, e.message || 'Login failed'); 
+    return errorResponse(400, ErrorCodes.UNAUTHORIZED, 'Invalid email or password');
   }
 };

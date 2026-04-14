@@ -13,15 +13,16 @@ type AnalyticsType = 'hourly' | 'daily-win-rate' | 'symbol-distribution' | 'stra
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const userId = getUserId(event);
+
+  if (!userId) {
+    return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+  }
+
   const type = (event.queryStringParameters?.type || 'hourly') as AnalyticsType;
   const accountId = event.queryStringParameters?.accountId || 'ALL';
   const startDate = event.queryStringParameters?.startDate || '2000-01-01';
   const endDate = event.queryStringParameters?.endDate || new Date().toISOString().slice(0, 10);
   const logger = makeLogger({ requestId: event.requestContext.requestId, userId });
-
-  if (!userId) {
-    return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
-  }
 
   try {
     // Query pre-aggregated DailyStats instead of scanning raw trades

@@ -356,7 +356,6 @@ describe('list-trades handler', () => {
     });
     const res = await handler(event, {} as any, () => {}) as any;
 
-    // GSI path no longer passes Limit to QueryCommand; limit is applied client-side
     // Verify the response pagination limit is capped at 100
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(100);
@@ -400,9 +399,9 @@ describe('list-trades handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(25);
 
-    // GSI path does NOT pass Limit to QueryCommand (fetches all keys for date range)
+    // GSI path over-fetches with Limit = limit * 3 to account for post-filtering
     const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBeUndefined();
+    expect(call.args[0].input.Limit).toBe(75);
   });
 
   it('defaults limit to 50 when not provided', async () => {
@@ -410,7 +409,7 @@ describe('list-trades handler', () => {
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
-    // GSI path does NOT pass Limit to QueryCommand; verify default in pagination response
+    // Verify default pagination limit in response
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(50);
   });
@@ -428,7 +427,7 @@ describe('list-trades handler', () => {
     });
     const res = await handler(event, {} as any, () => {}) as any;
 
-    // GSI path does NOT pass Limit to QueryCommand; verify clamping in pagination response
+    // Verify clamping in pagination response
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(1);
   });

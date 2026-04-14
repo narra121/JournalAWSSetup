@@ -1,3 +1,5 @@
+// TODO: This handler is deployed but never invoked from any webhook or event source.
+// Wire it up to stripe-webhook handlers or remove it.
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 
 const ses = new SESClient({});

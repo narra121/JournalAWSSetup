@@ -23,6 +23,12 @@ const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
+function makeJwt(sub: string): string {
+  const header = btoa(JSON.stringify({ alg: 'RS256' }));
+  const payload = btoa(JSON.stringify({ sub }));
+  return `${header}.${payload}.sig`;
+}
+
 const sampleTrades = [
   {
     symbol: 'XAUUSD',
@@ -45,7 +51,7 @@ function makeEvent(body?: any, overrides: Partial<APIGatewayProxyEventV2> = {}):
     rawPath: '/extract-trades',
     rawQueryString: '',
     headers: {
-      authorization: 'Bearer test-token',
+      authorization: `Bearer ${makeJwt('user-1')}`,
     },
     requestContext: {
       accountId: '123',

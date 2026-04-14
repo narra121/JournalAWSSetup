@@ -162,6 +162,7 @@ describe('create-stripe-checkout handler', () => {
         status: 'created',
         checkoutSessionId: 'cs_existing_456',
         checkoutUrl: 'https://checkout.stripe.com/existing',
+        createdAt: new Date().toISOString(), // fresh session, under 23h
       },
     });
 
@@ -233,6 +234,52 @@ describe('create-stripe-checkout handler', () => {
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
     expect(body.message).toContain('Failed to create checkout session');
+  });
+
+  it('creates new checkout when existing session is stale (>23 hours)', async () => {
+    const staleDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // 24h ago
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        userId: 'user-1',
+        status: 'created',
+        checkoutSessionId: 'cs_stale_456',
+        checkoutUrl: 'https://checkout.stripe.com/stale',
+        createdAt: staleDate,
+      },
+    });
+
+    const res = await handler(makeEvent({ planId: 'price_123' })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // Should create a new session, not return the stale one
+    expect(body.data.checkoutSessionId).toBe('cs_test_123');
+    expect(mockSessionsCreate).toHaveBeenCalledOnce();
+  });
+
+  it('passes subscription_data with userId and planId metadata', async () => {
+    const res = await handler(makeEvent({ planId: 'price_pro_monthly' })) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(mockSessionsCreate).toHaveBeenCalledOnce();
+    const callArgs = mockSessionsCreate.mock.calls[0][0];
+    expect(callArgs.subscription_data).toEqual({
+      metadata: { userId: 'user-1', planId: 'price_pro_monthly' },
+    });
+  });
+
+  it('defaults to tradequt.com when origin is not whitelisted', async () => {
+    const event = makeEvent({ planId: 'price_123' }, {
+      headers: { authorization: `Bearer ${makeJwt('user-1')}`, origin: 'https://evil.com' },
+    } as any);
+
+    const res = await handler(event) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(mockSessionsCreate).toHaveBeenCalledOnce();
+    const callArgs = mockSessionsCreate.mock.calls[0][0];
+    expect(callArgs.success_url).toContain('https://tradequt.com');
+    expect(callArgs.cancel_url).toContain('https://tradequt.com');
   });
 
   // ── Allowed statuses (can create new checkout) ─────────────

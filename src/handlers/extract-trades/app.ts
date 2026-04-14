@@ -167,22 +167,24 @@ const MAX_IMAGE_BASE64_LENGTH = (() => {
 })();
 
 // --- Prompt caching (TTL-based, avoids rebuilding date strings on every invocation) ---
-let cachedGeminiPrompt: { text: string; expiry: number } | null = null;
-let cachedTextPrompt: { text: string; expiry: number } | null = null;
+let cachedGeminiPrompt: { text: string; expiry: number; dateKey: string } | null = null;
+let cachedTextPrompt: { text: string; expiry: number; dateKey: string } | null = null;
 const PROMPT_CACHE_TTL = 3600000; // 1 hour
 
 function getGeminiPrompt(): string {
   const now = Date.now();
-  if (!cachedGeminiPrompt || now > cachedGeminiPrompt.expiry) {
-    cachedGeminiPrompt = { text: buildGeminiPrompt(), expiry: now + PROMPT_CACHE_TTL };
+  const todayKey = new Date().toISOString().slice(0, 10);
+  if (!cachedGeminiPrompt || now > cachedGeminiPrompt.expiry || cachedGeminiPrompt.dateKey !== todayKey) {
+    cachedGeminiPrompt = { text: buildGeminiPrompt(), expiry: now + PROMPT_CACHE_TTL, dateKey: todayKey };
   }
   return cachedGeminiPrompt.text;
 }
 
 function getTextPrompt(): string {
   const now = Date.now();
-  if (!cachedTextPrompt || now > cachedTextPrompt.expiry) {
-    cachedTextPrompt = { text: buildTextExtractionPrompt(), expiry: now + PROMPT_CACHE_TTL };
+  const todayKey = new Date().toISOString().slice(0, 10);
+  if (!cachedTextPrompt || now > cachedTextPrompt.expiry || cachedTextPrompt.dateKey !== todayKey) {
+    cachedTextPrompt = { text: buildTextExtractionPrompt(), expiry: now + PROMPT_CACHE_TTL, dateKey: todayKey };
   }
   return cachedTextPrompt.text;
 }
@@ -211,10 +213,10 @@ async function callGemini(
   parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
   signal: AbortSignal
 ): Promise<string> {
-  const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent?key=${apiKey}`;
+  const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent`;
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
       generationConfig: { temperature: 0 },
@@ -234,10 +236,10 @@ async function callGemini(
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     const userId = getUserId(event);
-    if (userId) {
-      const subError = await checkSubscription(userId);
-      if (subError) return subError;
-    }
+    if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+
+    const subError = await checkSubscription(userId);
+    if (subError) return subError;
 
     if (!event.body) return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Missing body' }, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS }, message: 'Missing body' });
     
@@ -353,7 +355,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const prompt = getGeminiPrompt();
 
     const imageResults = await Promise.allSettled(images.map(async (imageBase64, i) => {
-      const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+      // Detect MIME type from data URI prefix before stripping it
+      const mimeMatch = /^data:(image\/[a-zA-Z0-9+.-]+);base64,/i.exec(imageBase64);
+      const detectedMime = mimeMatch ? mimeMatch[1] : 'image/png';
+      const cleaned = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/i, '');
 
       if (cleaned.length > MAX_IMAGE_BASE64_LENGTH) {
         processingDetails[i] = {
@@ -375,7 +380,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           apiKey,
           [
             { text: prompt },
-            { inlineData: { mimeType: 'image/png', data: cleaned } }
+            { inlineData: { mimeType: detectedMime, data: cleaned } }
           ],
           controller.signal
         );
