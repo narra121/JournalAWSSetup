@@ -24,7 +24,7 @@ async function getStripe(): Promise<Stripe> {
     throw new Error('Stripe secret key not found in SSM');
   }
 
-  stripe = new Stripe(secretKey, { apiVersion: '2025-03-31.basil' });
+  stripe = new Stripe(secretKey);
   return stripe;
 }
 
@@ -87,7 +87,15 @@ async function handleGet(userId: string): Promise<APIGatewayProxyResult> {
   );
 
   if (!result.Item) {
-    return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
+    // No subscription record — return empty subscription (pre-migration user or no trial)
+    return envelope({
+      statusCode: 200,
+      data: {
+        subscription: null,
+        status: 'none',
+        message: 'No subscription found',
+      },
+    });
   }
 
   const record = result.Item;

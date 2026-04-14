@@ -33,7 +33,7 @@ async function getStripeClient(): Promise<Stripe> {
     if (!cachedStripeSecretKey) {
       cachedStripeSecretKey = await getSSMParameter(STRIPE_SECRET_KEY_PARAM);
     }
-    stripeClient = new Stripe(cachedStripeSecretKey, { apiVersion: '2024-06-20' });
+    stripeClient = new Stripe(cachedStripeSecretKey);
   }
   return stripeClient;
 }
