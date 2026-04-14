@@ -100,8 +100,9 @@ export const handler = async (
         });
       }
 
-      // Block if subscription is active or pending cancellation
-      if (['active', 'trialing', 'past_due', 'cancellation_requested'].includes(status)) {
+      // Block if subscription is already active or pending cancellation
+      // Allow: trial, cancelled, expired, completed, paused (user can re-subscribe)
+      if (['active', 'past_due', 'cancellation_requested'].includes(status)) {
         log.warn('duplicate subscription attempt', { existingStatus: status });
         return errorResponse(
           400,
@@ -147,7 +148,7 @@ export const handler = async (
           createdAt: now,
           updatedAt: now,
         },
-        ConditionExpression: 'attribute_not_exists(userId) OR #status IN (:cancelled, :expired, :created)',
+        ConditionExpression: 'attribute_not_exists(userId) OR #status IN (:cancelled, :expired, :created, :trial, :completed, :paused)',
         ExpressionAttributeNames: {
           '#status': 'status',
         },
@@ -155,6 +156,9 @@ export const handler = async (
           ':cancelled': 'cancelled',
           ':expired': 'expired',
           ':created': 'created',
+          ':trial': 'trial',
+          ':completed': 'completed',
+          ':paused': 'paused',
         },
       })
     );
