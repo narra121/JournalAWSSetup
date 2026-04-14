@@ -185,6 +185,7 @@ jobs:
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               StageName=tradequt-dev \
+              Environment=dev \
               ApiVersion=v1 \
               LogRetentionDays=7 \
               GeminiApiKeyParamName=/tradequt/geminiApiKey \
