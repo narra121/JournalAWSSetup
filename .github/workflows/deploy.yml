@@ -32,6 +32,8 @@ jobs:
         with:
           ref: main
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.12"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -41,7 +43,7 @@ jobs:
         with:
           path: |
             **/node_modules
-          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lockb', '**/package.json') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock', '**/package.json') }}
           restore-keys: |
             bun-${{ runner.os }}-
       - name: Cache SAM build
@@ -84,6 +86,8 @@ jobs:
         with:
           ref: main
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.12"
       - uses: actions/download-artifact@v4
         with:
           name: sam-build
@@ -108,14 +112,52 @@ jobs:
             --overwrite \
             --region $AWS_REGION
 
-      - name: Store Razorpay Webhook Secret in SSM
+      - name: Store Stripe Secret Key in SSM
         env:
-          RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY_DEV }}
         run: |
           aws ssm put-parameter \
-            --name "/tradequt/razorpayWebhookSecret" \
-            --value "${RAZORPAY_WEBHOOK_SECRET}" \
+            --name "/tradequt/stripeSecretKey" \
+            --value "${STRIPE_SECRET_KEY}" \
             --type "SecureString" \
+            --overwrite \
+            --region $AWS_REGION
+
+      - name: Store Stripe Webhook Secret in SSM
+        env:
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET_DEV }}
+        run: |
+          aws ssm put-parameter \
+            --name "/tradequt/stripeWebhookSecret" \
+            --value "${STRIPE_WEBHOOK_SECRET}" \
+            --type "SecureString" \
+            --overwrite \
+            --region $AWS_REGION
+
+      - name: Store Stripe Price IDs in SSM
+        run: |
+          aws ssm put-parameter \
+            --name "/tradequt/dev/stripe/price/monthly_inr" \
+            --value "${{ secrets.STRIPE_PRICE_MONTHLY_INR_DEV }}" \
+            --type "String" \
+            --overwrite \
+            --region $AWS_REGION
+          aws ssm put-parameter \
+            --name "/tradequt/dev/stripe/price/yearly_inr" \
+            --value "${{ secrets.STRIPE_PRICE_YEARLY_INR_DEV }}" \
+            --type "String" \
+            --overwrite \
+            --region $AWS_REGION
+          aws ssm put-parameter \
+            --name "/tradequt/dev/stripe/price/monthly_usd" \
+            --value "${{ secrets.STRIPE_PRICE_MONTHLY_USD_DEV }}" \
+            --type "String" \
+            --overwrite \
+            --region $AWS_REGION
+          aws ssm put-parameter \
+            --name "/tradequt/dev/stripe/price/yearly_usd" \
+            --value "${{ secrets.STRIPE_PRICE_YEARLY_USD_DEV }}" \
+            --type "String" \
             --overwrite \
             --region $AWS_REGION
 
@@ -133,10 +175,6 @@ jobs:
           fi
 
       - name: Deploy to Dev
-        env:
-          RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID_DEV }}
-          RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET_DEV }}
-          RAZORPAY_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET_DEV }}
         run: |
           sam deploy \
             --stack-name tradequt-dev \
@@ -150,11 +188,9 @@ jobs:
               ApiVersion=v1 \
               LogRetentionDays=7 \
               GeminiApiKeyParamName=/tradequt/geminiApiKey \
-              RazorpayWebhookSecretParamName=/tradequt/razorpayWebhookSecret \
+              StripeSecretKeyParamName=/tradequt/stripeSecretKey \
+              StripeWebhookSecretParamName=/tradequt/stripeWebhookSecret \
               UseExistingResources=false \
-              RazorpayKeyId="${RAZORPAY_KEY_ID}" \
-              RazorpayKeySecret="${RAZORPAY_KEY_SECRET}" \
-              RazorpayWebhookSecret="${RAZORPAY_WEBHOOK_SECRET}" \
               CustomDomainName=api-dev.tradequt.com \
               "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
               "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \

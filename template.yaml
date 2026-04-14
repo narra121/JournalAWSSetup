@@ -53,10 +53,14 @@ Parameters:
     Type: String
     Default: /tradequt/geminiApiKey
     Description: Name of SSM SecureString parameter storing the Gemini API key.
-  RazorpayWebhookSecretParamName:
+  StripeSecretKeyParamName:
     Type: String
-    Default: /tradequt/razorpayWebhookSecret
-    Description: Name of SSM SecureString parameter storing the Razorpay webhook secret.
+    Default: /tradequt/stripeSecretKey
+    Description: Name of SSM SecureString parameter storing the Stripe secret key.
+  StripeWebhookSecretParamName:
+    Type: String
+    Default: /tradequt/stripeWebhookSecret
+    Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
   UseExistingResources:
     Type: String
     Default: "false"
@@ -74,20 +78,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Name of an existing AuthRateLimit table (required if UseExistingResources=true)
-  RazorpayKeyId:
-    Type: String
-    Default: ""
-    Description: Razorpay API Key ID (public key)
-  RazorpayKeySecret:
-    Type: String
-    Default: ""
-    NoEcho: true
-    Description: Razorpay API Key Secret (private key)
-  RazorpayWebhookSecret:
-    Type: String
-    Default: ""
-    NoEcho: true
-    Description: Razorpay Webhook Secret for signature verification
   CustomDomainName:
     Type: String
     Default: ""
@@ -1231,7 +1221,7 @@ Resources:
       Handler: src/handlers/extract-trades/app.handler
 
       Description: Extract structured trades from an image using Gemini vision model
-      Timeout: 600 # Increased to 10 minutes for long-running Gemini processing
+      Timeout: 900 # 15 minutes — max Lambda timeout for long-running Gemini processing
       Policies:
         - Statement:
             Effect: Allow
@@ -1920,37 +1910,7 @@ Resources:
         External:
           - "@aws-sdk/*"
 
-  # Razorpay Payment Functions
-  CreateOrderRazorpayFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/create-order-razorpay/app.handler
-
-      Environment:
-        Variables:
-          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/payments/create-order
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        Format: cjs
-        EntryPoints:
-          - src/handlers/create-order-razorpay/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: false
-        External:
-          - "@aws-sdk/*"
-
-  # Razorpay Subscription Functions
+  # Stripe Payment & Subscription Functions
   GetSubscriptionPlansFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1965,7 +1925,7 @@ Resources:
             Effect: Allow
             Action:
               - ssm:GetParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/${Environment}/razorpay/plan/*"
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/${Environment}/stripe/price/*"
       Events:
         Api:
           Type: HttpApi
@@ -1987,20 +1947,29 @@ Resources:
         External:
           - "@aws-sdk/*"
 
-  CreateRazorpaySubscriptionFunction:
+  CreateStripeCheckoutFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/handlers/create-razorpay-subscription/app.handler
+      Handler: src/handlers/create-stripe-checkout/app.handler
 
       Environment:
         Variables:
-          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
           SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
       Events:
         Api:
           Type: HttpApi
@@ -2013,27 +1982,36 @@ Resources:
       BuildProperties:
         Format: cjs
         EntryPoints:
-          - src/handlers/create-razorpay-subscription/app.ts
+          - src/handlers/create-stripe-checkout/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false
         External:
           - "@aws-sdk/*"
 
-  ManageRazorpaySubscriptionFunction:
+  ManageStripeSubscriptionFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/handlers/manage-razorpay-subscription/app.handler
+      Handler: src/handlers/manage-stripe-subscription/app.handler
 
       Environment:
         Variables:
-          RAZORPAY_KEY_ID: !Ref RazorpayKeyId
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
           SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
       Events:
         GetSubscription:
           Type: HttpApi
@@ -2064,54 +2042,23 @@ Resources:
       BuildProperties:
         Format: cjs
         EntryPoints:
-          - src/handlers/manage-razorpay-subscription/app.ts
+          - src/handlers/manage-stripe-subscription/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false
         External:
           - "@aws-sdk/*"
 
-  VerifyPaymentRazorpayFunction:
+  StripeWebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/handlers/verify-payment-razorpay/app.handler
+      Handler: src/handlers/stripe-webhook/app.handler
 
       Environment:
         Variables:
-          RAZORPAY_KEY_SECRET: !Ref RazorpayKeySecret
-          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/payments/verify
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        Format: cjs
-        EntryPoints:
-          - src/handlers/verify-payment-razorpay/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: false
-        External:
-          - "@aws-sdk/*"
-
-  RazorpayWebhookFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/razorpay-webhook/app.handler
-
-      Environment:
-        Variables:
-          RAZORPAY_WEBHOOK_SECRET_PARAM: !Ref RazorpayWebhookSecretParamName
+          STRIPE_WEBHOOK_SECRET_PARAM: !Ref StripeWebhookSecretParamName
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
           SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       Policies:
         - DynamoDBCrudPolicy:
@@ -2120,7 +2067,14 @@ Resources:
             Effect: Allow
             Action:
               - ssm:GetParameter
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RazorpayWebhookSecretParamName}"
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeWebhookSecretParamName}"
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
       Events:
         Api:
           Type: HttpApi
@@ -2135,7 +2089,37 @@ Resources:
       BuildProperties:
         Format: cjs
         EntryPoints:
-          - src/handlers/razorpay-webhook/app.ts
+          - src/handlers/stripe-webhook/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  SubscriptionEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/subscription-email/app.handler
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          FROM_EMAIL: !Sub "noreply@${CustomDomainName}"
+          APP_URL: !Sub "https://${CustomDomainName}"
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ses:SendEmail
+              - ses:SendRawEmail
+            Resource: "*"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/subscription-email/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false

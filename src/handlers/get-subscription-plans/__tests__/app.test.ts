@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import type { APIGatewayProxyEvent } from 'aws-lambda';
+import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
 vi.stubEnv('STAGE_NAME', 'test');
@@ -10,161 +10,113 @@ const ssmMock = mockClient(SSMClient);
 
 const { handler } = await import('../app.ts');
 
-// ─── Helpers ────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────
 
-function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
+function makeEvent(
+  queryParams?: Record<string, string>,
+  overrides: Partial<APIGatewayProxyEventV2> = {},
+): APIGatewayProxyEventV2 {
   return {
-    httpMethod: 'GET',
-    path: '/subscription-plans',
+    version: '2.0',
+    routeKey: 'GET /subscription-plans',
+    rawPath: '/subscription-plans',
+    rawQueryString: queryParams ? new URLSearchParams(queryParams).toString() : '',
     headers: {},
-    multiValueHeaders: {},
-    queryStringParameters: null,
-    multiValueQueryStringParameters: null,
-    pathParameters: null,
-    stageVariables: null,
+    queryStringParameters: queryParams || undefined,
     requestContext: {
       accountId: '123',
       apiId: 'api',
-      authorizer: null,
-      protocol: 'HTTP/1.1',
-      httpMethod: 'GET',
-      identity: {
-        accessKey: null, accountId: null, apiKey: null, apiKeyId: null, caller: null,
-        clientCert: null, cognitoAuthenticationProvider: null, cognitoAuthenticationType: null,
-        cognitoIdentityId: null, cognitoIdentityPoolId: null, principalOrgId: null,
-        sourceIp: '127.0.0.1', user: null, userAgent: 'test', userArn: null,
-      },
-      path: '/subscription-plans',
-      stage: '$default',
+      domainName: 'api.example.com',
+      domainPrefix: 'api',
+      http: { method: 'GET', path: '/subscription-plans', protocol: 'HTTP/1.1', sourceIp: '127.0.0.1', userAgent: 'test' },
       requestId: 'req-1',
-      requestTimeEpoch: 0,
-      resourceId: '',
-      resourcePath: '/subscription-plans',
+      routeKey: 'GET /subscription-plans',
+      stage: '$default',
+      time: '01/Jan/2024:00:00:00 +0000',
+      timeEpoch: 0,
     },
-    resource: '/subscription-plans',
-    body: null,
+    body: undefined,
     isBase64Encoded: false,
     ...overrides,
-  } as APIGatewayProxyEvent;
+  } as unknown as APIGatewayProxyEventV2;
 }
 
-// ─── Tests ──────────────────────────────────────────────────────
+function mockSSMPrices(currency: 'usd' | 'inr') {
+  ssmMock
+    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/monthly_${currency}` })
+    .resolves({ Parameter: { Value: `price_test_monthly_${currency}` } });
+  ssmMock
+    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/yearly_${currency}` })
+    .resolves({ Parameter: { Value: `price_test_yearly_${currency}` } });
+}
+
+// ─── Tests ───────────────────────────────────────────────────────
 
 beforeEach(() => {
   ssmMock.reset();
 });
 
 describe('get-subscription-plans handler', () => {
-  // ── Success ─────────────────────────────────────────────────
+  // ── 1. Returns monthly + yearly plans for USD (default) ────────
 
-  it('returns 200 with all 4 plans when all SSM parameters exist', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_basic_monthly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_basic_yearly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pro_monthly_id' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_pro_yearly_id' } });
+  it('returns monthly and yearly plans for USD (default)', async () => {
+    mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.plans).toHaveLength(4);
-  });
-
-  it('returns plans with correct tier, period, and amount details', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
-
-    const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
-    const plans = body.data.plans;
-
-    // Basic monthly
-    const basicMonthly = plans.find((p: any) => p.tier === 'basic' && p.period === 'monthly');
-    expect(basicMonthly).toBeDefined();
-    expect(basicMonthly.amount).toBe(99);
-    expect(basicMonthly.name).toBe('TradeQut Basic Monthly');
-    expect(basicMonthly.planId).toBe('plan_bm');
-
-    // Basic yearly
-    const basicYearly = plans.find((p: any) => p.tier === 'basic' && p.period === 'yearly');
-    expect(basicYearly).toBeDefined();
-    expect(basicYearly.amount).toBe(999);
-    expect(basicYearly.name).toBe('TradeQut Basic Yearly');
-    expect(basicYearly.savings).toBe('17%');
-
-    // Pro monthly
-    const proMonthly = plans.find((p: any) => p.tier === 'pro' && p.period === 'monthly');
-    expect(proMonthly).toBeDefined();
-    expect(proMonthly.amount).toBe(299);
-    expect(proMonthly.name).toBe('TradeQut Pro Monthly');
-
-    // Pro yearly
-    const proYearly = plans.find((p: any) => p.tier === 'pro' && p.period === 'yearly');
-    expect(proYearly).toBeDefined();
-    expect(proYearly.amount).toBe(2999);
-    expect(proYearly.name).toBe('TradeQut Pro Yearly');
-    expect(proYearly.savings).toBe('17%');
-  });
-
-  // ── ParameterNotFound ───────────────────────────────────────
-
-  it('filters out null plans when ParameterNotFound', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-
-    const notFoundError = new Error('Parameter not found');
-    (notFoundError as any).name = 'ParameterNotFound';
-
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
-
-    const res = await handler(makeEvent()) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // Only 2 plans should be returned (basic_monthly and pro_yearly)
+    expect(body.data.currency).toBe('USD');
     expect(body.data.plans).toHaveLength(2);
+
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    expect(monthly).toBeDefined();
+    expect(monthly.planId).toBe('price_test_monthly_usd');
+    expect(yearly).toBeDefined();
+    expect(yearly.planId).toBe('price_test_yearly_usd');
   });
 
-  // ── SSM errors ──────────────────────────────────────────────
+  // ── 2. Returns monthly + yearly plans for INR when ?currency=INR ──
 
-  it('returns 500 when SSM throws a non-ParameterNotFound error', async () => {
-    const ssmError = new Error('SSM service unavailable');
-    (ssmError as any).name = 'InternalServerError';
+  it('returns monthly and yearly plans for INR when ?currency=INR', async () => {
+    mockSSMPrices('inr');
 
-    ssmMock.on(GetParameterCommand).rejects(ssmError);
+    const res = await handler(makeEvent({ currency: 'INR' })) as any;
 
-    const res = await handler(makeEvent()) as any;
-
-    expect(res.statusCode).toBe(500);
+    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('INTERNAL_ERROR');
+    expect(body.data.currency).toBe('INR');
+    expect(body.data.plans).toHaveLength(2);
+
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    expect(monthly).toBeDefined();
+    expect(monthly.planId).toBe('price_test_monthly_inr');
+    expect(yearly).toBeDefined();
+    expect(yearly.planId).toBe('price_test_yearly_inr');
   });
 
-  // ── No plans available ─────────────────────────────────────
+  // ── 3. Returns 400 for invalid currency ────────────────────────
 
-  it('returns empty plans array when all SSM parameters are not found', async () => {
-    const notFoundError = new Error('Parameter not found');
-    (notFoundError as any).name = 'ParameterNotFound';
+  it('returns 400 for invalid currency', async () => {
+    const res = await handler(makeEvent({ currency: 'EUR' })) as any;
 
-    ssmMock.on(GetParameterCommand).rejects(notFoundError);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(body.message).toContain('Invalid currency');
+  });
+
+  // ── 4. Returns empty plans array when SSM params not found (ParameterNotFound) ──
+
+  it('returns empty plans array when SSM params not found', async () => {
+    const paramNotFound = new Error('Parameter not found');
+    (paramNotFound as any).name = 'ParameterNotFound';
+    ssmMock.on(GetParameterCommand).rejects(paramNotFound);
 
     const res = await handler(makeEvent()) as any;
 
@@ -174,155 +126,130 @@ describe('get-subscription-plans handler', () => {
     expect(body.data.plans).toEqual([]);
   });
 
-  it('returns empty plans array when SSM parameters have null values', async () => {
-    ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: undefined } });
+  // ── 5. Returns correct amounts: USD $1.99/$19.99, INR 99/999 ──
+
+  it('returns correct amounts for USD: $1.99 monthly, $19.99 yearly', async () => {
+    mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
 
-    expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    expect(body.data.plans).toEqual([]);
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    // USD amounts are stored in cents (199, 1999) but displayed as dollars
+    expect(monthly.amount).toBe(1.99);
+    expect(yearly.amount).toBe(19.99);
   });
 
-  // ── Plan data validation ───────────────────────────────────
+  it('returns correct amounts for INR: 99 monthly, 999 yearly', async () => {
+    mockSSMPrices('inr');
 
-  it('all plans have INR currency', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
+    const res = await handler(makeEvent({ currency: 'INR' })) as any;
+
+    const body = JSON.parse(res.body);
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    // INR amounts are in rupees directly
+    expect(monthly.amount).toBe(99);
+    expect(yearly.amount).toBe(999);
+  });
+
+  // ── 6. Returns savings info for yearly plans ───────────────────
+
+  it('returns savings info for yearly plans', async () => {
+    mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
 
-    for (const plan of body.data.plans) {
-      expect(plan.currency).toBe('INR');
-    }
+    const body = JSON.parse(res.body);
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    expect(yearly.savings).toBe('17%');
+    expect(yearly.monthlyEquivalent).toBeDefined();
+    expect(yearly.monthlyEquivalent).toBe(1.67); // $1.67 in dollars
   });
 
-  it('all plans have interval set to 1', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
+  it('returns savings info for yearly INR plans', async () => {
+    mockSSMPrices('inr');
+
+    const res = await handler(makeEvent({ currency: 'INR' })) as any;
+
+    const body = JSON.parse(res.body);
+    const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
+
+    expect(yearly.savings).toBe('17%');
+    expect(yearly.monthlyEquivalent).toBe(83);
+  });
+
+  it('monthly plans do not have savings info', async () => {
+    mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
 
-    for (const plan of body.data.plans) {
-      expect(plan.interval).toBe(1);
-    }
+    const body = JSON.parse(res.body);
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+
+    expect(monthly.savings).toBeUndefined();
   });
 
-  it('yearly plans include savings and monthlyEquivalent fields', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
+  // ── 7. Returns 500 when SSM throws unexpected error ────────────
 
-    const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
-    const plans = body.data.plans;
-
-    const basicYearly = plans.find((p: any) => p.tier === 'basic' && p.period === 'yearly');
-    expect(basicYearly.savings).toBe('17%');
-    expect(basicYearly.monthlyEquivalent).toBe(99);
-
-    const proYearly = plans.find((p: any) => p.tier === 'pro' && p.period === 'yearly');
-    expect(proYearly.savings).toBe('17%');
-    expect(proYearly.monthlyEquivalent).toBe(299);
-  });
-
-  it('monthly plans do not include savings field', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .resolves({ Parameter: { Value: 'plan_pm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .resolves({ Parameter: { Value: 'plan_py' } });
-
-    const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
-    const plans = body.data.plans;
-
-    const basicMonthly = plans.find((p: any) => p.tier === 'basic' && p.period === 'monthly');
-    expect(basicMonthly.savings).toBeUndefined();
-    expect(basicMonthly.monthlyEquivalent).toBeUndefined();
-
-    const proMonthly = plans.find((p: any) => p.tier === 'pro' && p.period === 'monthly');
-    expect(proMonthly.savings).toBeUndefined();
-    expect(proMonthly.monthlyEquivalent).toBeUndefined();
-  });
-
-  // ── Response shape ─────────────────────────────────────────
-
-  it('response message is "Subscription plans retrieved" on success', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    const notFoundError = new Error('Parameter not found');
-    (notFoundError as any).name = 'ParameterNotFound';
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .rejects(notFoundError);
-
-    const res = await handler(makeEvent()) as any;
-    const body = JSON.parse(res.body);
-    expect(body.message).toBe('Subscription plans retrieved');
-  });
-
-  it('returns 500 with error message when SSM throws AccessDeniedException', async () => {
-    const accessError = new Error('Access denied');
-    (accessError as any).name = 'AccessDeniedException';
-
-    ssmMock.on(GetParameterCommand).rejects(accessError);
+  it('returns 500 when SSM throws unexpected error', async () => {
+    ssmMock.on(GetParameterCommand).rejects(new Error('SSM service unavailable'));
 
     const res = await handler(makeEvent()) as any;
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
-    expect(body.message).toBe('Failed to fetch subscription plans');
+    expect(body.message).toContain('Failed to fetch subscription plans');
   });
 
-  // ── Partial plan availability ──────────────────────────────
+  // ── Additional edge cases ──────────────────────────────────────
 
-  it('returns only basic plans when pro plans are not found', async () => {
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_monthly' })
-      .resolves({ Parameter: { Value: 'plan_bm' } });
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/basic_yearly' })
-      .resolves({ Parameter: { Value: 'plan_by' } });
+  it('handles lowercase currency query param', async () => {
+    mockSSMPrices('inr');
 
-    const notFoundError = new Error('Parameter not found');
-    (notFoundError as any).name = 'ParameterNotFound';
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_monthly' })
-      .rejects(notFoundError);
-    ssmMock.on(GetParameterCommand, { Name: '/tradequt/test/razorpay/plan/pro_yearly' })
-      .rejects(notFoundError);
+    const res = await handler(makeEvent({ currency: 'inr' })) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.currency).toBe('INR');
+    expect(body.data.plans).toHaveLength(2);
+  });
+
+  it('returns partial plans when only monthly SSM param exists', async () => {
+    ssmMock
+      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/monthly_usd' })
+      .resolves({ Parameter: { Value: 'price_test_monthly_usd' } });
+
+    const paramNotFound = new Error('Parameter not found');
+    (paramNotFound as any).name = 'ParameterNotFound';
+    ssmMock
+      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/yearly_usd' })
+      .rejects(paramNotFound);
 
     const res = await handler(makeEvent()) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.data.plans).toHaveLength(2);
-    expect(body.data.plans.every((p: any) => p.tier === 'basic')).toBe(true);
+    expect(body.data.plans).toHaveLength(1);
+    expect(body.data.plans[0].period).toBe('monthly');
+  });
+
+  it('returns plan metadata (name, description, interval)', async () => {
+    mockSSMPrices('usd');
+
+    const res = await handler(makeEvent()) as any;
+
+    const body = JSON.parse(res.body);
+    const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
+
+    expect(monthly.name).toBe('TradeQut Pro Monthly');
+    expect(monthly.description).toBeDefined();
+    expect(monthly.interval).toBe(1);
+    expect(monthly.currency).toBe('USD');
   });
 });

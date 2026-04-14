@@ -50,12 +50,10 @@ const { handler: updateUserPreferences } = await import('./src/handlers/update-u
 const { handler: updateUserNotifications } = await import('./src/handlers/update-user-notifications/app.ts');
 const { handler: getSavedOptions } = await import('./src/handlers/get-saved-options/app.ts');
 const { handler: updateSavedOptions } = await import('./src/handlers/update-saved-options/app.ts');
-const { handler: createOrderRazorpay } = await import('./src/handlers/create-order-razorpay/app.ts');
 const { handler: getSubscriptionPlans } = await import('./src/handlers/get-subscription-plans/app.ts');
-const { handler: createSubscription } = await import('./src/handlers/create-razorpay-subscription/app.ts');
-const { handler: manageSubscription } = await import('./src/handlers/manage-razorpay-subscription/app.ts');
-const { handler: verifyPayment } = await import('./src/handlers/verify-payment-razorpay/app.ts');
-const { handler: razorpayWebhook } = await import('./src/handlers/razorpay-webhook/app.ts');
+const { handler: createStripeCheckout } = await import('./src/handlers/create-stripe-checkout/app.ts');
+const { handler: manageSubscription } = await import('./src/handlers/manage-stripe-subscription/app.ts');
+const { handler: stripeWebhook } = await import('./src/handlers/stripe-webhook/app.ts');
 
 // Local-only: manual stats rebuild (simulates DynamoDB Stream → update-stats)
 const { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand } = await import('@aws-sdk/lib-dynamodb');
@@ -196,16 +194,14 @@ const routes: [string, RegExp, HandlerFn][] = [
   // Enhance text
   ['POST', /^\/v1\/enhance-text$/, enhanceText],
 
-  // Payments & Subscriptions
-  ['POST', /^\/v1\/payments\/create-order$/, createOrderRazorpay],
+  // Payments & Subscriptions (Stripe)
   ['GET',  /^\/v1\/subscriptions\/plans$/, getSubscriptionPlans],
-  ['POST', /^\/v1\/subscriptions$/, createSubscription],
+  ['POST', /^\/v1\/subscriptions$/, createStripeCheckout],
   ['GET',  /^\/v1\/subscriptions$/, manageSubscription],
   ['PUT',  /^\/v1\/subscriptions$/, manageSubscription],
   ['PATCH', /^\/v1\/subscriptions$/, manageSubscription],
   ['DELETE', /^\/v1\/subscriptions$/, manageSubscription],
-  ['POST', /^\/v1\/payments\/verify$/, verifyPayment],
-  ['POST', /^\/v1\/payments\/webhook$/, razorpayWebhook],
+  ['POST', /^\/v1\/payments\/webhook$/, stripeWebhook],
 ];
 
 function buildLambdaEvent(req: http.IncomingMessage, body: string, pathMatch: RegExpMatchArray): any {

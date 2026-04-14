@@ -7,7 +7,8 @@ const STAGE_NAME = process.env.STAGE_NAME || 'dev';
 
 /**
  * Get available subscription plans
- * Returns the pre-configured plans with their Razorpay plan IDs
+ * Returns Stripe Price IDs grouped by currency (INR or USD).
+ * Query param: ?currency=INR|USD (defaults to USD)
  */
 export const handler = async (
   event: APIGatewayProxyEvent | any
@@ -16,22 +17,28 @@ export const handler = async (
   console.log('Event:', JSON.stringify(safeEvent, null, 2));
 
   try {
-    // Retrieve all plan IDs from SSM Parameter Store
+    // Get requested currency from query params
+    const queryParams = event.queryStringParameters || {};
+    const currency = (queryParams.currency || 'USD').toUpperCase();
+
+    if (currency !== 'INR' && currency !== 'USD') {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid currency. Use INR or USD.');
+    }
+
+    const suffix = currency.toLowerCase(); // 'inr' or 'usd'
+
+    // Fetch plans for the requested currency
     const plans = await Promise.all([
-      // Basic tier
-      getPlanDetails('basic', 'monthly', 99),
-      getPlanDetails('basic', 'yearly', 999),
-      // Pro tier
-      getPlanDetails('pro', 'monthly', 299),
-      getPlanDetails('pro', 'yearly', 2999),
+      getPlanDetails('monthly', suffix, currency),
+      getPlanDetails('yearly', suffix, currency),
     ]);
 
     const availablePlans = plans.filter(p => p !== null);
 
     return envelope({
       statusCode: 200,
-      data: { plans: availablePlans },
-      message: 'Subscription plans retrieved'
+      data: { plans: availablePlans, currency },
+      message: 'Subscription plans retrieved',
     });
   } catch (error: any) {
     console.error('Error fetching plans:', error);
@@ -39,10 +46,44 @@ export const handler = async (
   }
 };
 
-async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly', amount: number): Promise<any | null> {
+const PLAN_CONFIG: Record<string, Record<string, { amount: number; name: string; description: string; savings?: string; monthlyEquivalent?: number }>> = {
+  inr: {
+    monthly: {
+      amount: 99,
+      name: 'TradeQut Pro Monthly',
+      description: 'Monthly subscription — full access to all features',
+    },
+    yearly: {
+      amount: 999,
+      name: 'TradeQut Pro Annual',
+      description: 'Annual subscription — full access, save 17%',
+      savings: '17%',
+      monthlyEquivalent: 83,
+    },
+  },
+  usd: {
+    monthly: {
+      amount: 199, // $1.99 stored in cents
+      name: 'TradeQut Pro Monthly',
+      description: 'Monthly subscription — full access to all features',
+    },
+    yearly: {
+      amount: 1999, // $19.99 stored in cents
+      name: 'TradeQut Pro Annual',
+      description: 'Annual subscription — full access, save 17%',
+      savings: '17%',
+      monthlyEquivalent: 167, // $1.67 in cents
+    },
+  },
+};
+
+async function getPlanDetails(
+  period: 'monthly' | 'yearly',
+  suffix: string,
+  currency: string,
+): Promise<any | null> {
   try {
-    const planKey = `${tier}_${period}`;
-    const paramName = `/tradequt/${STAGE_NAME}/razorpay/plan/${planKey}`;
+    const paramName = `/tradequt/${STAGE_NAME}/stripe/price/${period}_${suffix}`;
     console.log(`Fetching SSM parameter: ${paramName}`);
     const result = await ssmClient.send(
       new GetParameterCommand({ Name: paramName })
@@ -51,45 +92,32 @@ async function getPlanDetails(tier: 'basic' | 'pro', period: 'monthly' | 'yearly
     const planId = result.Parameter?.Value;
     if (!planId) return null;
 
-    // Return plan details based on tier, period and amount
-    const planDetails: any = {
+    const config = PLAN_CONFIG[suffix]?.[period];
+    if (!config) return null;
+
+    // For display: INR amounts are in rupees, USD amounts stored in cents but displayed as dollars
+    const displayAmount = currency === 'USD' ? config.amount / 100 : config.amount;
+    const displayMonthlyEquivalent = config.monthlyEquivalent
+      ? currency === 'USD' ? config.monthlyEquivalent / 100 : config.monthlyEquivalent
+      : undefined;
+
+    return {
       planId,
-      tier,
       period,
-      amount,
-      currency: 'INR',
+      amount: displayAmount,
+      currency,
       interval: 1,
+      name: config.name,
+      description: config.description,
+      savings: config.savings,
+      monthlyEquivalent: displayMonthlyEquivalent,
     };
-
-    // Basic tier
-    if (tier === 'basic' && period === 'monthly') {
-      planDetails.name = 'TradeQut Basic Monthly';
-      planDetails.description = 'Monthly subscription - All features included';
-    } else if (tier === 'basic' && period === 'yearly') {
-      planDetails.name = 'TradeQut Basic Yearly';
-      planDetails.description = 'Yearly subscription - All features included. Save 17%!';
-      planDetails.savings = '17%';
-      planDetails.monthlyEquivalent = 99;
-    }
-    // Pro tier
-    else if (tier === 'pro' && period === 'monthly') {
-      planDetails.name = 'TradeQut Pro Monthly';
-      planDetails.description = 'Monthly subscription - All features included. Support development!';
-    } else if (tier === 'pro' && period === 'yearly') {
-      planDetails.name = 'TradeQut Pro Yearly';
-      planDetails.description = 'Yearly subscription - All features included. Save 17% and support development!';
-      planDetails.savings = '17%';
-      planDetails.monthlyEquivalent = 299;
-    }
-
-    return planDetails;
   } catch (error: any) {
-    console.error(`Error fetching plan ${tier} ${period}:`, error.name, error.message);
+    console.error(`Error fetching plan ${period} ${suffix}:`, error.name, error.message);
     if (error.name === 'ParameterNotFound') {
-      console.log(`Plan not found for ${tier} ${period}`);
+      console.log(`Plan not found for ${period}_${suffix}`);
       return null;
     }
-    console.error('Unexpected error:', error);
     throw error;
   }
 }
