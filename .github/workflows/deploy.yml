@@ -53,8 +53,8 @@ jobs:
           key: sam-build-${{ runner.os }}-${{ hashFiles('src/**/*.ts', 'template.yaml') }}
           restore-keys: |
             sam-build-${{ runner.os }}-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Install dependencies (fresh lockfile for Linux native deps)
+        run: rm -f bun.lock && bun install
       - name: Validate SAM template
         run: sam validate --region $AWS_REGION
       - name: Configure AWS credentials
