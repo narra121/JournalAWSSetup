@@ -47,7 +47,7 @@ async function rebuildForUser(userId: string): Promise<void> {
       TableName: TRADES_TABLE,
       KeyConditionExpression: 'userId = :u',
       ExpressionAttributeValues: { ':u': userId },
-      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition',
+      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition,brokenRuleIds,mistakes,lessons',
       ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' },
       ExclusiveStartKey: lastEvaluatedKey,
     }));
