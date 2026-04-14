@@ -52,6 +52,7 @@ const { handler: getSavedOptions } = await import('./src/handlers/get-saved-opti
 const { handler: updateSavedOptions } = await import('./src/handlers/update-saved-options/app.ts');
 const { handler: getSubscriptionPlans } = await import('./src/handlers/get-subscription-plans/app.ts');
 const { handler: createStripeCheckout } = await import('./src/handlers/create-stripe-checkout/app.ts');
+const { handler: verifyCheckoutSession } = await import('./src/handlers/verify-checkout-session/app.ts');
 const { handler: manageSubscription } = await import('./src/handlers/manage-stripe-subscription/app.ts');
 const { handler: stripeWebhook } = await import('./src/handlers/stripe-webhook/app.ts');
 
@@ -196,6 +197,7 @@ const routes: [string, RegExp, HandlerFn][] = [
 
   // Payments & Subscriptions (Stripe)
   ['GET',  /^\/v1\/subscriptions\/plans$/, getSubscriptionPlans],
+  ['GET',  /^\/v1\/subscriptions\/verify$/, verifyCheckoutSession],
   ['POST', /^\/v1\/subscriptions$/, createStripeCheckout],
   ['GET',  /^\/v1\/subscriptions$/, manageSubscription],
   ['PUT',  /^\/v1\/subscriptions$/, manageSubscription],
