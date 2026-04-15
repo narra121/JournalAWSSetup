@@ -1230,6 +1230,17 @@ Resources:
 
       Description: Extract structured trades from an image using Gemini vision model
       Timeout: 90
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins: !Split [",", !Ref AllowedOrigins]
+          AllowHeaders:
+            - authorization
+            - content-type
+          AllowMethods:
+            - POST
+          MaxAge: 3600
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
@@ -2422,3 +2433,6 @@ Outputs:
   CognitoDomain:
     Condition: HasGoogleAuth
     Value: !Sub "auth-${StageName}.tradequt.com"
+  ExtractTradesFunctionUrl:
+    Description: Lambda Function URL for extract-trades (bypasses API Gateway 30s timeout)
+    Value: !GetAtt ExtractTradesFunctionUrl.FunctionUrl
