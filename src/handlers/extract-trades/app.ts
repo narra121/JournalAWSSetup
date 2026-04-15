@@ -155,10 +155,10 @@ STRICT OUTPUT RULES:
 - If no valid rows, output [].`;
 };
 
-// Configurable upstream request timeout (ms) for Gemini fetch; default 80000 (80s)
+// Configurable upstream request timeout (ms) for Gemini fetch; default 90000 (90s)
 const REQUEST_TIMEOUT_MS = (() => {
-  const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '80000', 10);
-  return Number.isFinite(v) && v > 0 ? v : 8000;
+  const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '90000', 10);
+  return Number.isFinite(v) && v > 0 ? v : 90000;
 })();
 // Hard cap on accepted base64 payload bytes (after stripping data URI) to prevent very large images (default ~3MB)
 const MAX_IMAGE_BASE64_LENGTH = (() => {

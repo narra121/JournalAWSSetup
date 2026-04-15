@@ -1229,7 +1229,7 @@ Resources:
       Handler: src/handlers/extract-trades/app.handler
 
       Description: Extract structured trades from an image using Gemini vision model
-      Timeout: 900 # 15 minutes — max Lambda timeout for long-running Gemini processing
+      Timeout: 90
       Policies:
         - DynamoDBReadPolicy:
             TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
