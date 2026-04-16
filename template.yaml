@@ -55,11 +55,11 @@ Parameters:
     Description: Name of SSM SecureString parameter storing the Gemini API key.
   StripeSecretKeyParamName:
     Type: String
-    Default: /tradequt/stripeSecretKey
+    Default: /tradequt/dev/stripeSecretKey
     Description: Name of SSM SecureString parameter storing the Stripe secret key.
   StripeWebhookSecretParamName:
     Type: String
-    Default: /tradequt/stripeWebhookSecret
+    Default: /tradequt/dev/stripeWebhookSecret
     Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
   UseExistingResources:
     Type: String

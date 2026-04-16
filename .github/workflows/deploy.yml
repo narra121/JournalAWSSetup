@@ -117,7 +117,7 @@ jobs:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY_DEV }}
         run: |
           aws ssm put-parameter \
-            --name "/tradequt/stripeSecretKey" \
+            --name "/tradequt/dev/stripeSecretKey" \
             --value "${STRIPE_SECRET_KEY}" \
             --type "SecureString" \
             --overwrite \
@@ -128,7 +128,7 @@ jobs:
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET_DEV }}
         run: |
           aws ssm put-parameter \
-            --name "/tradequt/stripeWebhookSecret" \
+            --name "/tradequt/dev/stripeWebhookSecret" \
             --value "${STRIPE_WEBHOOK_SECRET}" \
             --type "SecureString" \
             --overwrite \
@@ -189,8 +189,8 @@ jobs:
               ApiVersion=v1 \
               LogRetentionDays=7 \
               GeminiApiKeyParamName=/tradequt/geminiApiKey \
-              StripeSecretKeyParamName=/tradequt/stripeSecretKey \
-              StripeWebhookSecretParamName=/tradequt/stripeWebhookSecret \
+              StripeSecretKeyParamName=/tradequt/dev/stripeSecretKey \
+              StripeWebhookSecretParamName=/tradequt/dev/stripeWebhookSecret \
               UseExistingResources=false \
               CustomDomainName=api-dev.tradequt.com \
               "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
