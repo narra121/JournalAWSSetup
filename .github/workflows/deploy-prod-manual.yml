@@ -176,6 +176,22 @@ jobs:
               "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
               "GoogleClientSecret=${{ secrets.GOOGLE_CLIENT_SECRET }}"
       
+      - name: Fix CORS (SAM transform bug workaround)
+        run: |
+          API_ID=$(aws cloudformation describe-stack-resource \
+            --stack-name tradequt-prod \
+            --logical-resource-id HttpApi \
+            --query "StackResourceDetail.PhysicalResourceId" \
+            --output text)
+          aws apigatewayv2 update-api --api-id "$API_ID" \
+            --cors-configuration '{
+              "AllowOrigins": ["https://tradequt.com", "https://www.tradequt.com"],
+              "AllowMethods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+              "AllowHeaders": ["Authorization", "Content-Type", "X-Amz-Date", "X-Api-Key"],
+              "ExposeHeaders": ["Content-Type", "Authorization"],
+              "MaxAge": 3600
+            }'
+
       - name: Get Stack Outputs
         run: |
           echo "## Production Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
