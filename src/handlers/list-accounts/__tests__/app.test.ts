@@ -230,6 +230,47 @@ describe('list-accounts handler', () => {
     expect(body.message).toBe('Accounts retrieved');
   });
 
+  it('paginates through all DynamoDB results when LastEvaluatedKey is present', async () => {
+    const page1Items = [
+      { userId: 'user-1', accountId: 'acc-1', name: 'Account 1', balance: 10000, initialBalance: 8000 },
+      { userId: 'user-1', accountId: 'acc-2', name: 'Account 2', balance: 5000, initialBalance: 5000 },
+    ];
+    const page2Items = [
+      { userId: 'user-1', accountId: 'acc-3', name: 'Account 3', balance: 20000, initialBalance: 15000 },
+    ];
+
+    // First call returns page 1 with LastEvaluatedKey
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({
+        Items: page1Items,
+        LastEvaluatedKey: { userId: 'user-1', accountId: 'acc-2' },
+      })
+      // Second call returns page 2 with no LastEvaluatedKey (end of data)
+      .resolvesOnce({
+        Items: page2Items,
+      });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // All 3 accounts from both pages should be returned
+    expect(body.data.accounts).toHaveLength(3);
+    expect(body.data.accounts[0].name).toBe('Account 1');
+    expect(body.data.accounts[1].name).toBe('Account 2');
+    expect(body.data.accounts[2].name).toBe('Account 3');
+    // Totals should include both pages
+    expect(body.data.totalBalance).toBe(35000); // 10000 + 5000 + 20000
+    expect(body.data.totalPnl).toBe(7000); // (10000-8000) + (5000-5000) + (20000-15000)
+
+    // Verify DynamoDB was called twice
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    expect(queryCalls).toHaveLength(2);
+    // Second call should have ExclusiveStartKey from the first response
+    expect(queryCalls[1].args[0].input.ExclusiveStartKey).toEqual({ userId: 'user-1', accountId: 'acc-2' });
+  });
+
   it('handles DynamoDB returning undefined Items (treated as empty)', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: undefined });
 

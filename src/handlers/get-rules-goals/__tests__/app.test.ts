@@ -336,6 +336,74 @@ describe('get-rules-goals handler', () => {
     expect(body.data.goals).toEqual([]);
   });
 
+  // ── Client-side filtering of period-prefixed records ─────────
+
+  it('filters out period-prefixed records (week#, month#) from legacy query', async () => {
+    // The handler was changed from server-side FilterExpression to client-side array filter.
+    // When no periodKey is given, the backward-compatible path queries all records.
+    // The legacy queryLegacyRecords function is used in clone-on-write path.
+    // But we can verify the behavior by testing the clone-on-write path that
+    // falls back to legacy records which mixes period and non-period records.
+
+    // Set up: current period empty, prev period empty, legacy query returns a mix
+    const mixedRules = [
+      { userId: 'user-1', ruleId: 'legacy-r1', rule: 'Legacy rule 1', completed: false, isActive: true },
+      { userId: 'user-1', ruleId: 'legacy-r2', rule: 'Legacy rule 2', completed: false, isActive: true },
+      { userId: 'user-1', ruleId: 'week#2026-03-31#r1', rule: 'Week rule (should be filtered)', completed: false, isActive: true },
+      { userId: 'user-1', ruleId: 'month#2026-03#r1', rule: 'Month rule (should be filtered)', completed: false, isActive: true },
+    ];
+    const mixedGoals = [
+      { userId: 'user-1', goalId: 'legacy-g1', goalType: 'profit', target: 1000, period: 'weekly' },
+      { userId: 'user-1', goalId: 'week#2026-03-31#g1', goalType: 'winRate', target: 60, period: 'weekly' },
+      { userId: 'user-1', goalId: 'month#2026-03#g1', goalType: 'profit', target: 5000, period: 'monthly' },
+    ];
+
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({ Items: [] }) // current period rules (prefix query)
+      .resolvesOnce({ Items: [] }) // current period goals (prefix query)
+      .resolvesOnce({ Items: [] }) // prev period rules (prefix query)
+      .resolvesOnce({ Items: [] }) // prev period goals (prefix query)
+      .resolvesOnce({ Items: mixedRules }) // legacy rules query (all records)
+      .resolvesOnce({ Items: mixedGoals }); // legacy goals query (all records)
+
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', carryForwardGoalsRules: true },
+    });
+
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+
+    const event = makeEvent({
+      queryStringParameters: { periodKey: 'week#2026-04-14', currentPeriod: 'true' },
+    } as any);
+
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+
+    // Only legacy records (non-period-prefixed) should be cloned.
+    // The queryLegacyRecords function filters out week# and month# prefixed sort keys.
+    // So we expect 2 rules (legacy-r1, legacy-r2) and 1 goal (legacy-g1) to be cloned.
+    expect(body.data.rules).toHaveLength(2);
+    expect(body.data.goals).toHaveLength(1);
+
+    // Cloned records should have the new periodKey prefix
+    for (const rule of body.data.rules) {
+      expect(rule.ruleId).toMatch(/^week#2026-04-14#/);
+    }
+    for (const goal of body.data.goals) {
+      expect(goal.goalId).toMatch(/^week#2026-04-14#/);
+    }
+
+    // Verify the original rule text was preserved during cloning
+    const ruleTexts = body.data.rules.map((r: any) => r.rule);
+    expect(ruleTexts).toContain('Legacy rule 1');
+    expect(ruleTexts).toContain('Legacy rule 2');
+    // Period-prefixed rules should NOT be present
+    expect(ruleTexts).not.toContain('Week rule (should be filtered)');
+    expect(ruleTexts).not.toContain('Month rule (should be filtered)');
+  });
+
   // ── Auth errors ─────────────────────────────────────────────
 
   it('returns 401 when authorization header is missing', async () => {

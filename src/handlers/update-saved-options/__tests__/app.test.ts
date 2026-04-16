@@ -176,6 +176,66 @@ describe('update-saved-options handler', () => {
     expect(body.message).toContain('must be strings');
   });
 
+  // -- createdAt allowlist ----------------------------------------------------
+
+  it('does not reject payload containing createdAt field', async () => {
+    const payload = { ...validOptions, createdAt: '2024-06-01T00:00:00.000Z' };
+    const res = await handler(makeEvent(payload), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // createdAt should not trigger "Invalid category" error
+    expect(body.data.symbols).toEqual(['AAPL', 'MSFT']);
+  });
+
+  // -- Read-merge-write (partial update) ------------------------------------
+
+  it('merges partial update with existing data (read-merge-write)', async () => {
+    // Mock GetCommand to return existing saved options
+    const existingOptions = {
+      userId: 'user-1',
+      symbols: ['TSLA', 'GOOG'],
+      strategies: ['Scalping'],
+      sessions: ['Tokyo'],
+      marketConditions: ['Ranging'],
+      newsEvents: ['CPI'],
+      mistakes: ['Overtrading'],
+      lessons: ['Be patient'],
+      timeframes: ['15m'],
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+    ddbMock.on(GetCommand).resolves({ Item: existingOptions });
+
+    // Send partial update — only updating symbols
+    const partialPayload = { symbols: ['AAPL', 'MSFT'] };
+    const res = await handler(makeEvent(partialPayload), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+
+    // Updated field should have new value
+    expect(body.data.symbols).toEqual(['AAPL', 'MSFT']);
+
+    // Non-updated fields should retain existing values (merged from GetCommand result)
+    expect(body.data.strategies).toEqual(['Scalping']);
+    expect(body.data.sessions).toEqual(['Tokyo']);
+    expect(body.data.marketConditions).toEqual(['Ranging']);
+    expect(body.data.newsEvents).toEqual(['CPI']);
+    expect(body.data.mistakes).toEqual(['Overtrading']);
+    expect(body.data.lessons).toEqual(['Be patient']);
+    expect(body.data.timeframes).toEqual(['15m']);
+
+    // Verify PutCommand was called with merged data
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls).toHaveLength(1);
+    const putItem = putCalls[0].args[0].input.Item as any;
+    expect(putItem.symbols).toEqual(['AAPL', 'MSFT']);
+    expect(putItem.strategies).toEqual(['Scalping']);
+    expect(putItem.sessions).toEqual(['Tokyo']);
+  });
+
   // -- DynamoDB error --------------------------------------------------------
 
   it('returns 500 when DynamoDB write fails', async () => {

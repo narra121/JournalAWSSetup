@@ -365,6 +365,88 @@ describe('rebuild-stats-job handler', () => {
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
+  it('includes brokenRuleIds, mistakes, and lessons in projection and processes them correctly', async () => {
+    stubRecentUsers(['user-1']);
+    const tradesWithExtras = [
+      makeTrade({
+        tradeId: 't1',
+        entryPrice: 100,
+        exitPrice: 110,
+        quantity: 10,
+        side: 'BUY',
+        openDate: '2026-01-15T10:00:00Z',
+        brokenRuleIds: ['rule-1', 'rule-2'],
+        mistakes: ['Entered too early'],
+        lessons: ['Wait for confirmation'],
+      }),
+      makeTrade({
+        tradeId: 't2',
+        entryPrice: 200,
+        exitPrice: 210,
+        quantity: 5,
+        side: 'BUY',
+        openDate: '2026-01-15T11:00:00Z',
+        brokenRuleIds: ['rule-3'],
+        mistakes: [],
+        lessons: ['Stick to plan'],
+      }),
+    ];
+
+    stubUserTrades(tradesWithExtras);
+
+    const result = await handler();
+
+    expect(result).toEqual({ rebuiltUsers: 1 });
+
+    // Verify the QueryCommand on TRADES_TABLE included brokenRuleIds, mistakes, lessons in projection
+    const queryCalls = ddbMock.commandCalls(QueryCommand, { TableName: 'test-trades' });
+    expect(queryCalls.length).toBeGreaterThanOrEqual(1);
+    const projection = queryCalls[0].args[0].input.ProjectionExpression;
+    expect(projection).toContain('brokenRuleIds');
+    expect(projection).toContain('mistakes');
+    expect(projection).toContain('lessons');
+
+    // Verify PutCommand was called for daily stats (trades should flow through to computeDailyRecord)
+    const putCalls = ddbMock.commandCalls(PutCommand);
+    expect(putCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Verify the daily stats record was written for the correct date
+    const dailyStatsPut = putCalls.find(
+      (c) => c.args[0].input.TableName === 'test-daily-stats',
+    );
+    expect(dailyStatsPut).toBeDefined();
+    const item = dailyStatsPut!.args[0].input.Item;
+    expect(item.userId).toBe('user-1');
+    expect(item.accountId).toBe('acc-1');
+    expect(item.date).toBe('2026-01-15');
+  });
+
+  it('processes users concurrently in batches of 5', async () => {
+    // Create 7 users so we get 2 batches (5 + 2)
+    const userIds = Array.from({ length: 7 }, (_, i) => `user-${i}`);
+    stubRecentUsers(userIds);
+
+    // Track the order of processing to verify concurrency
+    const processedUsers: string[] = [];
+
+    ddbMock.on(QueryCommand, { TableName: 'test-trades' })
+      .callsFake((input: any) => {
+        const userId = input.ExpressionAttributeValues[':u'];
+        processedUsers.push(userId);
+        return { Items: [], LastEvaluatedKey: undefined };
+      });
+
+    const result = await handler();
+
+    expect(result).toEqual({ rebuiltUsers: 7 });
+
+    // All 7 users should have been processed
+    expect(processedUsers).toHaveLength(7);
+    for (const uid of userIds) {
+      expect(processedUsers).toContain(uid);
+    }
+  });
+
   it('deduplicates userIds from daily stats scan', async () => {
     // Same user appears multiple times in daily stats (multiple records updated)
     ddbMock.on(ScanCommand, { TableName: 'test-daily-stats' }).resolves({

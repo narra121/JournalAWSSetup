@@ -299,6 +299,67 @@ describe('delete-account handler', () => {
     expect(batchCalls[1].args[0].input.RequestItems!['test-trades']).toHaveLength(5);
   });
 
+  // ── Parallel deletion of trades and goals ───────────────────
+
+  it('deletes trades and goals in parallel', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingAccount });
+
+    // Return trades and goals for the account
+    ddbMock.on(QueryCommand, { TableName: 'test-trades' })
+      .resolves({ Items: [{ tradeId: 't1' }, { tradeId: 't2' }, { tradeId: 't3' }] });
+    ddbMock.on(QueryCommand, { TableName: 'test-goals' })
+      .resolves({ Items: [{ goalId: 'g1' }, { goalId: 'g2' }] });
+
+    // Track BatchWrite call order to verify parallel execution
+    const batchWriteOrder: string[] = [];
+    ddbMock.on(BatchWriteCommand).callsFake((input: any) => {
+      const tableName = Object.keys(input.RequestItems)[0];
+      batchWriteOrder.push(tableName);
+      return {};
+    });
+    ddbMock.on(DeleteCommand).resolves({});
+
+    const res = await handler(makeEvent('acc-1'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.tradesDeleted).toBe(3);
+    expect(body.data.goalsDeleted).toBe(2);
+
+    // Verify both BatchWrite calls were issued (one for trades, one for goals)
+    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
+    expect(batchCalls).toHaveLength(2);
+
+    // Verify the trade batch has the correct keys
+    const tradeBatch = batchCalls.find(
+      (c) => c.args[0].input.RequestItems!['test-trades'],
+    );
+    expect(tradeBatch).toBeDefined();
+    const tradeDeleteRequests = tradeBatch!.args[0].input.RequestItems!['test-trades'];
+    expect(tradeDeleteRequests).toHaveLength(3);
+    const tradeKeys = tradeDeleteRequests.map((r: any) => r.DeleteRequest.Key.tradeId);
+    expect(tradeKeys).toContain('t1');
+    expect(tradeKeys).toContain('t2');
+    expect(tradeKeys).toContain('t3');
+
+    // Verify the goal batch has the correct keys
+    const goalBatch = batchCalls.find(
+      (c) => c.args[0].input.RequestItems!['test-goals'],
+    );
+    expect(goalBatch).toBeDefined();
+    const goalDeleteRequests = goalBatch!.args[0].input.RequestItems!['test-goals'];
+    expect(goalDeleteRequests).toHaveLength(2);
+    const goalKeys = goalDeleteRequests.map((r: any) => r.DeleteRequest.Key.goalId);
+    expect(goalKeys).toContain('g1');
+    expect(goalKeys).toContain('g2');
+
+    // Verify the account itself was deleted
+    const deleteCalls = ddbMock.commandCalls(DeleteCommand);
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
+  });
+
   // ── Error / failure cases ──────────────────────────────────
 
   it('returns 500 when QueryCommand fails fetching trades', async () => {

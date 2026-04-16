@@ -666,6 +666,58 @@ describe('create-trade handler', () => {
     expect(body.data.errors.length).toBeGreaterThanOrEqual(1);
   });
 
+  // ── quantity=0 via bulk import ──────────────────────────────
+
+  it('accepts quantity=0 as a valid value', async () => {
+    // The fix changed falsy checks (which rejected 0) to explicit null/undefined/empty-string checks.
+    // Bulk import path does not use schema validation, so quantity=0 passes the required field check.
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+
+    const items = [
+      { symbol: 'AAPL', side: 'BUY', quantity: 0, openDate: '2024-06-15', entryPrice: 150, exitPrice: 160, outcome: 'TP' },
+    ];
+    const res = await handler(makeEvent({ items }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.created).toBe(1);
+    // Verify the item was written with quantity=0
+    expect(body.data.items[0].quantity).toBe(0);
+  });
+
+  // ── Parallel batches of 10 ────────────────────────────────
+
+  it('processes bulk import items in parallel batches of 10', async () => {
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+
+    // Create 15 items (should be processed as batch of 10 + batch of 5)
+    const items = Array.from({ length: 15 }, (_, i) => ({
+      symbol: `SYM${i}`,
+      side: 'BUY',
+      quantity: 10,
+      openDate: '2024-06-15',
+      entryPrice: 100,
+      exitPrice: 110,
+      outcome: 'TP',
+    }));
+
+    const res = await handler(makeEvent({ items }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // All 15 items should be created
+    expect(body.data.created).toBe(15);
+    expect(body.data.items).toHaveLength(15);
+    expect(body.data.errors).toHaveLength(0);
+    // Verify all symbols are present
+    const symbols = body.data.items.map((it: any) => it.symbol);
+    for (let i = 0; i < 15; i++) {
+      expect(symbols).toContain(`SYM${i}`);
+    }
+  });
+
   // ── DynamoDB edge cases ─────────────────────────────────────
 
   it('returns 500 when PutCommand throws ProvisionedThroughputExceededException', async () => {

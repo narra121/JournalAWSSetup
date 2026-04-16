@@ -520,6 +520,109 @@ describe('list-trades handler', () => {
     expect(calls[1].args[0].input.ExclusiveStartKey).toEqual(page1Key);
   });
 
+  it('retries unprocessed keys from BatchGet with exponential backoff', async () => {
+    const gsiKeys = [
+      { userId: 'user-1', tradeId: 't1', openDate: '2024-01-10' },
+      { userId: 'user-1', tradeId: 't2', openDate: '2024-02-15' },
+      { userId: 'user-1', tradeId: 't3', openDate: '2024-03-20' },
+    ];
+    const fullItem1 = { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', accountId: 'acc-1', images: [] };
+    const fullItem2 = { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', accountId: 'acc-1', images: [] };
+    const fullItem3 = { userId: 'user-1', tradeId: 't3', symbol: 'TSLA', accountId: 'acc-1', images: [] };
+
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+
+    // First BatchGet: returns item1 but leaves t2 and t3 as unprocessed
+    ddbMock.on(BatchGetCommand)
+      .resolvesOnce({
+        Responses: { 'test-trades': [fullItem1] },
+        UnprocessedKeys: {
+          'test-trades': {
+            Keys: [
+              { userId: 'user-1', tradeId: 't2' },
+              { userId: 'user-1', tradeId: 't3' },
+            ],
+          },
+        },
+      })
+      // First retry: returns item2 but still has t3 unprocessed
+      .resolvesOnce({
+        Responses: { 'test-trades': [fullItem2] },
+        UnprocessedKeys: {
+          'test-trades': {
+            Keys: [{ userId: 'user-1', tradeId: 't3' }],
+          },
+        },
+      })
+      // Second retry: returns item3, no more unprocessed
+      .resolvesOnce({
+        Responses: { 'test-trades': [fullItem3] },
+      });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // All 3 items should be returned after retries
+    expect(body.data.trades).toHaveLength(3);
+    const symbols = body.data.trades.map((t: any) => t.symbol).sort();
+    expect(symbols).toEqual(['AAPL', 'MSFT', 'TSLA']);
+
+    // Verify BatchGet was called 3 times: initial + 2 retries
+    const batchCalls = ddbMock.commandCalls(BatchGetCommand);
+    expect(batchCalls).toHaveLength(3);
+  });
+
+  it('handles multiple chunks of BatchGet in parallel', async () => {
+    // Create 150 GSI key items to force chunking (chunks of 100)
+    const gsiKeys = Array.from({ length: 150 }, (_, i) => ({
+      userId: 'user-1',
+      tradeId: `t${i}`,
+      openDate: '2024-01-10',
+    }));
+
+    // Full items for chunk 1 (first 100)
+    const chunk1Items = Array.from({ length: 100 }, (_, i) => ({
+      userId: 'user-1',
+      tradeId: `t${i}`,
+      symbol: `SYM${i}`,
+      accountId: 'acc-1',
+      images: [],
+    }));
+    // Full items for chunk 2 (remaining 50)
+    const chunk2Items = Array.from({ length: 50 }, (_, i) => ({
+      userId: 'user-1',
+      tradeId: `t${100 + i}`,
+      symbol: `SYM${100 + i}`,
+      accountId: 'acc-1',
+      images: [],
+    }));
+
+    ddbMock.on(QueryCommand).resolves({ Items: gsiKeys });
+    // Two BatchGet calls: one for first 100 keys, one for remaining 50
+    ddbMock.on(BatchGetCommand)
+      .resolvesOnce({ Responses: { 'test-trades': chunk1Items } })
+      .resolvesOnce({ Responses: { 'test-trades': chunk2Items } });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.trades).toHaveLength(150);
+
+    // Verify BatchGet was called exactly twice (2 chunks)
+    const batchCalls = ddbMock.commandCalls(BatchGetCommand);
+    expect(batchCalls).toHaveLength(2);
+
+    // Verify first chunk has 100 keys and second has 50
+    const firstChunkKeys = batchCalls[0].args[0].input.RequestItems!['test-trades'].Keys!;
+    const secondChunkKeys = batchCalls[1].args[0].input.RequestItems!['test-trades'].Keys!;
+    expect(firstChunkKeys).toHaveLength(100);
+    expect(secondChunkKeys).toHaveLength(50);
+  });
+
   it('pagination object has correct shape when there are no more pages', async () => {
     const items = [{ userId: 'user-1', tradeId: 't1', symbol: 'AAPL', images: [] }];
     ddbMock.on(QueryCommand).resolves({

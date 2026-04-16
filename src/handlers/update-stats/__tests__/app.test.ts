@@ -746,6 +746,94 @@ describe('update-stats stream handler', () => {
     expect(optionUpdates[0].args[0].input.ExpressionAttributeValues![':symbols']).toEqual(['GOOG']);
   });
 
+  // -- Reports batch item failure for single tuple failure -------------------
+
+  it('reports batch item failure when processing a single tuple fails', async () => {
+    // Two trades on different days; make the QueryCommand for one day fail
+    const trade1 = makeTrade({ tradeId: 'trade-1', openDate: '2026-04-06T09:30:00Z', accountId: 'acc-1' });
+    const trade2 = makeTrade({ tradeId: 'trade-2', openDate: '2026-04-07T10:00:00Z', accountId: 'acc-1' });
+
+    // The handler processes tuples (userId#accountId -> dates). We need queryTradesForDay
+    // to succeed for one date and fail for the other.
+    let callCount = 0;
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' })
+      .callsFake((input: any) => {
+        callCount++;
+        const date = input.ExpressionAttributeValues[':d'];
+        if (date === '2026-04-06') {
+          // Succeed for first date
+          return { Items: [{ userId: 'user-1', tradeId: 'trade-1' }] };
+        }
+        // Fail for second date
+        throw new Error('Simulated tuple failure');
+      });
+
+    ddbMock.on(BatchGetCommand).resolves({
+      Responses: { 'test-trades': [trade1] },
+    });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade1, undefined, 'evt-ok'),
+      makeStreamRecord('INSERT', trade2, undefined, 'evt-fail'),
+    ]);
+
+    const result = (await handler(event, {} as any, () => {})) as any;
+
+    // The failed tuple should produce a batch item failure
+    expect(result.batchItemFailures).toBeDefined();
+    expect(result.batchItemFailures.length).toBeGreaterThanOrEqual(1);
+    const identifiers = result.batchItemFailures.map((f: any) => f.itemIdentifier);
+    expect(identifiers).toContain('evt-fail');
+
+    // The successful tuple's event should NOT be in failures
+    // (it may or may not be — depends on whether the same eventId maps to only one tuple)
+    // What matters is that the failed one IS reported
+  });
+
+  // -- Retries UnprocessedKeys from BatchGet --------------------------------
+
+  it('retries UnprocessedKeys from BatchGet in update-stats', async () => {
+    const trade = makeTrade({ tradeId: 'trade-1', openDate: '2026-04-06T09:30:00Z' });
+
+    // queryTradesForDay: GSI returns the trade key
+    ddbMock.on(QueryCommand).resolves({
+      Items: [{ userId: 'user-1', tradeId: 'trade-1' }],
+      LastEvaluatedKey: undefined,
+    });
+
+    // First BatchGet returns UnprocessedKeys, second succeeds
+    ddbMock.on(BatchGetCommand)
+      .resolvesOnce({
+        Responses: { 'test-trades': [] },
+        UnprocessedKeys: {
+          'test-trades': {
+            Keys: [{ userId: 'user-1', tradeId: 'trade-1' }],
+          },
+        },
+      })
+      .resolvesOnce({
+        Responses: { 'test-trades': [trade] },
+        UnprocessedKeys: undefined,
+      });
+
+    const event = makeStreamEvent([
+      makeStreamRecord('INSERT', trade, undefined, 'evt-retry'),
+    ]);
+
+    await handler(event, {} as any, () => {});
+
+    // Verify BatchGetCommand was called twice (initial + retry)
+    const batchGetCalls = ddbMock.commandCalls(BatchGetCommand);
+    expect(batchGetCalls).toHaveLength(2);
+
+    // Verify the daily stats were written (PutCommand on daily-stats table)
+    const dailyStatsPuts = ddbMock
+      .commandCalls(PutCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+    expect(dailyStatsPuts).toHaveLength(1);
+    expect(dailyStatsPuts[0].args[0].input.Item.userId).toBe('user-1');
+  });
+
   // -- INSERT where accountId is numeric -1 (not string) --------------------
 
   it('skips trade when accountId is numeric -1 (not string)', async () => {

@@ -221,6 +221,44 @@ describe('list-rules handler', () => {
     expect(body.data.rules).toHaveLength(100);
   });
 
+  it('paginates through all DynamoDB results when LastEvaluatedKey is present', async () => {
+    const page1Items = [
+      { userId: 'user-1', ruleId: 'r1', rule: 'Rule from page 1a', completed: false, isActive: true },
+      { userId: 'user-1', ruleId: 'r2', rule: 'Rule from page 1b', completed: true, isActive: true },
+    ];
+    const page2Items = [
+      { userId: 'user-1', ruleId: 'r3', rule: 'Rule from page 2', completed: false, isActive: true },
+    ];
+
+    // First call returns page 1 with LastEvaluatedKey
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({
+        Items: page1Items,
+        LastEvaluatedKey: { userId: 'user-1', ruleId: 'r2' },
+      })
+      // Second call returns page 2 with no LastEvaluatedKey (end of data)
+      .resolvesOnce({
+        Items: page2Items,
+      });
+
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    // All 3 rules from both pages should be returned
+    expect(body.data.rules).toHaveLength(3);
+    expect(body.data.rules[0].rule).toBe('Rule from page 1a');
+    expect(body.data.rules[1].rule).toBe('Rule from page 1b');
+    expect(body.data.rules[2].rule).toBe('Rule from page 2');
+
+    // Verify DynamoDB was called twice
+    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    expect(queryCalls).toHaveLength(2);
+    // Second call should have ExclusiveStartKey from the first response
+    expect(queryCalls[1].args[0].input.ExclusiveStartKey).toEqual({ userId: 'user-1', ruleId: 'r2' });
+  });
+
   it('response body includes success message', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 

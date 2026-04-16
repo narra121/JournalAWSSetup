@@ -301,6 +301,51 @@ describe('stripe-webhook handler', () => {
     expect(updateCalls).toHaveLength(0);
   });
 
+  // ── Base64 body decoding ───────────────────────────────────
+
+  it('decodes base64 body when isBase64Encoded is true', async () => {
+    const rawBody = '{"raw":"body"}';
+    const base64Body = Buffer.from(rawBody).toString('base64');
+
+    const sessionData = {
+      id: 'cs_b64_123',
+      metadata: { userId: 'user-b64' },
+      subscription: 'sub_b64_789',
+      customer: 'cus_b64_456',
+    };
+    const webhookEvent = makeWebhookEvent('checkout.session.completed', sessionData);
+    mockConstructEvent.mockReturnValue(webhookEvent);
+
+    mockSubscriptionsRetrieve.mockResolvedValue({
+      id: 'sub_b64_789',
+      metadata: { userId: 'user-b64' },
+      items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+      current_period_start: 1700000000,
+      current_period_end: 1702592000,
+    });
+
+    const event = makeEvent(base64Body, { isBase64Encoded: true } as any);
+
+    const res = await handler(event) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.message).toBe('Webhook processed successfully');
+
+    // Verify constructEvent received the decoded (plain text) body, not the base64 string
+    expect(mockConstructEvent).toHaveBeenCalledWith(
+      rawBody,
+      'sig_test_valid',
+      expect.any(String),
+    );
+
+    // Verify DDB was updated for the user
+    const updateCalls = ddbMock.commandCalls(UpdateCommand);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-b64' });
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':status']).toBe('active');
+  });
+
   // ── Internal error ─────────────────────────────────────────
 
   it('returns 500 when DDB update fails', async () => {
