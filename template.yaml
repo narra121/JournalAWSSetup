@@ -267,6 +267,8 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref RulesTable, '']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
       # Override Globals env vars to break circular dep: UserPool → this function → UserPool/UserPoolClient
       Environment:
         Variables:
