@@ -1009,6 +1009,7 @@ Resources:
             Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
+              - dynamodb:UpdateItem
             Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
       Events:
         Api:
@@ -1094,6 +1095,7 @@ Resources:
             Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
+              - dynamodb:UpdateItem
             Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
       Events:
         Api:
@@ -1164,6 +1166,7 @@ Resources:
             Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
+              - dynamodb:UpdateItem
             Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
       Events:
         Api:
@@ -1203,6 +1206,7 @@ Resources:
             Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
+              - dynamodb:UpdateItem
             Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
       Events:
         Api:
