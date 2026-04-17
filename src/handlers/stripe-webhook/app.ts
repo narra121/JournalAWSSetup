@@ -133,27 +133,39 @@ async function handleInvoicePaid(
   const currentStart = unixToISO(subscription.current_period_start);
   const currentEnd = unixToISO(subscription.current_period_end);
   const timestamp = new Date().toISOString();
+  const invoiceId = invoice.id;
 
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression:
-        'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':zero': 0,
-        ':inc': 1,
-        ':currentStart': currentStart,
-        ':currentEnd': currentEnd,
-        ':chargeAt': currentEnd,
-        ':status': 'active',
-        ':updatedAt': timestamp,
-      },
-    })
-  );
+  // Use ConditionExpression to prevent double-counting on Stripe retries
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: SUBSCRIPTIONS_TABLE,
+        Key: { userId },
+        UpdateExpression:
+          'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt, lastInvoiceId = :invoiceId',
+        ConditionExpression: 'attribute_not_exists(lastInvoiceId) OR lastInvoiceId <> :invoiceId',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':zero': 0,
+          ':inc': 1,
+          ':currentStart': currentStart,
+          ':currentEnd': currentEnd,
+          ':chargeAt': currentEnd,
+          ':status': 'active',
+          ':updatedAt': timestamp,
+          ':invoiceId': invoiceId,
+        },
+      })
+    );
 
-  console.log('invoice.paid processed', { userId, subscriptionId });
+    console.log('invoice.paid processed', { userId, subscriptionId, invoiceId });
+  } catch (err: any) {
+    if (err.name === 'ConditionalCheckFailedException') {
+      console.log('invoice.paid: duplicate event skipped', { userId, invoiceId });
+      return;
+    }
+    throw err;
+  }
 }
 
 async function handleInvoicePaymentFailed(
