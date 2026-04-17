@@ -9,6 +9,7 @@ const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
+const INSIGHTS_CACHE_TABLE = process.env.INSIGHTS_CACHE_TABLE!;
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -129,6 +130,36 @@ async function syncSymbolsToSavedOptions(userId: string, newSymbols: Set<string>
     // Non-critical — don't fail the stream processing for a symbol sync issue
     console.error(`Failed to sync symbols for user ${userId}`, e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Invalidate insights cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Mark all InsightsCache entries for a user as stale.
+ * Query all cache entries by userId, then update each with stale = true.
+ */
+async function invalidateInsightsCache(userId: string): Promise<void> {
+  const result = await ddb.send(new QueryCommand({
+    TableName: INSIGHTS_CACHE_TABLE,
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+  }));
+
+  const items = result.Items || [];
+  if (items.length === 0) return;
+
+  await Promise.all(
+    items.map((item: any) =>
+      ddb.send(new UpdateCommand({
+        TableName: INSIGHTS_CACHE_TABLE,
+        Key: { userId, cacheKey: item.cacheKey },
+        UpdateExpression: 'SET stale = :t',
+        ExpressionAttributeValues: { ':t': true },
+      }))
+    )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -284,12 +315,24 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       await adjustAccountBalance(userId, accountId, delta);
     }
 
-    // 4. Sync new symbols into SavedOptions (parallel — each user is independent)
-    await Promise.allSettled(
-      [...symbolsByUser].map(([userId, symbols]) =>
+    // 4. Non-critical parallel operations (each user is independent)
+    //    - Sync new symbols into SavedOptions
+    //    - Invalidate insights cache for affected users
+    const affectedUserIds = new Set<string>();
+    for (const userAccKey of affectedDays.keys()) {
+      affectedUserIds.add(userAccKey.split('#', 1)[0]);
+    }
+
+    await Promise.allSettled([
+      ...([...symbolsByUser].map(([userId, symbols]) =>
         syncSymbolsToSavedOptions(userId, symbols)
-      )
-    );
+      )),
+      ...([...affectedUserIds].map(userId =>
+        invalidateInsightsCache(userId).catch(e => {
+          console.warn(`Failed to invalidate insights cache for user ${userId}`, e);
+        })
+      )),
+    ]);
   } catch (e) {
     console.error('Failed processing stream event', e);
     for (const record of event.Records) {

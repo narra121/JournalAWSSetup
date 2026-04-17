@@ -24,6 +24,7 @@ Globals:
         DAILY_STATS_TABLE: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
         ERROR_REPORTS_BUCKET: !If [CreateNewDataResources, !Ref ErrorReportsBucket, '']
         SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+        INSIGHTS_CACHE_TABLE: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
         USER_POOL_ID: !Ref UserPool
         USER_POOL_CLIENT_ID: !Ref UserPoolClient
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
@@ -572,6 +573,27 @@ Resources:
         - AttributeName: userId
           KeyType: HASH
 
+  InsightsCacheTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateNewDataResources
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub InsightsCache-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: cacheKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: cacheKey
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -850,6 +872,8 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt StatsDLQ.Arn
@@ -1284,6 +1308,73 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/extract-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  GenerateInsightsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/generate-insights/app.handler
+
+      Description: Generate AI-powered trading insights using Gemini
+      Timeout: 90
+      MemorySize: 256
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins: !Split [",", !Ref AllowedOrigins]
+          AllowHeaders:
+            - authorization
+            - content-type
+          AllowMethods:
+            - POST
+          MaxAge: 3600
+      Environment:
+        Variables:
+          TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+          DAILY_STATS_TABLE: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+          INSIGHTS_CACHE_TABLE: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+          STAGE: !Ref StageName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/insights
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/generate-insights/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false
@@ -2485,3 +2576,6 @@ Outputs:
   ExtractTradesFunctionUrl:
     Description: Lambda Function URL for extract-trades (bypasses API Gateway 30s timeout)
     Value: !GetAtt ExtractTradesFunctionUrl.FunctionUrl
+  GenerateInsightsFunctionUrl:
+    Description: "Function URL for generate-insights"
+    Value: !GetAtt GenerateInsightsFunctionUrl.FunctionUrl
