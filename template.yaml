@@ -61,6 +61,10 @@ Parameters:
     Type: String
     Default: /tradequt/dev/stripeWebhookSecret
     Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
+  AdConfigParamName:
+    Type: String
+    Default: /tradequt/dev/adConfig
+    Description: Name of SSM parameter storing the ad placement configuration JSON.
   UseExistingResources:
     Type: String
     Default: "false"
@@ -1995,6 +1999,42 @@ Resources:
         Format: cjs
         EntryPoints:
           - src/handlers/get-subscription-plans/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  GetAdConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-ad-config/app.handler
+
+      Environment:
+        Variables:
+          AD_CONFIG_PARAM: !Ref AdConfigParamName
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdConfigParamName}"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/ad-config
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/get-ad-config/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false

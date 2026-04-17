@@ -7,7 +7,7 @@ vi.stubEnv('SUBSCRIPTIONS_TABLE', 'test-subscriptions');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-import { checkSubscription, isExemptPath } from '../subscription';
+import { checkSubscription, isExemptPath, getSubscriptionTier } from '../subscription';
 
 // ─── Tests ───────────────────────────────────────────────────────
 
@@ -47,9 +47,9 @@ describe('checkSubscription', () => {
     expect(result).toBeNull();
   });
 
-  // ── 3. Returns 403 when trial expired (trialEnd in past) ──
+  // ── 3. Returns null when trial expired (free tier with ads) ──
 
-  it('returns 403 when trial expired (trialEnd in past)', async () => {
+  it('returns null when trial expired (trialEnd in past)', async () => {
     const pastDate = new Date(Date.now() - 86400000).toISOString(); // 1 day ago
     ddbMock.on(GetCommand).resolves({
       Item: {
@@ -60,17 +60,12 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errorCode).toBe('SUBSCRIPTION_REQUIRED');
-    expect(body.errors).toBeDefined();
-    expect(body.errors[0].reason).toBe('trial_expired');
+    expect(result).toBeNull();
   });
 
-  // ── 4. Returns 403 with reason='subscription_cancelled' when status='cancelled' ──
+  // ── 4. Returns null when status='cancelled' (free tier with ads) ──
 
-  it('returns 403 with reason=subscription_cancelled when status is cancelled', async () => {
+  it('returns null when status is cancelled', async () => {
     ddbMock.on(GetCommand).resolves({
       Item: {
         userId: 'user-1',
@@ -79,16 +74,12 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errorCode).toBe('SUBSCRIPTION_REQUIRED');
-    expect(body.errors[0].reason).toBe('subscription_cancelled');
+    expect(result).toBeNull();
   });
 
-  // ── 5. Returns 403 with reason='payment_failed' when status='past_due' ──
+  // ── 5. Returns null when status='past_due' (free tier with ads) ──
 
-  it('returns 403 with reason=payment_failed when status is past_due', async () => {
+  it('returns null when status is past_due', async () => {
     ddbMock.on(GetCommand).resolves({
       Item: {
         userId: 'user-1',
@@ -97,24 +88,16 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errorCode).toBe('SUBSCRIPTION_REQUIRED');
-    expect(body.errors[0].reason).toBe('payment_failed');
+    expect(result).toBeNull();
   });
 
-  // ── 6. Returns 403 with reason='no_subscription' when no record found ──
+  // ── 6. Returns null when no record found (free tier with ads) ──
 
-  it('returns 403 with reason=no_subscription when no record found', async () => {
+  it('returns null when no record found', async () => {
     ddbMock.on(GetCommand).resolves({ Item: undefined });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errorCode).toBe('SUBSCRIPTION_REQUIRED');
-    expect(body.errors[0].reason).toBe('no_subscription');
+    expect(result).toBeNull();
   });
 
   // ── 7. Returns null when status='cancellation_requested' but currentEnd is in future ──
@@ -133,7 +116,7 @@ describe('checkSubscription', () => {
     expect(result).toBeNull();
   });
 
-  it('returns 403 when cancellation_requested and currentEnd is in past', async () => {
+  it('returns null when cancellation_requested and currentEnd is in past', async () => {
     const pastDate = new Date(Date.now() - 86400000).toISOString(); // 1 day ago
     ddbMock.on(GetCommand).resolves({
       Item: {
@@ -144,11 +127,7 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errorCode).toBe('SUBSCRIPTION_REQUIRED');
-    expect(body.errors[0].reason).toBe('subscription_ended');
+    expect(result).toBeNull();
   });
 
   // ── 8. Returns 503 (fail closed) when DynamoDB throws an error ──
@@ -166,7 +145,7 @@ describe('checkSubscription', () => {
 
   // ── Additional edge cases ──────────────────────────────────────
 
-  it('returns 403 for paused subscription', async () => {
+  it('returns null for paused subscription', async () => {
     ddbMock.on(GetCommand).resolves({
       Item: {
         userId: 'user-1',
@@ -175,13 +154,10 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errors[0].reason).toBe('subscription_ended');
+    expect(result).toBeNull();
   });
 
-  it('returns 403 for created (incomplete checkout) subscription', async () => {
+  it('returns null for created (incomplete checkout) subscription', async () => {
     ddbMock.on(GetCommand).resolves({
       Item: {
         userId: 'user-1',
@@ -190,19 +166,157 @@ describe('checkSubscription', () => {
     });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    expect(result!.statusCode).toBe(403);
-    const body = JSON.parse(result!.body as string);
-    expect(body.errors[0].reason).toBe('no_subscription');
+    expect(result).toBeNull();
   });
 
-  it('response includes renewUrl in details', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
+  it('returns null for completed subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        userId: 'user-1',
+        status: 'completed',
+      },
+    });
 
     const result = await checkSubscription('user-1');
-    expect(result).not.toBeNull();
-    const body = JSON.parse(result!.body as string);
-    expect(body.errors[0].renewUrl).toBe('/app/profile');
+    expect(result).toBeNull();
+  });
+});
+
+// ─── getSubscriptionTier ─────────────────────────────────────────
+
+describe('getSubscriptionTier', () => {
+  it('returns paid tier for active subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'active' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('paid');
+    expect(result.showAds).toBe(false);
+    expect(result.status).toBe('active');
+  });
+
+  it('returns trial tier for active trial', async () => {
+    const futureDate = new Date(Date.now() + 86400000 * 7).toISOString();
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'trial', trialEnd: futureDate },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('trial');
+    expect(result.showAds).toBe(false);
+    expect(result.trialEnd).toBe(futureDate);
+    expect(result.status).toBe('trial');
+  });
+
+  it('returns free_with_ads for expired trial', async () => {
+    const pastDate = new Date(Date.now() - 86400000).toISOString();
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'trial', trialEnd: pastDate },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.trialEnd).toBe(pastDate);
+    expect(result.status).toBe('trial');
+  });
+
+  it('returns free_with_ads for cancelled subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'cancelled' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('returns free_with_ads when no record found', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('none');
+  });
+
+  it('returns paid for cancellation_requested within period', async () => {
+    const futureDate = new Date(Date.now() + 86400000 * 15).toISOString();
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'cancellation_requested', currentEnd: futureDate },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('paid');
+    expect(result.showAds).toBe(false);
+    expect(result.status).toBe('cancellation_requested');
+  });
+
+  it('returns free_with_ads for cancellation_requested past period', async () => {
+    const pastDate = new Date(Date.now() - 86400000).toISOString();
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'cancellation_requested', currentEnd: pastDate },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('cancellation_requested');
+  });
+
+  it('returns free_with_ads for past_due subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'past_due' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('past_due');
+  });
+
+  it('returns free_with_ads for paused subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'paused' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('paused');
+  });
+
+  it('returns free_with_ads for completed subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'completed' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('completed');
+  });
+
+  it('returns free_with_ads for created subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'created' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('created');
+  });
+
+  it('returns free_with_ads with status error on DynamoDB failure', async () => {
+    ddbMock.on(GetCommand).rejects(new Error('DynamoDB service unavailable'));
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
+    expect(result.status).toBe('error');
   });
 });
 
@@ -259,6 +373,10 @@ describe('isExemptPath', () => {
 
   it('returns true for /v1/subscriptions/plans (prefix match)', () => {
     expect(isExemptPath('/v1/subscriptions/plans')).toBe(true);
+  });
+
+  it('returns true for /v1/ad-config', () => {
+    expect(isExemptPath('/v1/ad-config')).toBe(true);
   });
 
   // ── Non-exempt paths ──

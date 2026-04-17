@@ -35,7 +35,8 @@ export type SubscriptionDenialReason =
 
 /**
  * Check if a user has an active subscription or trial.
- * Returns null if access is allowed, or an API Gateway response if denied.
+ * Returns null to allow access for ALL subscription states (free tier with ads).
+ * Only returns non-null (503) on DynamoDB infrastructure errors.
  */
 export async function checkSubscription(userId: string): Promise<ReturnType<typeof envelope> | null> {
   try {
@@ -43,6 +44,44 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
     if (!tableName) {
       console.error('SUBSCRIPTIONS_TABLE env var is not set');
       return subscriptionErrorResponse();
+    }
+
+    // Read the subscription record — but all states now allow access
+    await ddb.send(new GetCommand({
+      TableName: tableName,
+      Key: { userId },
+    }));
+
+    // All subscription states allow access (free tier with ads for non-paying users)
+    return null;
+  } catch (error) {
+    console.error('Error checking subscription:', error);
+    return subscriptionErrorResponse();
+  }
+}
+
+// ─── Subscription Tier ──────────────────────────────────────────
+
+export type SubscriptionTier = 'paid' | 'trial' | 'free_with_ads';
+
+export interface TierResult {
+  tier: SubscriptionTier;
+  showAds: boolean;
+  trialEnd?: string;
+  status: string;
+}
+
+/**
+ * Determine the subscription tier for a user.
+ * Reads the DynamoDB subscription record and returns tier info.
+ * Fails open: returns free_with_ads on errors so users are never locked out.
+ */
+export async function getSubscriptionTier(userId: string): Promise<TierResult> {
+  try {
+    const tableName = getSubscriptionsTable();
+    if (!tableName) {
+      console.error('SUBSCRIPTIONS_TABLE env var is not set');
+      return { tier: 'free_with_ads', showAds: true, status: 'error' };
     }
 
     const result = await ddb.send(new GetCommand({
@@ -54,70 +93,41 @@ export async function checkSubscription(userId: string): Promise<ReturnType<type
 
     // No subscription record at all
     if (!sub) {
-      return subscriptionRequiredResponse('no_subscription', 'No subscription found. Please subscribe to continue using TradeQut.');
+      return { tier: 'free_with_ads', showAds: true, status: 'none' };
     }
 
-    // Active subscription — allow
+    const now = new Date();
+
+    // Active subscription — paid tier
     if (sub.status === 'active') {
-      return null;
+      return { tier: 'paid', showAds: false, status: 'active' };
     }
 
     // Trial period — check if still valid
-    if (sub.status === 'trial' && sub.trialEnd) {
-      const trialEndDate = new Date(sub.trialEnd);
-      if (trialEndDate > new Date()) {
-        return null; // Trial still active
+    if (sub.status === 'trial') {
+      if (sub.trialEnd && new Date(sub.trialEnd) > now) {
+        return { tier: 'trial', showAds: false, trialEnd: sub.trialEnd, status: 'trial' };
       }
-      return subscriptionRequiredResponse('trial_expired', 'Your free trial has ended. Subscribe to continue using TradeQut.');
+      return { tier: 'free_with_ads', showAds: true, trialEnd: sub.trialEnd, status: 'trial' };
     }
 
-    // Map various inactive statuses to denial reasons
-    const reasonMap: Record<string, { reason: SubscriptionDenialReason; message: string }> = {
-      cancelled: {
-        reason: 'subscription_cancelled',
-        message: 'Your subscription has been cancelled. Resubscribe to continue using TradeQut.',
-      },
-      past_due: {
-        reason: 'payment_failed',
-        message: 'Your payment failed. Please update your payment method to continue using TradeQut.',
-      },
-      cancellation_requested: {
-        reason: 'subscription_ended',
-        message: 'Your subscription is ending soon. Renew to keep using TradeQut.',
-      },
-      created: {
-        reason: 'no_subscription',
-        message: 'Your subscription setup is incomplete. Please complete checkout to continue.',
-      },
-      completed: {
-        reason: 'subscription_ended',
-        message: 'Your subscription has ended. Resubscribe to continue using TradeQut.',
-      },
-      paused: {
-        reason: 'subscription_ended',
-        message: 'Your subscription is paused. Resume it to continue using TradeQut.',
-      },
-    };
-
-    // For cancellation_requested with active period, still allow access
-    if (sub.status === 'cancellation_requested' && sub.currentEnd) {
-      const periodEnd = new Date(sub.currentEnd);
-      if (periodEnd > new Date()) {
-        return null; // Still within paid period
+    // Cancellation requested — still paid if within current period
+    if (sub.status === 'cancellation_requested') {
+      if (sub.currentEnd && new Date(sub.currentEnd) > now) {
+        return { tier: 'paid', showAds: false, status: 'cancellation_requested' };
       }
+      return { tier: 'free_with_ads', showAds: true, status: 'cancellation_requested' };
     }
 
-    const mapped = reasonMap[sub.status] || {
-      reason: 'no_subscription' as SubscriptionDenialReason,
-      message: 'Please subscribe to continue using TradeQut.',
-    };
-
-    return subscriptionRequiredResponse(mapped.reason, mapped.message);
+    // All other statuses: cancelled, completed, paused, past_due, created
+    return { tier: 'free_with_ads', showAds: true, status: sub.status };
   } catch (error) {
-    console.error('Error checking subscription:', error);
-    return subscriptionErrorResponse();
+    console.error('Error getting subscription tier:', error);
+    return { tier: 'free_with_ads', showAds: true, status: 'error' };
   }
 }
+
+// ─── Response helpers (kept for potential future use) ────────────
 
 function subscriptionErrorResponse() {
   return envelope({
@@ -153,6 +163,7 @@ const EXEMPT_PATHS = [
   '/v1/auth',
   '/v1/user/preferences',
   '/v1/user/notifications',
+  '/v1/ad-config',
 ];
 
 /**
