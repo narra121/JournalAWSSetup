@@ -11,7 +11,7 @@ import { DailyStatsRecord, AggregatedStats } from '../../shared/metrics/types';
 // ─── Constants ──────────────────────────────────────────────────
 
 const MODEL_ID = 'gemini-2.5-flash';
-const FALLBACK_MODEL_ID = 'gemini-2.0-flash';
+const FALLBACK_MODEL_ID = 'gemini-3.0-flash-preview';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const RETRYABLE_STATUS_CODES = [429, 503];
 
@@ -58,11 +58,10 @@ async function callGemini(apiKey: string, prompt: string, signal: AbortSignal): 
     const isFallback = i > 0;
     const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
-    // gemini-2.0-flash doesn't support thinkingConfig
-    const generationConfig: any = { temperature: 0 };
-    if (!isFallback) {
-      generationConfig.thinkingConfig = { thinkingBudget: 2048 };
-    }
+    const generationConfig: any = {
+      temperature: 0,
+      thinkingConfig: { thinkingBudget: 2048 },
+    };
 
     const resp = await fetch(url, {
       method: 'POST',
