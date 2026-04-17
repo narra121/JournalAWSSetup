@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('USER_POOL_CLIENT_ID', 'test-client-id');
+vi.stubEnv('USER_POOL_ID', 'test-user-pool-id');
 vi.stubEnv('RATE_LIMIT_TABLE', 'test-rate-limit');
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
@@ -39,6 +40,8 @@ beforeEach(() => {
   ddbMock.reset();
   // Rate limit defaults: allow (count=1, fresh ttl)
   ddbMock.on(UpdateCommand).resolves({ Attributes: { key: 'test', count: 1, ttl: Math.floor(Date.now() / 1000) + 3600 } });
+  // Default: no existing users
+  cognitoMock.on(ListUsersCommand).resolves({ Users: [] });
 });
 
 describe('auth-signup handler', () => {
@@ -130,6 +133,46 @@ describe('auth-signup handler', () => {
     expect(res.statusCode).toBe(429);
     const body = JSON.parse(res.body);
     expect(body.message).toContain('Too many attempts');
+  });
+
+  // ── Email already exists (e.g. Google OAuth) ───────────────
+
+  it('returns 400 USER_EXISTS when a confirmed user with same email exists', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'Google_12345', UserStatus: 'EXTERNAL_PROVIDER', Attributes: [{ Name: 'email', Value: 'test@example.com' }] }],
+    });
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('USER_EXISTS');
+    expect(body.message).toContain('already exists');
+    // Should NOT have called SignUpCommand
+    expect(cognitoMock.commandCalls(SignUpCommand)).toHaveLength(0);
+  });
+
+  it('returns 400 USER_EXISTS when a CONFIRMED native user with same email exists', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'test@example.com', UserStatus: 'CONFIRMED', Attributes: [{ Name: 'email', Value: 'test@example.com' }] }],
+    });
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('USER_EXISTS');
+  });
+
+  it('allows signup when existing user is UNCONFIRMED', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'test@example.com', UserStatus: 'UNCONFIRMED', Attributes: [{ Name: 'email', Value: 'test@example.com' }] }],
+    });
+    cognitoMock.on(SignUpCommand).resolves({ UserSub: 'user-sub-new' });
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
   });
 
   // ── UsernameExistsException (resend code) ───────────────────

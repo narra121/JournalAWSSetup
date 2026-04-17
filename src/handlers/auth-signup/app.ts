@@ -1,10 +1,11 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
+const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
@@ -22,15 +23,28 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const { email, password, name } = JSON.parse(event.body);
     if (!email || !password || !name) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email, name, and password required');
-  if (password.length < 8 || password.length > 128) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Password must be 8-128 characters');
+    if (password.length < 8 || password.length > 128) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Password must be 8-128 characters');
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
     if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
+
+    // Check if a confirmed user with this email already exists (e.g. Google OAuth)
+    const safeEmail = email.replace(/"/g, '\\"');
+    const existing = await client.send(new ListUsersCommand({
+      UserPoolId: USER_POOL_ID,
+      Filter: `email = "${safeEmail}"`,
+      Limit: 10,
+    }));
+    const confirmedUser = existing.Users?.find(u => u.UserStatus === 'CONFIRMED' || u.UserStatus === 'EXTERNAL_PROVIDER');
+    if (confirmedUser) {
+      return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please login instead.');
+    }
+
     const cmd = new SignUpCommand({ ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }, { Name: 'name', Value: name }] });
     const r = await client.send(cmd);
     return envelope({ statusCode: 200, data: { user: { id: r.UserSub, name, email } }, message: 'User created. Please check your email for a confirmation code.' });
   } catch (e: any) {
     console.error('Signup error', { name: e?.name, message: e?.message, stack: e?.stack });
-    
+
     // If user already exists but is not confirmed, resend the confirmation code
     if (e.name === 'UsernameExistsException') {
       try {
@@ -38,10 +52,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const resendRl = await checkRateLimit({ key: `resend:${email}`, limit: 3, windowSeconds: 900 });
         if (!resendRl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts');
         await client.send(new ResendConfirmationCodeCommand({ ClientId: CLIENT_ID, Username: email }));
-        return envelope({ 
-          statusCode: 200, 
-          data: { user: { email }, resent: true }, 
-          message: 'Account exists but not verified. Verification code resent to your email.' 
+        return envelope({
+          statusCode: 200,
+          data: { user: { email }, resent: true },
+          message: 'Account exists but not verified. Verification code resent to your email.'
         });
       } catch (resendError: any) {
         console.error('Failed to resend confirmation code', { error: resendError.message });
@@ -49,7 +63,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please login or reset your password.');
       }
     }
-    
+
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e?.message || 'Signup failed');
   }
 };

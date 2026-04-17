@@ -997,12 +997,15 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handlers/auth-signup/app.handler
-
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
       Policies:
         - Statement:
             Effect: Allow
             Action:
               - cognito-idp:SignUp
+              - cognito-idp:ListUsers
             Resource: !GetAtt UserPool.Arn
         - Statement:
             Effect: Allow
