@@ -5,7 +5,9 @@ import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 
 const MODEL_ID = 'gemini-2.5-flash';
+const FALLBACK_MODEL_ID = 'gemini-2.0-flash';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const RETRYABLE_STATUS_CODES = [429, 503];
 
 
 const buildGeminiPrompt = () => {
@@ -207,38 +209,57 @@ async function getApiKey(): Promise<string> {
   return v;
 }
 
-/** Call Gemini API directly. Accepts text-only or text+image parts. */
+/** Call Gemini API with automatic fallback to secondary model on 429/503. */
 async function callGemini(
   apiKey: string,
   parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
   signal: AbortSignal
 ): Promise<string> {
-  const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: {
-        temperature: 0,
-        thinkingConfig: { thinkingBudget: 1024 },
-      },
-    }),
-    signal,
-  });
-  if (!resp.ok) {
-    const errorText = await resp.text();
-    throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
+  const models = [MODEL_ID, FALLBACK_MODEL_ID];
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    const isFallback = i > 0;
+    const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+
+    // gemini-2.0-flash doesn't support thinkingConfig
+    const generationConfig: any = { temperature: 0 };
+    if (!isFallback) {
+      generationConfig.thinkingConfig = { thinkingBudget: 1024 };
+    }
+
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig,
+      }),
+      signal,
+    });
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      // If retryable and we have a fallback, try next model
+      if (!isFallback && RETRYABLE_STATUS_CODES.includes(resp.status)) {
+        console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${models[i + 1]}`);
+        continue;
+      }
+      throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
+    }
+
+    const data = await resp.json();
+    // With thinking enabled, the response may contain thought parts followed by the actual text.
+    const responseParts = data.candidates?.[0]?.content?.parts || [];
+    const textPart = responseParts.filter((p: any) => p.text && !p.thought).pop()
+      || responseParts.filter((p: any) => p.text).pop();
+    const text = textPart?.text;
+    if (!text) throw new Error('Gemini returned empty response');
+    if (isFallback) console.log(`Used fallback model ${model} successfully`);
+    return text.trim();
   }
-  const data = await resp.json();
-  // With thinking enabled, the response may contain thought parts followed by the actual text.
-  // Extract the last text part (skipping thought parts).
-  const responseParts = data.candidates?.[0]?.content?.parts || [];
-  const textPart = responseParts.filter((p: any) => p.text && !p.thought).pop()
-    || responseParts.filter((p: any) => p.text).pop();
-  const text = textPart?.text;
-  if (!text) throw new Error('Gemini returned empty response');
-  return text.trim();
+
+  throw new Error('All Gemini models failed');
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
