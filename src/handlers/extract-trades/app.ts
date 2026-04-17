@@ -219,7 +219,10 @@ async function callGemini(
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
-      generationConfig: { temperature: 0 },
+      generationConfig: {
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 1024 },
+      },
     }),
     signal,
   });
@@ -228,7 +231,12 @@ async function callGemini(
     throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
   }
   const data = await resp.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  // With thinking enabled, the response may contain thought parts followed by the actual text.
+  // Extract the last text part (skipping thought parts).
+  const responseParts = data.candidates?.[0]?.content?.parts || [];
+  const textPart = responseParts.filter((p: any) => p.text && !p.thought).pop()
+    || responseParts.filter((p: any) => p.text).pop();
+  const text = textPart?.text;
   if (!text) throw new Error('Gemini returned empty response');
   return text.trim();
 }
