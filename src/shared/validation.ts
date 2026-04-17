@@ -39,6 +39,9 @@ export function envelope(params: { statusCode: number; data?: any; error?: any; 
 
   if (!success && error) {
     body.errorCode = error.code;
+    if (error.message) {
+      body.errorMessage = error.message;
+    }
     if (error.details) {
       body.errors = Array.isArray(error.details) ? error.details : [error.details];
     }

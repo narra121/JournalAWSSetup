@@ -332,6 +332,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       } catch (err: any) {
         const elapsed = Date.now() - started;
         const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
+        console.error('ExtractTrades Gemini error', { error: err?.message, isAbort, elapsed });
         return envelope({
           statusCode: 500,
           error: {
