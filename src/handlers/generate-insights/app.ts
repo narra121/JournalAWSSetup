@@ -60,10 +60,7 @@ async function callGemini(apiKey: string, prompt: string, signal: AbortSignal): 
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0,
-          thinkingConfig: { thinkingBudget: 2048 },
-        },
+        generationConfig: { temperature: 0 },
       }),
       signal,
     });
@@ -78,11 +75,8 @@ async function callGemini(apiKey: string, prompt: string, signal: AbortSignal): 
     }
 
     const data = await resp.json();
-    // With thinking enabled, skip thought parts to get the actual response
     const parts = data.candidates?.[0]?.content?.parts || [];
-    const textPart = parts.filter((p: any) => p.text && !p.thought).pop()
-      || parts.filter((p: any) => p.text).pop();
-    const text = textPart?.text;
+    const text = parts.filter((p: any) => p.text).pop()?.text;
     if (!text) throw new Error('Gemini returned empty response');
     if (i > 0) console.log(`Used fallback model ${model} successfully`);
     return text.trim();
