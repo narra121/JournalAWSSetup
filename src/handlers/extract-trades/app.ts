@@ -4,7 +4,7 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 
-const MODELS = ['gemini-2.5-flash', 'gemini-3.0-flash-preview', 'gemini-2.5-pro'];
+const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const RETRYABLE_STATUS_CODES = [429, 503];
 
