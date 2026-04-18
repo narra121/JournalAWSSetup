@@ -141,25 +141,39 @@ async function syncSymbolsToSavedOptions(userId: string, newSymbols: Set<string>
  * Query all cache entries by userId, then update each with stale = true.
  */
 async function invalidateInsightsCache(userId: string): Promise<void> {
-  const result = await ddb.send(new QueryCommand({
-    TableName: INSIGHTS_CACHE_TABLE,
-    KeyConditionExpression: 'userId = :uid',
-    ExpressionAttributeValues: { ':uid': userId },
-  }));
+  let exclusiveStartKey: Record<string, any> | undefined;
+  let failureCount = 0;
 
-  const items = result.Items || [];
-  if (items.length === 0) return;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: INSIGHTS_CACHE_TABLE,
+      KeyConditionExpression: 'userId = :uid',
+      ExpressionAttributeValues: { ':uid': userId },
+      ProjectionExpression: 'cacheKey',
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
 
-  await Promise.all(
-    items.map((item: any) =>
-      ddb.send(new UpdateCommand({
-        TableName: INSIGHTS_CACHE_TABLE,
-        Key: { userId, cacheKey: item.cacheKey },
-        UpdateExpression: 'SET stale = :t',
-        ExpressionAttributeValues: { ':t': true },
-      }))
-    )
-  );
+    const items = result.Items || [];
+    if (items.length > 0) {
+      const results = await Promise.allSettled(
+        items.map((item: any) =>
+          ddb.send(new UpdateCommand({
+            TableName: INSIGHTS_CACHE_TABLE,
+            Key: { userId, cacheKey: item.cacheKey },
+            UpdateExpression: 'SET stale = :t',
+            ExpressionAttributeValues: { ':t': true },
+          }))
+        )
+      );
+      failureCount += results.filter(r => r.status === 'rejected').length;
+    }
+
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  if (failureCount > 0) {
+    console.warn(`Insights cache invalidation: ${failureCount} entries failed for user ${userId}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

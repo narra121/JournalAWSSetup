@@ -12,7 +12,7 @@ import { DailyStatsRecord, AggregatedStats } from '../../shared/metrics/types';
 
 const MODELS = ['gemini-2.5-flash', 'gemini-3.0-flash-preview', 'gemini-2.5-pro'];
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const RETRYABLE_STATUS_CODES = [429, 503];
+const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
@@ -26,6 +26,7 @@ const REQUEST_TIMEOUT_MS = (() => {
 const CACHE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_TTL_DAYS = 30;
 const MIN_TRADES_THRESHOLD = 10;
+const MAX_TRADES_FOR_ANALYSIS = 500;
 
 // ─── SSM API Key Cache ──────────────────────────────────────────
 
@@ -49,40 +50,74 @@ async function getApiKey(): Promise<string> {
 
 // ─── Gemini API Call ────────────────────────────────────────────
 
-async function callGemini(apiKey: string, prompt: string, signal: AbortSignal): Promise<string> {
+async function callGemini(apiKey: string, prompt: string, outerSignal: AbortSignal): Promise<string> {
+  const perModelTimeout = Math.floor(REQUEST_TIMEOUT_MS / MODELS.length);
+  const errors: string[] = [];
+
   for (let i = 0; i < MODELS.length; i++) {
     const model = MODELS[i];
     const isLast = i === MODELS.length - 1;
     const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0 },
-      }),
-      signal,
-    });
+    const modelController = new AbortController();
+    const timeoutId = setTimeout(() => modelController.abort(), perModelTimeout);
+    const onOuterAbort = () => modelController.abort();
+    outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
-    if (!resp.ok) {
-      const errorText = await resp.text();
-      if (!isLast && RETRYABLE_STATUS_CODES.includes(resp.status)) {
-        console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${MODELS[i + 1]}`);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0 },
+        }),
+        signal: modelController.signal,
+      });
+
+      if (!resp.ok) {
+        const errorText = await resp.text();
+        if (!isLast && RETRYABLE_STATUS_CODES.includes(resp.status)) {
+          console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${MODELS[i + 1]}`);
+          errors.push(`${model}: ${resp.status}`);
+          continue;
+        }
+        throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
+      }
+
+      const data = await resp.json();
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const textPart = parts.find((p: any) => p.text);
+      if (!textPart?.text) {
+        if (!isLast) {
+          console.warn(`Gemini ${model} returned empty response, falling back`);
+          errors.push(`${model}: empty response`);
+          continue;
+        }
+        throw new Error('Gemini returned empty response');
+      }
+      if (i > 0) console.log(`Used fallback model ${model} successfully`);
+      return textPart.text.trim();
+    } catch (err: any) {
+      const isAbort = err?.name === 'AbortError';
+      if (outerSignal.aborted) throw err;
+      if (isAbort && !isLast) {
+        console.warn(`Gemini ${model} timed out after ${perModelTimeout}ms, trying next model`);
+        errors.push(`${model}: timeout`);
         continue;
       }
-      throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
+      if (!isLast && RETRYABLE_STATUS_CODES.some(code => err?.message?.includes(String(code)))) {
+        errors.push(`${model}: ${err.message}`);
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+      outerSignal.removeEventListener('abort', onOuterAbort);
     }
-
-    const data = await resp.json();
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    const text = parts.filter((p: any) => p.text).pop()?.text;
-    if (!text) throw new Error('Gemini returned empty response');
-    if (i > 0) console.log(`Used fallback model ${model} successfully`);
-    return text.trim();
   }
 
-  throw new Error('All Gemini models failed');
+  throw new Error(`All Gemini models failed: ${errors.join('; ')}`);
 }
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -126,11 +161,6 @@ interface InsightsRequest {
 
 // ─── Trade Data Helpers ─────────────────────────────────────────
 
-/**
- * Query trades from the trades-by-date-gsi (KEYS_ONLY), then BatchGet full records.
- * Returns all trades for the user within the date range, optionally filtered by accountId.
- * No pagination limit — fetches all trades in the range for AI analysis.
- */
 async function fetchTrades(
   userId: string,
   startDate: string,
@@ -139,7 +169,7 @@ async function fetchTrades(
 ): Promise<any[]> {
   const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
 
-  // Step 1: Query GSI for keys
+  // Step 1: Query GSI for keys (capped to prevent Gemini token overflow)
   const allKeys: Array<{ userId: string; tradeId: string }> = [];
   let exclusiveStartKey: Record<string, any> | undefined;
 
@@ -151,6 +181,7 @@ async function fetchTrades(
         KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
         ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
         ExpressionAttributeNames: { '#od': 'openDate' },
+        Limit: MAX_TRADES_FOR_ANALYSIS - allKeys.length,
         ExclusiveStartKey: exclusiveStartKey,
       }),
     );
@@ -158,7 +189,7 @@ async function fetchTrades(
       allKeys.push(...result.Items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId })));
     }
     exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
+  } while (exclusiveStartKey && allKeys.length < MAX_TRADES_FOR_ANALYSIS);
 
   if (allKeys.length === 0) return [];
 
@@ -297,28 +328,29 @@ async function queryDailyStatsSingleAccount(
 
 // ─── Trade Stripping ────────────────────────────────────────────
 
-/**
- * Strip heavy fields from trades before sending to Gemini to reduce token count.
- * Removes images array, truncates notes to 100 chars, removes long keyLesson.
- */
+const LLM_ESSENTIAL_FIELDS = [
+  'tradeId', 'symbol', 'side', 'quantity', 'openDate', 'closeDate',
+  'entryPrice', 'exitPrice', 'stopLoss', 'takeProfit', 'pnl', 'rrRatio',
+  'accountId', 'outcome', 'strategy', 'fees', 'duration',
+];
+const LLM_TEXT_LIMITS: Record<string, number> = {
+  notes: 100, keyLesson: 150, tags: 200, setups: 150, mistakes: 150,
+};
+
 function stripTradeForLLM(trade: any): any {
-  const stripped: any = { ...trade };
+  const stripped: any = {};
 
-  // Remove images array entirely
-  delete stripped.images;
-
-  // Truncate notes to 100 characters
-  if (stripped.notes && typeof stripped.notes === 'string' && stripped.notes.length > 100) {
-    stripped.notes = stripped.notes.slice(0, 100) + '...';
+  for (const field of LLM_ESSENTIAL_FIELDS) {
+    if (field in trade) stripped[field] = trade[field];
   }
 
-  // Remove keyLesson if very long (>200 chars)
-  if (stripped.keyLesson && typeof stripped.keyLesson === 'string' && stripped.keyLesson.length > 200) {
-    delete stripped.keyLesson;
+  for (const [field, maxLen] of Object.entries(LLM_TEXT_LIMITS)) {
+    if (trade[field] && typeof trade[field] === 'string') {
+      stripped[field] = trade[field].length > maxLen
+        ? trade[field].slice(0, maxLen) + '...'
+        : trade[field];
+    }
   }
-
-  // Remove other heavy/unnecessary fields
-  delete stripped.userId;
 
   return stripped;
 }
@@ -525,24 +557,53 @@ function extractJsonObject(raw: string): { json?: string; steps: string[] } {
 
   // Direct check for JSON object
   if (work.startsWith('{') && work.endsWith('}')) {
-    steps.push('Detected object boundaries directly');
-    return { json: work, steps };
+    try {
+      JSON.parse(work);
+      steps.push('Detected and validated object boundaries directly');
+      return { json: work, steps };
+    } catch {
+      steps.push('Direct boundaries detected but invalid JSON, falling through');
+    }
   }
 
-  // Bracket balancing to find first JSON object
+  // String-aware bracket balancing to find first JSON object
   const firstOpen = work.indexOf('{');
   if (firstOpen !== -1) {
     let depth = 0;
+    let inString = false;
+    let escaped = false;
+
     for (let i = firstOpen; i < work.length; i++) {
       const ch = work[i];
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (ch === '\\' && inString) {
+        escaped = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
       if (ch === '{') depth++;
       else if (ch === '}') {
         depth--;
         if (depth === 0) {
-          const candidate = work.slice(firstOpen, i + 1).trim();
-          if (candidate.startsWith('{') && candidate.endsWith('}')) {
-            steps.push('Extracted balanced object slice');
+          const candidate = work.slice(firstOpen, i + 1);
+          try {
+            JSON.parse(candidate);
+            steps.push('Extracted and validated balanced object slice');
             return { json: candidate, steps };
+          } catch {
+            steps.push('Balanced slice found but invalid JSON');
           }
           break;
         }

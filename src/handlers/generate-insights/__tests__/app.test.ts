@@ -844,7 +844,7 @@ describe('generate-insights handler', () => {
   describe('Gemini error handling', () => {
     it('returns GeminiTimeout on AbortError', async () => {
       const abortError = new DOMException('The operation was aborted.', 'AbortError');
-      fetchMock.mockRejectedValueOnce(abortError);
+      fetchMock.mockRejectedValue(abortError);
 
       const res = await handler(
         makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
@@ -860,7 +860,7 @@ describe('generate-insights handler', () => {
 
     it('returns GeminiTimeout on error with "aborted" in message', async () => {
       const err = new Error('The request was aborted');
-      fetchMock.mockRejectedValueOnce(err);
+      fetchMock.mockRejectedValue(err);
 
       const res = await handler(
         makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
@@ -872,13 +872,16 @@ describe('generate-insights handler', () => {
       expect(body.errorCode).toBe('GeminiTimeout');
     });
 
-    it('returns GeminiError when Gemini API returns non-ok response', async () => {
-      fetchMock.mockResolvedValueOnce({
+    it('returns GeminiError when all models return non-ok responses', async () => {
+      const mock429 = () => ({
         ok: false,
         status: 429,
         statusText: 'Too Many Requests',
         text: async () => 'Rate limit exceeded',
       });
+      fetchMock.mockResolvedValueOnce(mock429())
+        .mockResolvedValueOnce(mock429())
+        .mockResolvedValueOnce(mock429());
 
       const res = await handler(
         makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
@@ -892,7 +895,7 @@ describe('generate-insights handler', () => {
     });
 
     it('returns GeminiError when fetch throws generic error', async () => {
-      fetchMock.mockRejectedValueOnce(new Error('Network failure'));
+      fetchMock.mockRejectedValue(new Error('Network failure'));
 
       const res = await handler(
         makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
