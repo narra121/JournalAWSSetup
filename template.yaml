@@ -956,6 +956,7 @@ Resources:
       Description: Background job to regenerate stale AI insights (SQS-triggered, BatchSize 8)
       Timeout: 120
       MemorySize: 1024
+      ReservedConcurrentExecutions: 1
       Policies:
         - Statement:
             Effect: Allow
