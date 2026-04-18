@@ -1,15 +1,20 @@
 import { DynamoDBStreamHandler, DynamoDBStreamEvent } from 'aws-lambda';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { ddb } from '../../shared/dynamo';
 import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
 import { extractDate, calcPnL } from '../../shared/utils/pnl';
+import { parseCacheKey } from '../../shared/insights';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 const INSIGHTS_CACHE_TABLE = process.env.INSIGHTS_CACHE_TABLE!;
+const REFRESH_INSIGHTS_QUEUE_URL = process.env.REFRESH_INSIGHTS_QUEUE_URL;
+
+const sqsClient = new SQSClient({});
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -137,10 +142,15 @@ async function syncSymbolsToSavedOptions(userId: string, newSymbols: Set<string>
 // ---------------------------------------------------------------------------
 
 /**
- * Mark all InsightsCache entries for a user as stale.
- * Query all cache entries by userId, then update each with stale = true.
+ * Mark matching InsightsCache entries for a user as stale (targeted invalidation).
+ * Only entries whose cached account and date range overlap the affected data are invalidated.
+ * Optionally enqueues a refresh message to SQS for each invalidated entry.
  */
-async function invalidateInsightsCache(userId: string): Promise<void> {
+async function invalidateInsightsCache(
+  userId: string,
+  accountIds: Set<string>,
+  affectedDates: Set<string>,
+): Promise<void> {
   const result = await ddb.send(new QueryCommand({
     TableName: INSIGHTS_CACHE_TABLE,
     KeyConditionExpression: 'userId = :uid',
@@ -150,15 +160,44 @@ async function invalidateInsightsCache(userId: string): Promise<void> {
   const items = result.Items || [];
   if (items.length === 0) return;
 
+  // Filter to only entries whose account and date range overlap the affected data
+  const matchingItems = items.filter((item: any) => {
+    const [cachedAccount, startDate, endDate] = parseCacheKey(item.cacheKey);
+
+    // Account filter: "all" matches everything, otherwise must be in accountIds
+    const accountMatches = cachedAccount === 'all' || accountIds.has(cachedAccount);
+    if (!accountMatches) return false;
+
+    // Date filter: at least one affected date must fall within [startDate, endDate]
+    for (const d of affectedDates) {
+      if (d >= startDate && d <= endDate) return true;
+    }
+    return false;
+  });
+
+  if (matchingItems.length === 0) return;
+
   await Promise.all(
-    items.map((item: any) =>
-      ddb.send(new UpdateCommand({
+    matchingItems.map(async (item: any) => {
+      await ddb.send(new UpdateCommand({
         TableName: INSIGHTS_CACHE_TABLE,
         Key: { userId, cacheKey: item.cacheKey },
         UpdateExpression: 'SET stale = :t',
         ExpressionAttributeValues: { ':t': true },
-      }))
-    )
+      }));
+
+      // Enqueue refresh message if SQS queue is configured
+      if (REFRESH_INSIGHTS_QUEUE_URL) {
+        try {
+          await sqsClient.send(new SendMessageCommand({
+            QueueUrl: REFRESH_INSIGHTS_QUEUE_URL,
+            MessageBody: JSON.stringify({ userId, cacheKey: item.cacheKey }),
+          }));
+        } catch (sqsErr) {
+          console.warn(`Failed to enqueue refresh for cache ${item.cacheKey}`, sqsErr);
+        }
+      }
+    })
   );
 }
 
@@ -317,18 +356,24 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
 
     // 4. Non-critical parallel operations (each user is independent)
     //    - Sync new symbols into SavedOptions
-    //    - Invalidate insights cache for affected users
-    const affectedUserIds = new Set<string>();
-    for (const userAccKey of affectedDays.keys()) {
-      affectedUserIds.add(userAccKey.split('#', 1)[0]);
+    //    - Invalidate insights cache for affected users (targeted by account + date range)
+    const userInvalidationData = new Map<string, { accountIds: Set<string>; dates: Set<string> }>();
+    for (const [userAccKey, dates] of affectedDays) {
+      const [userId, accountId] = userAccKey.split('#', 2);
+      if (!userInvalidationData.has(userId)) {
+        userInvalidationData.set(userId, { accountIds: new Set(), dates: new Set() });
+      }
+      const data = userInvalidationData.get(userId)!;
+      data.accountIds.add(accountId);
+      for (const d of dates) data.dates.add(d);
     }
 
     await Promise.allSettled([
       ...([...symbolsByUser].map(([userId, symbols]) =>
         syncSymbolsToSavedOptions(userId, symbols)
       )),
-      ...([...affectedUserIds].map(userId =>
-        invalidateInsightsCache(userId).catch(e => {
+      ...([...userInvalidationData].map(([userId, { accountIds, dates }]) =>
+        invalidateInsightsCache(userId, accountIds, dates).catch(e => {
           console.warn(`Failed to invalidate insights cache for user ${userId}`, e);
         })
       )),

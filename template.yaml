@@ -874,6 +874,11 @@ Resources:
             TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
         - DynamoDBCrudPolicy:
             TableName: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
+        - SQSSendMessagePolicy:
+            QueueName: !If [CreateNewDataResources, !GetAtt RefreshInsightsQueue.QueueName, '']
+      Environment:
+        Variables:
+          REFRESH_INSIGHTS_QUEUE_URL: !If [CreateNewDataResources, !Ref RefreshInsightsQueue, '']
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt StatsDLQ.Arn
@@ -922,6 +927,128 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+
+  # --- Insights Background Refresh ---
+  RefreshInsightsQueue:
+    Type: AWS::SQS::Queue
+    Condition: CreateNewDataResources
+    Properties:
+      QueueName: !Sub refresh-insights-${StageName}
+      VisibilityTimeout: 600
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RefreshInsightsDLQ.Arn
+        maxReceiveCount: 3
+
+  RefreshInsightsDLQ:
+    Type: AWS::SQS::Queue
+    Condition: CreateNewDataResources
+    Properties:
+      QueueName: !Sub refresh-insights-dlq-${StageName}
+      MessageRetentionPeriod: 1209600
+
+  RefreshInsightsJobFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/refresh-insights-job/app.handler
+      Description: Background job to regenerate stale AI insights (SQS-triggered, BatchSize 8)
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref InsightsCacheTable, '']
+        - SQSPollerPolicy:
+            QueueName: !GetAtt RefreshInsightsQueue.QueueName
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+          REFRESH_INSIGHTS_QUEUE_URL: !Ref RefreshInsightsQueue
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RefreshInsightsQueue.Arn
+            BatchSize: 8
+            MaximumBatchingWindowInSeconds: 300
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/refresh-insights-job/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # --- Insights Chat ---
+  InsightsChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/insights-chat/app.handler
+      Description: AI chat endpoint for conversational trade analysis
+      Timeout: 30
+      MemorySize: 512
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/insights/chat
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/insights-chat/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
   RebuildAllStatsFunction:
     Type: AWS::Serverless::Function
     Condition: CreateNewDataResources

@@ -1,593 +1,30 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { QueryCommand, BatchGetCommand, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { ddb } from '../../shared/dynamo';
 import { getUserId } from '../../shared/auth';
 import { getSubscriptionTier } from '../../shared/subscription';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
-import { aggregateDailyRecords } from '../../shared/stats-aggregator';
-import { DailyStatsRecord, AggregatedStats } from '../../shared/metrics/types';
-
-// ─── Constants ──────────────────────────────────────────────────
-
-const MODELS = ['gemini-2.5-flash', 'gemini-3.0-flash-preview', 'gemini-2.5-pro'];
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const RETRYABLE_STATUS_CODES = [429, 503];
-
-const TRADES_TABLE = process.env.TRADES_TABLE!;
-const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
-const INSIGHTS_CACHE_TABLE = process.env.INSIGHTS_CACHE_TABLE!;
-
-const REQUEST_TIMEOUT_MS = (() => {
-  const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '90000', 10);
-  return Number.isFinite(v) && v > 0 ? v : 90000;
-})();
-
-const CACHE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
-const CACHE_TTL_DAYS = 30;
-const MIN_TRADES_THRESHOLD = 10;
-
-// ─── SSM API Key Cache ──────────────────────────────────────────
-
-let cachedApiKey: string | undefined;
-let apiKeyExpiry = 0;
-const API_KEY_CACHE_TTL = 3600000; // 1 hour
-
-const ssm = new SSMClient({});
-
-async function getApiKey(): Promise<string> {
-  if (cachedApiKey && Date.now() < apiKeyExpiry) return cachedApiKey;
-  const paramName = process.env.GEMINI_API_KEY_PARAM;
-  if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
-  const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
-  const v = res.Parameter?.Value;
-  if (!v) throw new Error('Gemini API key parameter empty');
-  cachedApiKey = v;
-  apiKeyExpiry = Date.now() + API_KEY_CACHE_TTL;
-  return v;
-}
-
-// ─── Gemini API Call ────────────────────────────────────────────
-
-async function callGemini(apiKey: string, prompt: string, signal: AbortSignal): Promise<string> {
-  for (let i = 0; i < MODELS.length; i++) {
-    const model = MODELS[i];
-    const isLast = i === MODELS.length - 1;
-    const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
-
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0 },
-      }),
-      signal,
-    });
-
-    if (!resp.ok) {
-      const errorText = await resp.text();
-      if (!isLast && RETRYABLE_STATUS_CODES.includes(resp.status)) {
-        console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${MODELS[i + 1]}`);
-        continue;
-      }
-      throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
-    }
-
-    const data = await resp.json();
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    const text = parts.filter((p: any) => p.text).pop()?.text;
-    if (!text) throw new Error('Gemini returned empty response');
-    if (i > 0) console.log(`Used fallback model ${model} successfully`);
-    return text.trim();
-  }
-
-  throw new Error('All Gemini models failed');
-}
-
-// ─── Types ──────────────────────────────────────────────────────
-
-interface InsightsResponse {
-  profile: {
-    type: 'scalper' | 'day_trader' | 'swing_trader' | 'conservative';
-    typeLabel: string;
-    aggressivenessScore: number;
-    aggressivenessLabel: string;
-    trend: string | null;
-    summary: string;
-  };
-  scores: Array<{
-    dimension: string;
-    value: number;
-    label: string;
-  }>;
-  insights: Array<{
-    severity: 'critical' | 'warning' | 'info' | 'strength';
-    title: string;
-    detail: string;
-    evidence: string;
-    tradeIds?: string[];
-  }>;
-  tradeSpotlights: Array<{
-    tradeId: string;
-    symbol: string;
-    date: string;
-    pnl: number;
-    reason: string;
-  }>;
-  summary: string;
-}
+import {
+  getApiKey,
+  callGemini,
+  REQUEST_TIMEOUT_MS,
+  fetchTrades,
+  fetchAggregatedStats,
+  stripTradeForLLM,
+  buildInsightsPrompt,
+  buildCacheKey,
+  getCacheEntry,
+  writeCacheEntry,
+  MIN_TRADES_THRESHOLD,
+  extractJsonObject,
+  validateInsightsResponse,
+} from '../../shared/insights';
+import type { InsightsResponse } from '../../shared/insights';
+import { detectPatterns } from '../../shared/pattern-detector';
+import type { PatternTrade } from '../../shared/pattern-detector';
 
 interface InsightsRequest {
   accountId?: string;
   startDate: string;
   endDate: string;
-}
-
-// ─── Trade Data Helpers ─────────────────────────────────────────
-
-/**
- * Query trades from the trades-by-date-gsi (KEYS_ONLY), then BatchGet full records.
- * Returns all trades for the user within the date range, optionally filtered by accountId.
- * No pagination limit — fetches all trades in the range for AI analysis.
- */
-async function fetchTrades(
-  userId: string,
-  startDate: string,
-  endDate: string,
-  accountId?: string,
-): Promise<any[]> {
-  const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
-
-  // Step 1: Query GSI for keys
-  const allKeys: Array<{ userId: string; tradeId: string }> = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: TRADES_TABLE,
-        IndexName: 'trades-by-date-gsi',
-        KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
-        ExpressionAttributeNames: { '#od': 'openDate' },
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-    if (result.Items) {
-      allKeys.push(...result.Items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId })));
-    }
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  if (allKeys.length === 0) return [];
-
-  // Step 2: BatchGet full records in parallel chunks of 100
-  const chunks: Array<Array<{ userId: string; tradeId: string }>> = [];
-  for (let i = 0; i < allKeys.length; i += 100) {
-    chunks.push(allKeys.slice(i, i + 100));
-  }
-
-  const batchResults = await Promise.all(
-    chunks.map(chunk =>
-      ddb.send(new BatchGetCommand({
-        RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
-      })),
-    ),
-  );
-
-  const fullItems: any[] = [];
-  const unprocessedKeys: Array<Array<Record<string, any>>> = [];
-
-  for (const batchResult of batchResults) {
-    if (batchResult.Responses?.[TRADES_TABLE]) {
-      fullItems.push(...batchResult.Responses[TRADES_TABLE]);
-    }
-    if (batchResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys?.length) {
-      unprocessedKeys.push(batchResult.UnprocessedKeys[TRADES_TABLE].Keys as Array<Record<string, any>>);
-    }
-  }
-
-  // Retry unprocessed keys with backoff
-  for (const retryKeys of unprocessedKeys) {
-    let keysToRetry = retryKeys;
-    let attempt = 0;
-    while (keysToRetry.length > 0 && attempt < 3) {
-      if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
-      }
-      const retryResult = await ddb.send(new BatchGetCommand({
-        RequestItems: { [TRADES_TABLE]: { Keys: keysToRetry } },
-      }));
-      if (retryResult.Responses?.[TRADES_TABLE]) {
-        fullItems.push(...retryResult.Responses[TRADES_TABLE]);
-      }
-      keysToRetry = (retryResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys as Array<Record<string, any>> | undefined) || [];
-      attempt++;
-    }
-  }
-
-  // Filter by accountId if specified
-  if (accountId) {
-    return fullItems.filter((it: any) => it.accountId === accountId);
-  }
-
-  return fullItems;
-}
-
-/**
- * Fetch DailyStats records and aggregate them.
- * Follows the same pattern as get-stats handler.
- */
-async function fetchAggregatedStats(
-  userId: string,
-  startDate: string,
-  endDate: string,
-  accountId?: string,
-): Promise<AggregatedStats> {
-  const records = accountId
-    ? await queryDailyStatsSingleAccount(userId, accountId, startDate, endDate)
-    : await queryDailyStatsAllAccounts(userId, startDate, endDate);
-
-  return aggregateDailyRecords(records);
-}
-
-async function queryDailyStatsAllAccounts(
-  userId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: DAILY_STATS_TABLE,
-        IndexName: 'stats-by-date-gsi',
-        KeyConditionExpression: 'userId = :userId AND #date BETWEEN :startDate AND :endDate',
-        ExpressionAttributeNames: { '#date': 'date' },
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':startDate': startDate,
-          ':endDate': endDate,
-        },
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-    if (result.Items) {
-      records.push(...(result.Items as DailyStatsRecord[]));
-    }
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return records;
-}
-
-async function queryDailyStatsSingleAccount(
-  userId: string,
-  accountId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: DAILY_STATS_TABLE,
-        KeyConditionExpression: 'userId = :userId AND sk BETWEEN :skStart AND :skEnd',
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':skStart': `${accountId}#${startDate}`,
-          ':skEnd': `${accountId}#${endDate}`,
-        },
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-    if (result.Items) {
-      records.push(...(result.Items as DailyStatsRecord[]));
-    }
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return records;
-}
-
-// ─── Trade Stripping ────────────────────────────────────────────
-
-/**
- * Strip heavy fields from trades before sending to Gemini to reduce token count.
- * Removes images array, truncates notes to 100 chars, removes long keyLesson.
- */
-function stripTradeForLLM(trade: any): any {
-  const stripped: any = { ...trade };
-
-  // Remove images array entirely
-  delete stripped.images;
-
-  // Truncate notes to 100 characters
-  if (stripped.notes && typeof stripped.notes === 'string' && stripped.notes.length > 100) {
-    stripped.notes = stripped.notes.slice(0, 100) + '...';
-  }
-
-  // Remove keyLesson if very long (>200 chars)
-  if (stripped.keyLesson && typeof stripped.keyLesson === 'string' && stripped.keyLesson.length > 200) {
-    delete stripped.keyLesson;
-  }
-
-  // Remove other heavy/unnecessary fields
-  delete stripped.userId;
-
-  return stripped;
-}
-
-// ─── Cache ──────────────────────────────────────────────────────
-
-interface CacheRecord {
-  userId: string;
-  cacheKey: string;
-  response: string; // JSON-serialized InsightsResponse
-  generatedAt: string;
-  stale: boolean;
-  ttl: number;
-}
-
-function buildCacheKey(accountId: string | undefined, startDate: string, endDate: string): string {
-  return `${accountId || 'all'}#${startDate}#${endDate}`;
-}
-
-async function getCacheEntry(userId: string, cacheKey: string): Promise<CacheRecord | null> {
-  const result = await ddb.send(new GetCommand({
-    TableName: INSIGHTS_CACHE_TABLE,
-    Key: { userId, cacheKey },
-  }));
-  return (result.Item as CacheRecord | undefined) ?? null;
-}
-
-async function writeCacheEntry(
-  userId: string,
-  cacheKey: string,
-  response: InsightsResponse,
-  generatedAt: string,
-): Promise<void> {
-  const ttl = Math.floor(Date.now() / 1000) + CACHE_TTL_DAYS * 24 * 60 * 60;
-  await ddb.send(new PutCommand({
-    TableName: INSIGHTS_CACHE_TABLE,
-    Item: {
-      userId,
-      cacheKey,
-      response: JSON.stringify(response),
-      generatedAt,
-      stale: false,
-      ttl,
-    },
-  }));
-}
-
-/**
- * Count trades created after a given timestamp to populate meta.newTradesSince.
- * Uses the trades-by-date-gsi to count trades with openDate > generatedAt.
- */
-async function countTradesSince(
-  userId: string,
-  sinceTimestamp: string,
-  endDate: string,
-  accountId?: string,
-): Promise<number> {
-  let count = 0;
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: TRADES_TABLE,
-        IndexName: 'trades-by-date-gsi',
-        KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        ExpressionAttributeValues: { ':u': userId, ':start': sinceTimestamp, ':end': endDate + 'T23:59:59.999Z' },
-        ExpressionAttributeNames: { '#od': 'openDate' },
-        Select: 'COUNT',
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-    count += result.Count || 0;
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return count;
-}
-
-// ─── Gemini Prompt ──────────────────────────────────────────────
-
-function buildInsightsPrompt(stats: AggregatedStats, trades: any[]): string {
-  return `ROLE:
-You are an expert trading performance analyst. Your goal is to analyze the trader's historical data and produce a structured, actionable JSON response. Be specific, reference real data points, and cite individual trades by their tradeId when relevant.
-
-TRADER PROFILING RULES:
-Classify the trader into exactly one profile based on observed data patterns:
-
-1. SCALPER (High-Frequency):
-   - Signals: 5+ trades/day average, average hold time <1 hour, tight risk-reward (1:1 to 1.5:1), small gaps between trades
-   - Focus insights on: overtrading detection, revenge trading, commission drag, fatigue patterns, best trading hours
-
-2. DAY_TRADER:
-   - Signals: 1-5 trades/day average, hold time 30min-8hrs, moderate risk-reward (1.5:1 to 2.5:1), trades within sessions
-   - Focus insights on: session performance, strategy consistency, position sizing discipline, daily P&L targets
-
-3. SWING_TRADER:
-   - Signals: 2-10 trades/week average, hold time 1-14 days, wider risk-reward (2:1 to 4:1), gaps between trades
-   - Focus insights on: entry timing, patience, holding through volatility, trend alignment
-
-4. CONSERVATIVE (Low-Frequency):
-   - Signals: <2 trades/week, high risk-reward (3:1+), low risk %, selective entries, long gaps between trades
-   - Focus insights on: missed opportunities, entry quality, capital utilization, patience rewards
-
-AGGRESSIVENESS SCORE (1-10):
-Compute from these weighted factors relative to the trader's profile type:
-- Trade frequency relative to profile norm
-- Position sizing consistency and outliers
-- Risk-reward ratio distribution
-- Max drawdown severity
-- Consecutive loss behavior (revenge trading signals)
-- Rule-breaking frequency (if rule data available)
-- Gap between trades (impulse trading detection)
-
-Score interpretation:
-- 1-3: "Conservative" — focus on capital utilization, scaling up safely
-- 4-5: "Balanced" — focus on consistency, fine-tuning strategy
-- 6-7: "Aggressive" — focus on risk management, drawdown control
-- 8-10: "Very Aggressive" — focus on survival, risk reduction, emotional control
-
-BEHAVIORAL SCORING (0-100 each):
-Score these five dimensions based on the data:
-- discipline: Following rules, sticking to plans, consistent behavior
-- risk_management: Position sizing, stop losses, drawdown control
-- consistency: Regularity of trading patterns, strategy adherence
-- patience: Waiting for setups, not overtrading, appropriate hold times
-- emotional_control: Revenge trading absence, consistency after losses, no tilt behavior
-
-INSIGHT SEVERITY LEVELS:
-- critical: Immediate action needed — patterns that are actively harmful
-- warning: Concerning pattern that needs attention
-- info: Neutral observation or suggestion for improvement
-- strength: Positive reinforcement of good behavior
-
-TRADE SPOTLIGHTS:
-Highlight 3-5 notable trades: the best trade, the worst trade, and 1-3 trades that exemplify patterns you identified. Always include tradeId, symbol, date, pnl, and a reason explaining why this trade was highlighted.
-
-RESPONSE JSON SCHEMA (you MUST return ONLY valid JSON matching this exact structure):
-{
-  "profile": {
-    "type": "scalper" | "day_trader" | "swing_trader" | "conservative",
-    "typeLabel": "string (Human-readable label, e.g. 'Day Trader')",
-    "aggressivenessScore": "number (1-10)",
-    "aggressivenessLabel": "string ('Conservative' | 'Balanced' | 'Aggressive' | 'Very Aggressive')",
-    "trend": "string | null (e.g. 'up_from_5.4', 'stable', 'down_from_7.1'; null for first analysis)",
-    "summary": "string (One-line profile summary)"
-  },
-  "scores": [
-    {
-      "dimension": "string (one of: discipline, risk_management, consistency, patience, emotional_control)",
-      "value": "number (0-100)",
-      "label": "string (Human-readable dimension name, e.g. 'Risk Management')"
-    }
-  ],
-  "insights": [
-    {
-      "severity": "critical" | "warning" | "info" | "strength",
-      "title": "string (Short headline)",
-      "detail": "string (Explanation with evidence)",
-      "evidence": "string (Specific data point backing the insight)",
-      "tradeIds": ["string (optional, specific trade IDs referenced)"]
-    }
-  ],
-  "tradeSpotlights": [
-    {
-      "tradeId": "string",
-      "symbol": "string",
-      "date": "string (ISO date)",
-      "pnl": "number",
-      "reason": "string (Why this trade was highlighted)"
-    }
-  ],
-  "summary": "string (One-paragraph overall assessment)"
-}
-
-STRICT OUTPUT RULES:
-- Return ONLY valid JSON. No markdown fences, no leading/trailing text, no explanations.
-- The "scores" array must contain exactly 5 entries, one for each dimension listed above.
-- The "insights" array should contain 4-8 insights, severity-ordered (critical first, then warning, info, strength).
-- The "tradeSpotlights" array should contain 3-5 entries.
-- Only include tradeIds in insights if you are referencing specific trades.
-- All numeric values must be actual numbers, not strings.
-- trend should be null since this is a standalone analysis.
-
-AGGREGATED STATS:
-${JSON.stringify(stats, null, 2)}
-
-TRADE DATA (${trades.length} trades):
-${JSON.stringify(trades, null, 2)}`;
-}
-
-// ─── JSON Extraction ────────────────────────────────────────────
-
-function extractJsonObject(raw: string): { json?: string; steps: string[] } {
-  const steps: string[] = [];
-  let work = raw.trim();
-
-  // Strip markdown code fences if present
-  const fenceMatch = work.match(/```(?:json)?\s*[\r\n]+([\s\S]*?)```/i);
-  if (fenceMatch) {
-    steps.push('Stripped markdown code fence');
-    work = fenceMatch[1].trim();
-  }
-
-  // Direct check for JSON object
-  if (work.startsWith('{') && work.endsWith('}')) {
-    steps.push('Detected object boundaries directly');
-    return { json: work, steps };
-  }
-
-  // Bracket balancing to find first JSON object
-  const firstOpen = work.indexOf('{');
-  if (firstOpen !== -1) {
-    let depth = 0;
-    for (let i = firstOpen; i < work.length; i++) {
-      const ch = work[i];
-      if (ch === '{') depth++;
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          const candidate = work.slice(firstOpen, i + 1).trim();
-          if (candidate.startsWith('{') && candidate.endsWith('}')) {
-            steps.push('Extracted balanced object slice');
-            return { json: candidate, steps };
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  return { steps };
-}
-
-// ─── Response Validation ────────────────────────────────────────
-
-function validateInsightsResponse(data: any): data is InsightsResponse {
-  if (!data || typeof data !== 'object') return false;
-
-  // Validate profile
-  if (!data.profile || typeof data.profile !== 'object') return false;
-  const validTypes = ['scalper', 'day_trader', 'swing_trader', 'conservative'];
-  if (!validTypes.includes(data.profile.type)) return false;
-  if (typeof data.profile.aggressivenessScore !== 'number') return false;
-  if (typeof data.profile.summary !== 'string') return false;
-
-  // Validate scores array
-  if (!Array.isArray(data.scores) || data.scores.length === 0) return false;
-  for (const score of data.scores) {
-    if (typeof score.dimension !== 'string') return false;
-    if (typeof score.value !== 'number') return false;
-  }
-
-  // Validate insights array
-  if (!Array.isArray(data.insights)) return false;
-  const validSeverities = ['critical', 'warning', 'info', 'strength'];
-  for (const insight of data.insights) {
-    if (!validSeverities.includes(insight.severity)) return false;
-    if (typeof insight.title !== 'string') return false;
-    if (typeof insight.detail !== 'string') return false;
-  }
-
-  // Validate tradeSpotlights array
-  if (!Array.isArray(data.tradeSpotlights)) return false;
-
-  // Validate summary
-  if (typeof data.summary !== 'string') return false;
-
-  return true;
 }
 
 // ─── Handler ────────────────────────────────────────────────────
@@ -630,29 +67,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       const cacheEntry = await getCacheEntry(userId, cacheKey);
 
       if (cacheEntry && !cacheEntry.stale) {
-        const generatedAt = new Date(cacheEntry.generatedAt).getTime();
-        const age = Date.now() - generatedAt;
-
-        if (age < CACHE_COOLDOWN_MS) {
-          // Cache hit — return cached response
-          const cachedResponse = JSON.parse(cacheEntry.response) as InsightsResponse;
-
-          // Count new trades since generation
-          const newTradesSince = await countTradesSince(userId, cacheEntry.generatedAt, endDate, accountId);
-
-          const elapsed = Date.now() - started;
-          return envelope({
-            statusCode: 200,
-            data: cachedResponse,
-            meta: {
-              cached: true,
-              generatedAt: cacheEntry.generatedAt,
-              newTradesSince,
-              elapsedMs: elapsed,
-            },
-            message: 'Insights retrieved from cache',
-          });
-        }
+        const elapsed = Date.now() - started;
+        return envelope({
+          statusCode: 200,
+          data: JSON.parse(cacheEntry.response),
+          meta: {
+            cached: true,
+            generatedAt: cacheEntry.generatedAt,
+            newTradesSince: 0,
+            upToDate: true,
+            elapsedMs: elapsed,
+          },
+          message: 'Insights retrieved from cache',
+        });
       }
     } catch (cacheError) {
       // Cache read failure is non-fatal — proceed to generate fresh insights
@@ -681,12 +108,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
+    // Run deterministic pattern detection on full trades
+    const patterns = detectPatterns(trades as PatternTrade[]);
+
     // Strip heavy fields from trades before sending to Gemini
     const strippedTrades = trades.map(stripTradeForLLM);
 
     // ─── Build Prompt & Call Gemini ───────────────────────────
 
-    const prompt = buildInsightsPrompt(stats, strippedTrades);
+    const prompt = buildInsightsPrompt(stats, strippedTrades, patterns);
 
     let apiKey: string;
     try {
@@ -785,12 +215,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
+    // ─── Merge Patterns into Response ───────────────────────────
+
+    const finalResponse = { ...insightsResponse, patterns };
+
     // ─── Cache Result ─────────────────────────────────────────
 
     const generatedAt = new Date().toISOString();
 
     try {
-      await writeCacheEntry(userId, cacheKey, insightsResponse, generatedAt);
+      await writeCacheEntry(userId, cacheKey, finalResponse, generatedAt);
     } catch (cacheWriteError) {
       // Cache write failure is non-fatal — log and continue
       console.error('Cache write failed', cacheWriteError);
@@ -810,7 +244,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     return envelope({
       statusCode: 200,
-      data: insightsResponse,
+      data: finalResponse,
       meta: {
         cached: false,
         generatedAt,
