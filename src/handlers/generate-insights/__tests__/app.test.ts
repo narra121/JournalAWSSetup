@@ -606,6 +606,20 @@ describe('generate-insights handler', () => {
       expect(body.meta.tradeCount).toBe(9);
       expect(body.data).toBeNull();
     });
+
+    it('treats accountId=ALL as no account filter (fetches all trades)', async () => {
+      mockGeminiSuccess();
+
+      const res = await handler(
+        makeEvent({ accountId: 'ALL', startDate: '2026-04-01', endDate: '2026-04-15' }),
+        {} as any,
+      ) as any;
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.data).not.toBeNull();
+      expect(body.meta.tradeCount).toBe(15);
+    });
   });
 
   // ── Gemini call success ──────────────────────────────────────

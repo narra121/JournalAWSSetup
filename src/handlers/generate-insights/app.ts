@@ -615,7 +615,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be valid JSON');
     }
 
-    const { accountId, startDate, endDate } = request;
+    const { accountId: rawAccountId, startDate, endDate } = request;
+    const accountId = rawAccountId && rawAccountId !== 'ALL' ? rawAccountId : undefined;
     if (!startDate || !endDate) {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'startDate and endDate are required');
     }
