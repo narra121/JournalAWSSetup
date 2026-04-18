@@ -382,9 +382,15 @@ describe('generate-insights handler', () => {
           ttl: Math.floor(Date.now() / 1000) + 86400 * 30,
         },
       });
+
+      // Mock the countTradesSince query
+      ddbMock.on(QueryCommand, {
+        TableName: 'test-trades',
+        Select: 'COUNT',
+      }).resolves({ Count: 3, LastEvaluatedKey: undefined });
     }
 
-    it('returns cached response when cache is valid (non-stale)', async () => {
+    it('returns cached response when cache is valid and within 6-hour cooldown', async () => {
       mockCacheHit();
 
       const res = await handler(
@@ -411,7 +417,7 @@ describe('generate-insights handler', () => {
       expect(body.meta.cached).toBe(true);
     });
 
-    it('returns newTradesSince as 0 and upToDate as true on cache hit', async () => {
+    it('includes meta.newTradesSince count on cache hit', async () => {
       mockCacheHit();
 
       const res = await handler(
@@ -420,8 +426,8 @@ describe('generate-insights handler', () => {
       ) as any;
 
       const body = JSON.parse(res.body);
-      expect(body.meta.newTradesSince).toBe(0);
-      expect(body.meta.upToDate).toBe(true);
+      expect(typeof body.meta.newTradesSince).toBe('number');
+      expect(body.meta.newTradesSince).toBe(3);
     });
 
     it('does NOT call Gemini when cache hit', async () => {
@@ -446,32 +452,11 @@ describe('generate-insights handler', () => {
       const body = JSON.parse(res.body);
       expect(body.meta.generatedAt).toBe(freshGeneratedAt);
     });
-
-    it('returns non-stale cache immediately regardless of age (no cooldown)', async () => {
-      // Cache entry generated 48 hours ago — previously would have been "expired" by 6h cooldown
-      const oldGeneratedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-      mockCacheHit({ generatedAt: oldGeneratedAt });
-
-      const res = await handler(
-        makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
-        {} as any,
-      ) as any;
-
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.success).toBe(true);
-      expect(body.meta.cached).toBe(true);
-      expect(body.meta.upToDate).toBe(true);
-      expect(body.meta.newTradesSince).toBe(0);
-      expect(body.meta.generatedAt).toBe(oldGeneratedAt);
-      // Should NOT have called Gemini
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
   });
 
   // ── Cache miss (stale or expired) ────────────────────────────
 
-  describe('cache miss (stale flag is sole source of truth)', () => {
+  describe('cache miss (stale or expired)', () => {
     it('calls Gemini when cache entry is stale', async () => {
       ddbMock.on(GetCommand, { TableName: 'test-insights-cache' }).resolves({
         Item: {
@@ -496,7 +481,7 @@ describe('generate-insights handler', () => {
       expect(body.meta.cached).toBe(false);
     });
 
-    it('returns cache hit even when entry is older than 6 hours (no time-based cooldown)', async () => {
+    it('calls Gemini when cache entry is older than 6 hours', async () => {
       const sevenHoursAgo = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
       ddbMock.on(GetCommand, { TableName: 'test-insights-cache' }).resolves({
         Item: {
@@ -508,6 +493,7 @@ describe('generate-insights handler', () => {
           ttl: Math.floor(Date.now() / 1000) + 86400 * 30,
         },
       });
+      mockGeminiSuccess();
 
       const res = await handler(
         makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }),
@@ -515,12 +501,9 @@ describe('generate-insights handler', () => {
       ) as any;
 
       expect(res.statusCode).toBe(200);
-      // Should NOT have called Gemini — stale flag is false so cache is valid
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       const body = JSON.parse(res.body);
-      expect(body.meta.cached).toBe(true);
-      expect(body.meta.upToDate).toBe(true);
-      expect(body.meta.generatedAt).toBe(sevenHoursAgo);
+      expect(body.meta.cached).toBe(false);
     });
 
     it('calls Gemini when no cache entry exists at all', async () => {
@@ -1204,21 +1187,6 @@ describe('generate-insights handler', () => {
       const body = JSON.parse(res.body);
       expect(body.success).toBe(true);
       expect(body.meta.cached).toBe(false);
-    });
-  });
-
-  // ── Deterministic patterns in response ────────────────────────
-
-  describe('deterministic patterns', () => {
-    it('includes deterministic patterns in response', async () => {
-      mockGeminiSuccess();
-      const res = await handler(makeEvent({ startDate: '2026-04-01', endDate: '2026-04-15' }), {} as any) as any;
-      const body = JSON.parse(res.body);
-      expect(body.data.patterns).toBeDefined();
-      expect(body.data.patterns.tradeCount).toBe(15);
-      expect(body.data.patterns.costOfEmotion).toBeDefined();
-      expect(Array.isArray(body.data.patterns.hourlyEdges)).toBe(true);
-      expect(Array.isArray(body.data.patterns.dayOfWeekEdges)).toBe(true);
     });
   });
 
