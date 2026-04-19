@@ -2485,11 +2485,11 @@ Resources:
           CachedMethods: [GET, HEAD]
         CustomErrorResponses:
           - ErrorCode: 403
-            ResponsePagePath: /index.html
+            ResponsePagePath: /_spa.html
             ResponseCode: "200"
             ErrorCachingMinTTL: 10
           - ErrorCode: 404
-            ResponsePagePath: /index.html
+            ResponsePagePath: /_spa.html
             ResponseCode: "200"
             ErrorCachingMinTTL: 10
       Tags:
