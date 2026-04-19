@@ -29,3 +29,9 @@ variable "allowed_domains" {
   default     = ["tradequt.com", "www.tradequt.com", "dev.tradequt.com", "localhost"]
 }
 
+variable "ai_rpm_per_user" {
+  description = "Firebase AI Logic requests per minute per user (25 msgs/6hrs ≈ 4 RPM burst limit)"
+  type        = string
+  default     = "4"
+}
+

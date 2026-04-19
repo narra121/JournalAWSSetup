@@ -65,3 +65,13 @@ module "ai_logic" {
 
   depends_on = [google_firebase_project.default]
 }
+
+resource "google_service_usage_consumer_quota_override" "ai_logic_rpm_per_user" {
+  provider       = google-beta
+  project        = var.gcp_project_id
+  service        = "firebasevertexai.googleapis.com"
+  metric         = "firebasevertexai.googleapis.com%2Fgenerate_content_requests_per_minute_per_project_per_user"
+  limit          = "%2Fmin%2Fproject%2Fregion%2Fuser"
+  override_value = var.ai_rpm_per_user
+  force          = true
+}
