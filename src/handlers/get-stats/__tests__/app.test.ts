@@ -428,6 +428,28 @@ describe('get-stats handler', () => {
     expect(input.ExpressionAttributeValues![':skEnd']).toContain('2026-12-31');
   });
 
+  // -- dailyTradeHashes in response ------------------------------------------
+
+  it('includes dailyTradeHashes in response when records have tradeHash', async () => {
+    const record = makeDailyRecord({ tradeHash: 'abc123def456' });
+    ddbMock.on(QueryCommand).resolves({ Items: [record] });
+    const event = makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' });
+    const result = await handler(event);
+    const body = JSON.parse(result.body);
+    expect(body.data.dailyTradeHashes).toBeDefined();
+    expect(body.data.dailyTradeHashes['acc-1#2026-04-06']).toBe('abc123def456');
+  });
+
+  it('returns empty dailyTradeHashes when records have no tradeHash', async () => {
+    const record = makeDailyRecord();
+    ddbMock.on(QueryCommand).resolves({ Items: [record] });
+    const event = makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' });
+    const result = await handler(event);
+    const body = JSON.parse(result.body);
+    expect(body.data.dailyTradeHashes).toBeDefined();
+    expect(Object.keys(body.data.dailyTradeHashes)).toHaveLength(0);
+  });
+
   // -- AccountId is empty string --------------------------------------------
 
   it('returns 400 when accountId is empty string', async () => {

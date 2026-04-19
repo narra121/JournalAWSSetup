@@ -30,11 +30,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ? await queryAllAccounts(userId, startDate, endDate)
       : await querySingleAccount(userId, accountId, startDate, endDate);
 
+    const dailyTradeHashes: Record<string, string> = {};
+    for (const record of records) {
+      if (record.tradeHash) {
+        dailyTradeHashes[record.sk] = record.tradeHash;
+      }
+    }
+
     const stats = aggregateDailyRecords(records, { totalCapital, includeEquityCurve });
 
     return envelope({
       statusCode: 200,
-      data: stats,
+      data: { ...stats, dailyTradeHashes },
       message: 'Stats retrieved successfully',
     });
   } catch (error: any) {
