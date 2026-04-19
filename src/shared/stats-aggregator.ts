@@ -7,6 +7,7 @@
  * Both functions delegate to the MetricProcessor/AggregationProcessor registry,
  * so new metrics can be added without modifying this file.
  */
+import { createHash } from 'crypto';
 import { DailyStatsRecord, AggregatedStats, AggregationContext } from './metrics/types';
 import { metricRegistry } from './metrics/registry';
 
@@ -54,6 +55,11 @@ export function computeDailyRecord(
   };
 
   processors.forEach(p => Object.assign(record, p.getResult()));
+
+  const hashInput = sorted
+    .map(t => `${t.tradeId}|${t.pnl ?? 0}|${t.updatedAt ?? t.closeDate ?? ''}`)
+    .join('||');
+  record.tradeHash = createHash('sha256').update(hashInput).digest('hex');
 
   return record as DailyStatsRecord;
 }

@@ -150,6 +150,31 @@ describe('computeDailyRecord', () => {
     // HourlyProcessor returns only if openDate contains 'T'
     expect(record!.hourlyBreakdown).toEqual({});
   });
+
+  it('computes a deterministic tradeHash from trades', () => {
+    const trade1 = makeTrade({ tradeId: 'aaa', pnl: 50, updatedAt: '2026-04-10T14:00:00Z' });
+    const trade2 = makeTrade({
+      tradeId: 'bbb', pnl: -30, updatedAt: '2026-04-10T15:00:00Z',
+      openDate: '2026-04-10T12:00:00Z', closeDate: '2026-04-10T15:00:00Z',
+    });
+    const record = computeDailyRecord('user1', 'acc1', '2026-04-10', [trade2, trade1]);
+
+    expect(record).not.toBeNull();
+    expect(record!.tradeHash).toBeDefined();
+    expect(typeof record!.tradeHash).toBe('string');
+    expect(record!.tradeHash!.length).toBe(64);
+
+    const record2 = computeDailyRecord('user1', 'acc1', '2026-04-10', [trade1, trade2]);
+    expect(record2!.tradeHash).toBe(record!.tradeHash);
+  });
+
+  it('produces different tradeHash when a trade pnl changes', () => {
+    const trade = makeTrade({ tradeId: 'aaa', pnl: 50 });
+    const record1 = computeDailyRecord('user1', 'acc1', '2026-04-10', [trade]);
+    const tradeModified = { ...trade, pnl: 100 };
+    const record2 = computeDailyRecord('user1', 'acc1', '2026-04-10', [tradeModified]);
+    expect(record1!.tradeHash).not.toBe(record2!.tradeHash);
+  });
 });
 
 // ===========================================================================

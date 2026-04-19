@@ -88,6 +88,7 @@ export interface DailyStatsRecord {
   date: string;          // "YYYY-MM-DD"
   dayOfWeek: number;     // 0=Sun..6=Sat
   lastUpdated: string;
+  tradeHash?: string;
   // All other fields are contributed by MetricProcessors
   [key: string]: any;
 }
