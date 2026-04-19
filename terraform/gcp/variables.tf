@@ -30,8 +30,8 @@ variable "allowed_domains" {
 }
 
 variable "ai_rpm_per_user" {
-  description = "Firebase AI Logic requests per minute per user (25 msgs/6hrs ≈ 4 RPM burst limit)"
+  description = "Firebase AI Logic requests per minute per user"
   type        = string
-  default     = "4"
+  default     = "6"
 }
 
