@@ -23,12 +23,3 @@ variable "gcp_region" {
   default     = "us-central1"
 }
 
-variable "cognito_user_pool_id" {
-  description = "AWS Cognito User Pool ID (e.g. us-east-1_XXXXXXXXX)"
-  type        = string
-}
-
-variable "cognito_client_id" {
-  description = "AWS Cognito App Client ID"
-  type        = string
-}

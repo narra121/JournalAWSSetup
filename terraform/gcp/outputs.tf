@@ -1,14 +1,14 @@
-output "wif_pool_id" {
-  description = "Workload Identity Federation pool ID"
-  value       = google_iam_workload_identity_pool.cognito.workload_identity_pool_id
+output "firebase_app_id" {
+  description = "Firebase web app ID"
+  value       = google_firebase_web_app.tradequt.app_id
 }
 
-output "wif_provider_id" {
-  description = "Workload Identity Federation provider ID"
-  value       = google_iam_workload_identity_pool_provider.cognito.workload_identity_pool_provider_id
+output "firebase_api_key" {
+  description = "Firebase web API key"
+  value       = data.google_firebase_web_app_config.tradequt.api_key
 }
 
-output "wif_pool_name" {
-  description = "Full resource name of the WIF pool"
-  value       = google_iam_workload_identity_pool.cognito.name
+output "firebase_project_id" {
+  description = "Firebase / GCP project ID"
+  value       = var.gcp_project_id
 }
