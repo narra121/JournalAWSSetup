@@ -16,6 +16,7 @@ concurrency:
 permissions:
   contents: read
   deployments: write
+  id-token: write
 
 env:
   AWS_REGION: us-east-1
@@ -214,3 +215,37 @@ jobs:
               "ExposeHeaders": ["Content-Type", "Authorization"],
               "MaxAge": 3600
             }'
+
+      - name: Get Cognito outputs for GCP
+        id: cognito
+        run: |
+          COGNITO_USER_POOL_ID=$(aws cloudformation describe-stacks \
+            --stack-name tradequt-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" \
+            --output text)
+          COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks \
+            --stack-name tradequt-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" \
+            --output text)
+          echo "user_pool_id=$COGNITO_USER_POOL_ID" >> $GITHUB_OUTPUT
+          echo "client_id=$COGNITO_CLIENT_ID" >> $GITHUB_OUTPUT
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Apply (GCP WIF)
+        working-directory: terraform/gcp
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var="environment=dev" \
+            -var="gcp_project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="gcp_project_number=${{ secrets.GCP_PROJECT_NUMBER }}" \
+            -var="cognito_user_pool_id=${{ steps.cognito.outputs.user_pool_id }}" \
+            -var="cognito_client_id=${{ steps.cognito.outputs.client_id }}"
