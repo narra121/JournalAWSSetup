@@ -4,7 +4,7 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 
-const MODELS = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-pro'];
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const RETRYABLE_STATUS_CODES = [429, 503];
 
@@ -20,22 +20,10 @@ const buildGeminiPrompt = () => {
   return `ROLE:
 You are an expert VISION + OCR financial data extraction model. Your ONLY goal is to read the trade history TABLE shown in the provided image and output a precise structured JSON array. You must be completely accurate and not hallucinate any data.
 
-TARGET SCHEMA (array of objects, order preserved top-to-bottom as in the table):
-json
-[
-  {
-    "symbol": "STRING",
-    "side": "BUY|SELL",
-    "quantity": NUMBER,
-    "openDate": "YYYY-MM-DDTHH:MM:SS",
-    "closeDate": "YYYY-MM-DDTHH:MM:SS",
-    "entryPrice": NUMBER,
-    "exitPrice": NUMBER,
-    "stopLoss": NUMBER,
-    "takeProfit": NUMBER,
-    "pnl": NUMBER
-  }
-]
+OUTPUT FORMAT (CSV — one header row, then data rows, top-to-bottom as in the table):
+symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl
+
+Each data row contains values in the same column order. Do NOT quote values unless a value contains a comma.
 
 
 FIELD INTERPRETATION:
@@ -77,12 +65,11 @@ VISION-SPECIFIC GUIDANCE:
 - If a currency symbol precedes a price (e.g., $3343.24), drop the symbol.
 
 STRICT OUTPUT RULES:
-- Return ONLY a valid JSON array.
-- Do not include any leading/trailing text, explanations, or markdown fences (\`\`\`json\`\`\`).
-- Every object in the array must include all keys defined in the schema.
-- Ensure keys in each object follow this exact order: \`symbol\`, \`side\`, \`quantity\`, \`openDate\`, \`closeDate\`, \`entryPrice\`, \`exitPrice\`, \`stopLoss\`, \`takeProfit\`, \`pnl\`.
-- Do not use trailing commas in the JSON.
-- If no valid trade rows can be extracted, output an empty array \`[]\`.`;
+- Return ONLY CSV text: one header line followed by data lines.
+- No leading/trailing text, explanations, or markdown fences.
+- Use this exact header: symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl
+- Output at most 50 trades. If more exist, output only the first 50.
+- If no valid trade rows can be extracted, output ONLY the header line with no data rows.`;
 };
 
 const buildTextExtractionPrompt = () => {
@@ -95,24 +82,12 @@ const buildTextExtractionPrompt = () => {
   const monthName = monthNames[now.getUTCMonth()];
 
   return `ROLE:
-You are an expert financial data normalization model. Your ONLY goal is to parse the provided CSV/tabular trade data and output a precise structured JSON array matching the target schema. You must be completely accurate and not hallucinate any data.
+You are an expert financial data normalization model. Your ONLY goal is to parse the provided CSV/tabular trade data and output a precise CSV matching the target format. You must be completely accurate and not hallucinate any data.
 
-TARGET SCHEMA (array of objects):
-json
-[
-  {
-    "symbol": "STRING",
-    "side": "BUY|SELL",
-    "quantity": NUMBER,
-    "openDate": "YYYY-MM-DDTHH:MM:SS",
-    "closeDate": "YYYY-MM-DDTHH:MM:SS",
-    "entryPrice": NUMBER,
-    "exitPrice": NUMBER,
-    "stopLoss": NUMBER,
-    "takeProfit": NUMBER,
-    "pnl": NUMBER
-  }
-]
+OUTPUT FORMAT (CSV — one header row, then data rows):
+symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl
+
+Each data row contains values in the same column order. Do NOT quote values unless a value contains a comma.
 
 COLUMN MAPPING INTELLIGENCE:
 You must intelligently map ANY column naming convention to the target schema. Common variations include:
@@ -151,9 +126,11 @@ MISSING / BLANK HANDLING:
 - Other numeric fields: default to 0 if blank.
 
 STRICT OUTPUT RULES:
-- Return ONLY a valid JSON array. No text, no markdown fences.
-- Every object must include all 10 keys in exact order.
-- If no valid rows, output [].`;
+- Return ONLY CSV text: one header line followed by data lines.
+- No leading/trailing text, explanations, or markdown fences.
+- Use this exact header: symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl
+- Output at most 50 trades. If more exist, output only the first 50.
+- If no valid rows, output ONLY the header line with no data rows.`;
 };
 
 // Configurable upstream request timeout (ms) for Gemini fetch; default 90000 (90s)
@@ -163,8 +140,8 @@ const REQUEST_TIMEOUT_MS = (() => {
 })();
 // Hard cap on accepted base64 payload bytes (after stripping data URI) to prevent very large images (default ~3MB)
 const MAX_IMAGE_BASE64_LENGTH = (() => {
-  const v = parseInt(process.env.MAX_IMAGE_BASE64_LENGTH || '4000000', 10); // 4,000,000 chars ~3MB decoded
-  return Number.isFinite(v) && v > 10000 ? v : 4000000;
+  const v = parseInt(process.env.MAX_IMAGE_BASE64_LENGTH || '1333334', 10);
+  return Number.isFinite(v) && v > 10000 ? v : 1333334;
 })();
 
 // --- Prompt caching (TTL-based, avoids rebuilding date strings on every invocation) ---
@@ -224,7 +201,7 @@ async function callGemini(
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0 },
+        generationConfig: { temperature: 0, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
       }),
       signal,
     });
@@ -281,7 +258,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     
     // --- Text content extraction path ---
     if (textContent) {
-      const MAX_TEXT_LENGTH = 1_000_000;
+      const MAX_TEXT_LENGTH = 10_000;
       if (textContent.length > MAX_TEXT_LENGTH) {
         return envelope({ statusCode: 400, error: { code: 'BadRequest', message: `Text content exceeds ${MAX_TEXT_LENGTH} character limit` }, message: 'Text content too large' });
       }
@@ -306,35 +283,53 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
         clearTimeout(timeoutId);
 
-        const extracted = extractJsonArray(text);
-        const elapsed = Date.now() - started;
+        // Try CSV first, fall back to JSON
+        const csvResult = parseCSVResponse(text);
+        let items: any[];
+        let parseSteps: string[];
 
-        if (!extracted.json) {
-          return envelope({
-            statusCode: 200,
-            data: { items: [] },
-            error: { code: 'ExtractionFailed', message: 'Could not extract any trade data from the provided content. Ensure it contains structured trade information with columns like Symbol, Side, Price, Date, etc.' },
-            meta: { elapsedMs: elapsed, source: 'text', rawPreview: text.slice(0, 300) },
-            message: 'No trades could be extracted from the provided data'
-          });
+        if (csvResult.items.length > 0) {
+          items = csvResult.items;
+          parseSteps = csvResult.steps;
+        } else {
+          const jsonResult = extractJsonArray(text);
+          if (jsonResult.json) {
+            try {
+              items = JSON.parse(jsonResult.json);
+              parseSteps = [...csvResult.steps, 'CSV yielded 0 items, fell back to JSON', ...jsonResult.steps];
+            } catch {
+              items = [];
+              parseSteps = [...csvResult.steps, 'CSV and JSON both failed'];
+            }
+          } else {
+            items = [];
+            parseSteps = [...csvResult.steps, 'No CSV or JSON data found'];
+          }
         }
 
-        const items = JSON.parse(extracted.json);
+        const elapsed = Date.now() - started;
 
         if (items.length === 0) {
+          // Check if it was a total failure vs just no trades
+          const hasData = csvResult.items.length > 0 || text.trim().length > 0;
           return envelope({
             statusCode: 200,
             data: { items: [] },
-            error: { code: 'NoTradesFound', message: 'The data was processed but no valid trade rows were found. Check that your data includes required fields: Symbol, Side (Buy/Sell), Quantity, and Date.' },
-            meta: { elapsedMs: elapsed, source: 'text', parseSteps: extracted.steps },
-            message: 'No valid trade rows found in the data'
+            error: {
+              code: hasData ? 'NoTradesFound' : 'ExtractionFailed',
+              message: hasData
+                ? 'The data was processed but no valid trade rows were found. Check that your data includes required fields: Symbol, Side (Buy/Sell), Quantity, and Date.'
+                : 'Could not extract any trade data from the provided content. Ensure it contains structured trade information with columns like Symbol, Side, Price, Date, etc.'
+            },
+            meta: { elapsedMs: elapsed, source: 'text', rawPreview: text.slice(0, 300), parseSteps },
+            message: 'No trades could be extracted from the provided data'
           });
         }
 
         return envelope({
           statusCode: 200,
           data: { items },
-          meta: { elapsedMs: elapsed, source: 'text', totalExtracted: items.length, parseSteps: extracted.steps },
+          meta: { elapsedMs: elapsed, source: 'text', totalExtracted: items.length, parseSteps },
           message: 'Extraction successful'
         });
       } catch (err: any) {
@@ -422,32 +417,45 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
       console.log(`Gemini response received for image ${i}`, { chars: text.length });
 
-      const extracted = extractJsonArray(text);
-      if (!extracted.json) {
-        processingDetails[i] = {
-          imageIndex: i,
-          error: 'Model did not return JSON array',
-          rawPreview: text.slice(0, 200),
-          skipped: true
-        };
-        return;
+      // Try CSV first, fall back to JSON
+      const csvResult = parseCSVResponse(text);
+      let items: any[];
+      let parseSteps: string[];
+
+      if (csvResult.items.length > 0) {
+        items = csvResult.items;
+        parseSteps = csvResult.steps;
+      } else {
+        const jsonResult = extractJsonArray(text);
+        if (jsonResult.json) {
+          try {
+            items = JSON.parse(jsonResult.json);
+            parseSteps = [...csvResult.steps, 'CSV yielded 0 items, fell back to JSON', ...jsonResult.steps];
+          } catch (e: any) {
+            processingDetails[i] = {
+              imageIndex: i,
+              error: `Parse error: ${e.message}`,
+              skipped: true
+            };
+            return;
+          }
+        } else {
+          processingDetails[i] = {
+            imageIndex: i,
+            error: 'Model did not return parseable CSV or JSON',
+            rawPreview: text.slice(0, 200),
+            skipped: true
+          };
+          return;
+        }
       }
 
-      try {
-        const items = JSON.parse(extracted.json);
-        allItems.push(...items);
-        processingDetails[i] = {
-          imageIndex: i,
-          extractedCount: items.length,
-          parseSteps: extracted.steps
-        };
-      } catch (e: any) {
-        processingDetails[i] = {
-          imageIndex: i,
-          error: `JSON parse error: ${e.message}`,
-          skipped: true
-        };
-      }
+      allItems.push(...items);
+      processingDetails[i] = {
+        imageIndex: i,
+        extractedCount: items.length,
+        parseSteps
+      };
     }));
 
     // Handle single-image failure thrown from inside Promise.allSettled
@@ -537,4 +545,93 @@ function extractJsonArray(raw: string): { json?: string; steps: string[] } {
     }
   }
   return { steps };
+}
+
+function parseCSVResponse(raw: string): { items: any[]; steps: string[] } {
+  const steps: string[] = [];
+  let work = raw.trim();
+
+  const fenceMatch = work.match(/```(?:csv)?\s*[\r\n]+([\s\S]*?)```/i);
+  if (fenceMatch) {
+    steps.push('Stripped markdown code fence');
+    work = fenceMatch[1].trim();
+  }
+
+  const lines = work.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length === 0) {
+    steps.push('Empty response');
+    return { items: [], steps };
+  }
+
+  let startIndex = 0;
+  const firstLineLower = lines[0].toLowerCase();
+  if (firstLineLower.includes('symbol') && firstLineLower.includes('side')) {
+    steps.push('Detected and skipped header row');
+    startIndex = 1;
+  }
+
+  const items: any[] = [];
+  for (let i = startIndex; i < lines.length; i++) {
+    const cols = parseCSVLine(lines[i]);
+    if (cols.length < 10) {
+      steps.push(`Skipped line ${i + 1}: only ${cols.length} columns`);
+      continue;
+    }
+
+    const [symbol, side, quantity, openDate, closeDate, entryPrice, exitPrice, stopLoss, takeProfit, pnl] = cols;
+
+    if (!symbol || !side || !quantity || !openDate) {
+      steps.push(`Skipped line ${i + 1}: missing required field`);
+      continue;
+    }
+
+    items.push({
+      symbol: symbol.trim(),
+      side: side.trim().toUpperCase(),
+      quantity: parseFloat(quantity) || 0,
+      openDate: openDate.trim(),
+      closeDate: (closeDate || openDate).trim(),
+      entryPrice: parseFloat(entryPrice) || 0,
+      exitPrice: parseFloat(exitPrice) || 0,
+      stopLoss: parseFloat(stopLoss) || 0,
+      takeProfit: parseFloat(takeProfit) || 0,
+      pnl: parseFloat(pnl) || 0,
+    });
+  }
+
+  steps.push(`Parsed ${items.length} trades from CSV`);
+  return { items, steps };
+}
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        result.push(current);
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+  }
+  result.push(current);
+  return result;
 }

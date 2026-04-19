@@ -4,8 +4,9 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 
-const MODEL_ID = 'gemini-2.5-flash';
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const RETRYABLE_STATUS_CODES = [429, 503];
 
 const getSystemPrompt = (isTradingNotes: boolean) => {
   const basePrompt = `You are an expert trading journal assistant. Your task is to enhance the following text (trade note or image description). Improve grammar, clarity, and flow, but CRITICALLY, you must preserve the user's first-person narrative and the original emotional state (whether frustration, excitement, calm, or regret). Do not sanitize the emotion or make it sound overly formal. The goal is for the user to read this later and vividly recall their mindset and feelings at that moment.`;
@@ -82,37 +83,55 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const url = `${GEMINI_API_BASE}/models/${MODEL_ID}:generateContent`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [{ text: `${getSystemPrompt(isTradingNotes)}\n\n${text}` }],
-          }],
-          generationConfig: { temperature: 0.7 },
-        }),
-        signal: controller.signal,
-      });
+      let enhancedText: string | undefined;
 
-      clearTimeout(timeoutId);
+      for (let i = 0; i < MODELS.length; i++) {
+        const model = MODELS[i];
+        const isLast = i === MODELS.length - 1;
+        const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
-      if (!response.ok) {
-        const errText = await response.text();
-        console.error('Gemini API error:', response.status, errText);
-        return envelope({
-          statusCode: 502,
-          error: { code: 'BadGateway', message: `Gemini API error: ${response.status}` },
-          message: 'Failed to enhance text',
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{
+              role: 'user',
+              parts: [{ text: `${getSystemPrompt(isTradingNotes)}\n\n${text}` }],
+            }],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 2048,
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+          signal: controller.signal,
         });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          if (!isLast && RETRYABLE_STATUS_CODES.includes(response.status)) {
+            console.warn(`Gemini ${model} returned ${response.status}, falling back to ${MODELS[i + 1]}`);
+            continue;
+          }
+          console.error('Gemini API error:', response.status, errText);
+          clearTimeout(timeoutId);
+          return envelope({
+            statusCode: 502,
+            error: { code: 'BadGateway', message: `Gemini API error: ${response.status}` },
+            message: 'Failed to enhance text',
+          });
+        }
+
+        const data = await response.json();
+        enhancedText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (i > 0) console.log(`Used fallback model ${model} successfully`);
+        break;
       }
 
-      const data = await response.json();
-      const enhancedText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      clearTimeout(timeoutId);
 
       if (!enhancedText) {
         return envelope({

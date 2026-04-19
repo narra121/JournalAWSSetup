@@ -6,7 +6,7 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 // Stub env before importing handler
 vi.stubEnv('GEMINI_API_KEY_PARAM', '/test/gemini-key');
 vi.stubEnv('GEMINI_REQUEST_TIMEOUT_MS', '5000');
-vi.stubEnv('MAX_IMAGE_BASE64_LENGTH', '4000000');
+vi.stubEnv('MAX_IMAGE_BASE64_LENGTH', '1333334');
 
 // Mock SSM
 const ssmMock = mockClient(SSMClient);
@@ -72,10 +72,15 @@ function makeEvent(body?: any, overrides: Partial<APIGatewayProxyEventV2> = {}):
 }
 
 function mockGeminiSuccess(trades: any[] = sampleTrades) {
+  const header = 'symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl';
+  const rows = trades.map(t =>
+    `${t.symbol},${t.side},${t.quantity},${t.openDate},${t.closeDate},${t.entryPrice},${t.exitPrice},${t.stopLoss},${t.takeProfit},${t.pnl}`
+  );
+  const csvText = [header, ...rows].join('\n');
   fetchMock.mockResolvedValueOnce({
     ok: true,
     json: async () => ({
-      candidates: [{ content: { parts: [{ text: JSON.stringify(trades) }] } }],
+      candidates: [{ content: { parts: [{ text: csvText }] } }],
     }),
   });
 }
@@ -206,7 +211,7 @@ describe('extract-trades handler', () => {
     expect(body.errorCode).toBe('GeminiTimeout');
   });
 
-  it('returns 500 when JSON extraction fails for single image', async () => {
+  it('returns 500 when extraction fails for single image (non-parseable response)', async () => {
     mockGeminiNonJson();
 
     const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
@@ -269,7 +274,7 @@ describe('extract-trades handler', () => {
     expect(body.meta.totalExtracted).toBe(1);
   });
 
-  it('returns 200 with empty items when text yields no JSON array', async () => {
+  it('returns 200 with empty items when text yields no parseable data', async () => {
     mockGeminiNonJson('I could not parse any trades from this data.');
 
     const res = await handler(makeEvent({ textContent: 'random text with no trades' }), {} as any) as any;
@@ -281,20 +286,25 @@ describe('extract-trades handler', () => {
     expect(body.meta.source).toBe('text');
   });
 
-  it('returns 200 with empty items when text yields empty array', async () => {
-    mockGeminiSuccess([]);
+  it('returns 200 with empty items when text yields empty CSV', async () => {
+    // Model returns only header (no data rows)
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: 'symbol,side,quantity,openDate,closeDate,entryPrice,exitPrice,stopLoss,takeProfit,pnl' }] } }],
+      }),
+    });
 
     const res = await handler(makeEvent({ textContent: 'Symbol,Side\n' }), {} as any) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.items).toHaveLength(0);
-    expect(body.message).toContain('No valid trade rows found');
     expect(body.meta.source).toBe('text');
   });
 
-  it('returns 400 when textContent exceeds 1MB limit', async () => {
-    const largeText = 'x'.repeat(1_000_001);
+  it('returns 400 when textContent exceeds 10KB limit', async () => {
+    const largeText = 'x'.repeat(10_001);
     const res = await handler(makeEvent({ textContent: largeText }), {} as any) as any;
 
     expect(res.statusCode).toBe(400);
@@ -326,5 +336,46 @@ describe('extract-trades handler', () => {
     expect(body.meta.source).toBe('text');
     // Only one fetch call (text path), not two
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Model and config assertions ──────────────────────────────
+
+  it('uses gemini-2.5-flash-lite as primary model', async () => {
+    mockGeminiSuccess();
+    await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any);
+
+    const fetchUrl = fetchMock.mock.calls[0][0];
+    expect(fetchUrl).toContain('gemini-2.5-flash-lite');
+  });
+
+  it('sends thinkingBudget: 0 in generationConfig', async () => {
+    mockGeminiSuccess();
+    await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any);
+
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchCallBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('sends maxOutputTokens: 4096 in generationConfig', async () => {
+    mockGeminiSuccess();
+    await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any);
+
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchCallBody.generationConfig.maxOutputTokens).toBe(4096);
+  });
+
+  it('falls back to JSON parsing when model returns JSON instead of CSV', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: JSON.stringify(sampleTrades) }] } }],
+      }),
+    });
+
+    const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.items).toHaveLength(1);
+    expect(body.data.items[0].symbol).toBe('XAUUSD');
   });
 });

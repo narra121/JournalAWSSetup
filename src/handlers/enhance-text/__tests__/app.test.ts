@@ -142,11 +142,16 @@ describe('enhance-text handler', () => {
 
   // ── API errors ──────────────────────────────────────────────
 
-  it('returns 502 when Gemini API returns non-OK status', async () => {
+  it('returns 502 when all models return non-OK status', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 429,
       text: async () => 'Rate limited',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => 'Internal error',
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
@@ -420,5 +425,79 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
+  });
+
+  // ── Model and config assertions ──────────────────────────────
+
+  it('uses gemini-2.5-flash-lite as primary model', async () => {
+    mockFetchSuccess('Enhanced text.');
+    await handler(makeEvent({ text: 'test text' }), {} as any);
+
+    const fetchUrl = fetchMock.mock.calls[0][0];
+    expect(fetchUrl).toContain('gemini-2.5-flash-lite');
+  });
+
+  it('sends thinkingBudget: 0 in generationConfig', async () => {
+    mockFetchSuccess('Enhanced text.');
+    await handler(makeEvent({ text: 'test text' }), {} as any);
+
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchCallBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('sends maxOutputTokens: 2048 in generationConfig', async () => {
+    mockFetchSuccess('Enhanced text.');
+    await handler(makeEvent({ text: 'test text' }), {} as any);
+
+    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchCallBody.generationConfig.maxOutputTokens).toBe(2048);
+  });
+
+  // ── Model fallback ──────────────────────────────────────────
+
+  it('falls back to gemini-2.5-flash on 429 from primary model', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      text: async () => 'Rate limited',
+    });
+    mockFetchSuccess('Enhanced from fallback.');
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.enhancedText).toBe('Enhanced from fallback.');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain('gemini-2.5-flash');
+  });
+
+  it('falls back to gemini-2.5-flash on 503 from primary model', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: async () => 'Service unavailable',
+    });
+    mockFetchSuccess('Enhanced from fallback.');
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.enhancedText).toBe('Enhanced from fallback.');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on non-retryable error (e.g. 401)', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => 'Unauthorized',
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
