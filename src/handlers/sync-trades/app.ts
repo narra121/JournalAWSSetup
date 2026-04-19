@@ -134,28 +134,10 @@ async function querySingleAccount(
 async function fetchTradesForDays(
   userId: string, accountId: string | undefined, staleDays: string[],
 ): Promise<any[]> {
-  const allKeys: { userId: string; tradeId: string }[] = [];
-
-  for (const day of staleDays) {
-    const inclusiveEnd = day + 'T23:59:59.999Z';
-    let exclusiveStartKey: Record<string, any> | undefined;
-    do {
-      const result = await ddb.send(new QueryCommand({
-        TableName: TRADES_TABLE,
-        IndexName: 'trades-by-date-gsi',
-        KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        ExpressionAttributeValues: { ':u': userId, ':start': day, ':end': inclusiveEnd },
-        ExpressionAttributeNames: { '#od': 'openDate' },
-        ExclusiveStartKey: exclusiveStartKey,
-      }));
-      if (result.Items) {
-        for (const item of result.Items) {
-          allKeys.push({ userId: item.userId, tradeId: item.tradeId });
-        }
-      }
-      exclusiveStartKey = result.LastEvaluatedKey;
-    } while (exclusiveStartKey);
-  }
+  const dayResults = await Promise.all(
+    staleDays.map(day => queryTradesForDay(userId, day))
+  );
+  const allKeys = dayResults.flat();
 
   if (allKeys.length === 0) return [];
 
@@ -183,4 +165,29 @@ async function fetchTradesForDays(
     return items.filter((it: any) => it.accountId === accountId);
   }
   return items;
+}
+
+async function queryTradesForDay(
+  userId: string, day: string,
+): Promise<{ userId: string; tradeId: string }[]> {
+  const keys: { userId: string; tradeId: string }[] = [];
+  const inclusiveEnd = day + 'T23:59:59.999Z';
+  let exclusiveStartKey: Record<string, any> | undefined;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: TRADES_TABLE,
+      IndexName: 'trades-by-date-gsi',
+      KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
+      ExpressionAttributeValues: { ':u': userId, ':start': day, ':end': inclusiveEnd },
+      ExpressionAttributeNames: { '#od': 'openDate' },
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+    if (result.Items) {
+      for (const item of result.Items) {
+        keys.push({ userId: item.userId, tradeId: item.tradeId });
+      }
+    }
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return keys;
 }
