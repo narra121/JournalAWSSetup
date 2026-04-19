@@ -52,3 +52,16 @@ resource "google_firebase_app_check_recaptcha_enterprise_config" "default" {
 
   depends_on = [google_firebase_project.default]
 }
+
+module "ai_logic" {
+  source     = "GoogleCloudPlatform/firebase/google//modules/firebase_ai_logic_core"
+  version    = "~> 0.1"
+  project_id = var.gcp_project_id
+
+  api_config = {
+    gemini_developer = true
+    vertex_ai        = false
+  }
+
+  depends_on = [google_firebase_project.default]
+}
