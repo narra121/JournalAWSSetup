@@ -156,6 +156,19 @@ jobs:
               --region $AWS_REGION
           fi
 
+      - name: Store Firebase Service Account Key in SSM
+        env:
+          FIREBASE_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          if [ -n "${FIREBASE_SA_KEY}" ]; then
+            aws ssm put-parameter \
+              --name "/tradequt/firebase-service-account" \
+              --value "${FIREBASE_SA_KEY}" \
+              --type "SecureString" \
+              --overwrite \
+              --region $AWS_REGION
+          fi
+
       - name: Deploy to Prod
         run: |
           sam deploy \
@@ -203,20 +216,6 @@ jobs:
           echo "### Stack Outputs:" >> $GITHUB_STEP_SUMMARY
           aws cloudformation describe-stacks --stack-name tradequt-prod --query "Stacks[0].Outputs" >> $GITHUB_STEP_SUMMARY
 
-      - name: Get Cognito outputs for GCP
-        id: cognito
-        run: |
-          COGNITO_USER_POOL_ID=$(aws cloudformation describe-stacks \
-            --stack-name tradequt-prod \
-            --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" \
-            --output text)
-          COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks \
-            --stack-name tradequt-prod \
-            --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" \
-            --output text)
-          echo "user_pool_id=$COGNITO_USER_POOL_ID" >> $GITHUB_OUTPUT
-          echo "client_id=$COGNITO_CLIENT_ID" >> $GITHUB_OUTPUT
-
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -226,13 +225,11 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform Apply (GCP WIF)
+      - name: Terraform Apply (Firebase)
         working-directory: terraform/gcp
         run: |
           terraform init
           terraform apply -auto-approve \
             -var="environment=prod" \
             -var="gcp_project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="gcp_project_number=${{ secrets.GCP_PROJECT_NUMBER }}" \
-            -var="cognito_user_pool_id=${{ steps.cognito.outputs.user_pool_id }}" \
-            -var="cognito_client_id=${{ steps.cognito.outputs.client_id }}"
+            -var="gcp_project_number=${{ secrets.GCP_PROJECT_NUMBER }}"
