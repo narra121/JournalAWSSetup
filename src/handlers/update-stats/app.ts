@@ -3,6 +3,7 @@ import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
+import { recomputeMonthlyHashes } from '../../shared/monthly-hash';
 import { extractDate, calcPnL } from '../../shared/utils/pnl';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -275,6 +276,25 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
       for (const eid of failedEventIds) {
         failures.push({ itemIdentifier: eid });
+      }
+    }
+
+    // 2b. Recompute monthly hashes for affected months
+    const monthsByUserAcct = new Map<string, Set<string>>();
+    for (const [userAccKey, dates] of affectedDays) {
+      const months = new Set<string>();
+      for (const date of dates) {
+        months.add(date.slice(0, 7));
+      }
+      monthsByUserAcct.set(userAccKey, months);
+    }
+
+    for (const [userAccKey, months] of monthsByUserAcct) {
+      const [uid, accId] = userAccKey.split('#', 2);
+      try {
+        await recomputeMonthlyHashes(uid, accId, months);
+      } catch (e) {
+        console.error(`Failed to recompute monthly hashes for ${userAccKey}`, e);
       }
     }
 
