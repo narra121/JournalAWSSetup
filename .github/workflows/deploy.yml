@@ -229,20 +229,3 @@ jobs:
               "MaxAge": 3600
             }'
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Apply (Firebase)
-        working-directory: terraform/gcp
-        run: |
-          terraform init
-          terraform apply -auto-approve \
-            -var="environment=dev" \
-            -var="gcp_project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="gcp_project_number=${{ secrets.GCP_PROJECT_NUMBER }}"

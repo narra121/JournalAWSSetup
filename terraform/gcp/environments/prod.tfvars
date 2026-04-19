@@ -1,4 +1,0 @@
-environment        = "prod"
-gcp_project_id     = ""
-gcp_project_number = ""
-gcp_region         = "us-central1"
