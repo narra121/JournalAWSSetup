@@ -240,6 +240,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Apply (GCP WIF)
+        continue-on-error: true
         working-directory: terraform/gcp
         run: |
           terraform init
