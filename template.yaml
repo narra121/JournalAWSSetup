@@ -61,6 +61,10 @@ Parameters:
     Type: String
     Default: /tradequt/dev/stripeWebhookSecret
     Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
+  FirebaseServiceAccountParamName:
+    Type: String
+    Default: /tradequt/firebase-service-account
+    Description: SSM SecureString parameter storing the Firebase service account JSON key.
   AdConfigParamName:
     Type: String
     Default: /tradequt/dev/adConfig
@@ -1178,6 +1182,39 @@ Resources:
       BuildProperties:
         EntryPoints:
           - src/handlers/auth-refresh/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  FirebaseTokenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/firebase-token/app.handler
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          FIREBASE_SERVICE_ACCOUNT_PARAM: !Ref FirebaseServiceAccountParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${FirebaseServiceAccountParamName}"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/firebase-token
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/firebase-token/app.ts
         Minify: true
         Target: es2020
         Sourcemap: false

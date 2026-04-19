@@ -39,6 +39,7 @@
     "@google/generative-ai": "^0.11.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
+    "firebase-admin": "^13.8.0",
     "stripe": "^17.7.0",
     "uuid": "^9.0.1"
   },
