@@ -142,6 +142,7 @@ ROLES=(
   "roles/iam.serviceAccountAdmin"
   "roles/aiplatform.admin"
   "roles/storage.objectAdmin"
+  "roles/resourcemanager.projectIamAdmin"
 )
 
 for ROLE in "${ROLES[@]}"; do
