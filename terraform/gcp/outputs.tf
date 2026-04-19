@@ -12,3 +12,8 @@ output "firebase_project_id" {
   description = "Firebase / GCP project ID"
   value       = var.gcp_project_id
 }
+
+output "recaptcha_site_key" {
+  description = "reCAPTCHA Enterprise site key for App Check"
+  value       = google_recaptcha_enterprise_key.app_check.key_id
+}
