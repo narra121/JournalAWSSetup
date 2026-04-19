@@ -1,7 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
-import { recomputeMonthlyHashes } from '../../shared/monthly-hash';
 import { extractDate } from '../../shared/utils/pnl';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -122,19 +121,6 @@ async function rebuildForUser(userId: string): Promise<void> {
     }
   }
 
-  // Rebuild monthly hashes for all months that have daily records
-  const monthsByAccount = new Map<string, Set<string>>();
-  for (const key of dailyGroups.keys()) {
-    const [accId, date] = key.split('#');
-    const month = date.slice(0, 7);
-    if (!monthsByAccount.has(accId)) monthsByAccount.set(accId, new Set());
-    monthsByAccount.get(accId)!.add(month);
-  }
-
-  for (const [accId, months] of monthsByAccount) {
-    await recomputeMonthlyHashes(userId, accId, months);
-  }
-
   // Orphan cleanup: delete daily stats records that no longer have trades
   let dailyLastKey: any = undefined;
   do {
@@ -147,8 +133,6 @@ async function rebuildForUser(userId: string): Promise<void> {
     }));
     const existingItems = queryResp.Items || [];
     for (const item of existingItems) {
-      // Skip monthly hash records (managed by recomputeMonthlyHashes)
-      if (item.sk && item.sk.includes('#MONTH#')) continue;
       if (!newSkSet.has(item.sk)) {
         await ddb.send(new DeleteCommand({
           TableName: DAILY_STATS_TABLE,

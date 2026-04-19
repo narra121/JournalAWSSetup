@@ -64,17 +64,6 @@ export function computeDailyRecord(
   return record as DailyStatsRecord;
 }
 
-/**
- * Compute a monthly batch hash from an array of day hashes.
- * Sorts by date ascending, then SHA-256 of "date|tradeHash||date|tradeHash||...".
- * Must match the frontend computeLocalMonthHash algorithm exactly.
- */
-export function computeMonthHash(dayHashes: Array<{ date: string; tradeHash: string }>): string {
-  const sorted = [...dayHashes].sort((a, b) => a.date.localeCompare(b.date));
-  const input = sorted.map(d => `${d.date}|${d.tradeHash}`).join('||');
-  return createHash('sha256').update(input).digest('hex');
-}
-
 /** Default empty stats returned when there are no records to aggregate. */
 const EMPTY_STATS: AggregatedStats = {
   totalTrades: 0, wins: 0, losses: 0, breakeven: 0,

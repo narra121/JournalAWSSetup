@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDailyRecord, aggregateDailyRecords, computeMonthHash } from '../stats-aggregator.js';
+import { computeDailyRecord, aggregateDailyRecords } from '../stats-aggregator.js';
 
 // ---------------------------------------------------------------------------
 // Helper: build a mock trade with sensible defaults
@@ -174,29 +174,6 @@ describe('computeDailyRecord', () => {
     const tradeModified = { ...trade, pnl: 100 };
     const record2 = computeDailyRecord('user1', 'acc1', '2026-04-10', [tradeModified]);
     expect(record1!.tradeHash).not.toBe(record2!.tradeHash);
-  });
-});
-
-// ===========================================================================
-// computeMonthHash
-// ===========================================================================
-describe('computeMonthHash', () => {
-  it('computes deterministic hash from day hashes', () => {
-    const dayHashes = [
-      { date: '2026-04-02', tradeHash: 'hash2' },
-      { date: '2026-04-01', tradeHash: 'hash1' },
-    ];
-    const result = computeMonthHash(dayHashes);
-    expect(result).toHaveLength(64);
-
-    const result2 = computeMonthHash([...dayHashes].reverse());
-    expect(result2).toBe(result);
-  });
-
-  it('produces different hash when a day hash changes', () => {
-    const h1 = computeMonthHash([{ date: '2026-04-01', tradeHash: 'aaa' }]);
-    const h2 = computeMonthHash([{ date: '2026-04-01', tradeHash: 'bbb' }]);
-    expect(h1).not.toBe(h2);
   });
 });
 

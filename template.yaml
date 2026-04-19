@@ -808,35 +808,6 @@ Resources:
         Sourcemap: false
         External:
           - "@aws-sdk/*"
-  VerifyHashesFunction:
-    Type: AWS::Serverless::Function
-    Condition: CreateNewDataResources
-    Properties:
-      CodeUri: .
-      Handler: src/handlers/verify-hashes/app.handler
-      Timeout: 10
-      MemorySize: 256
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /v1/trades/verify-hashes
-            Method: POST
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-          - src/handlers/verify-hashes/app.ts
-        Minify: true
-        Target: es2020
-        Sourcemap: false
-        External:
-          - "@aws-sdk/*"
-
   GetImageFunction:
     Type: AWS::Serverless::Function
     Properties:
