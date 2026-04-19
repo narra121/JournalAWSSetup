@@ -10,7 +10,7 @@ Browser -> API Gateway (Cognito JWT) -> Lambda handlers -> DynamoDB / S3
                                                        -> EventBridge (6h)  -> RebuildStats Lambda
 ```
 
-**Resources**: 47 Lambda handlers, 8 DynamoDB tables, 1 S3 bucket, Cognito User Pool, Razorpay integration, Gemini AI (text enhance + trade extraction).
+**Resources**: 49+ Lambda handlers, 10 DynamoDB tables, 2 S3 buckets, Cognito User Pool (with Google OAuth), Stripe integration, Gemini AI (text enhance + trade extraction), Firebase Custom Token minting.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ Browser -> API Gateway (Cognito JWT) -> Lambda handlers -> DynamoDB / S3
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) v1.120+
 - [Bun](https://bun.sh)
 - AWS credentials configured (`aws configure`)
-- [Razorpay](https://dashboard.razorpay.com/) account (test + live keys)
+- [Stripe](https://dashboard.stripe.com/) account (test + live keys)
 - [Google Gemini API key](https://aistudio.google.com/apikey)
 
 ## Local Development
@@ -73,7 +73,7 @@ bun run dev:local                    # http://localhost:8080, API proxied to loc
 sam build --parallel --cached
 sam deploy --stack-name tradequt-dev --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
   --parameter-overrides StageName=tradequt-dev ApiVersion=v1 LogRetentionDays=7 \
-  RazorpayKeyId=rzp_test_xxx RazorpayKeySecret=xxx RazorpayWebhookSecret=xxx
+  --no-confirm-changeset --no-fail-on-empty-changeset
 ```
 
 ### Prod (manual trigger in GitHub Actions)
@@ -84,7 +84,8 @@ Go to Actions -> "Deploy to Production (Manual)" -> Run workflow -> type `deploy
 
 ```bash
 aws ssm put-parameter --name "/tradequt/geminiApiKey" --value "YOUR_KEY" --type SecureString --overwrite
-aws ssm put-parameter --name "/tradequt/razorpayWebhookSecret" --value "YOUR_SECRET" --type SecureString --overwrite
+aws ssm put-parameter --name "/tradequt/dev/stripeSecretKey" --value "YOUR_KEY" --type SecureString --overwrite
+aws ssm put-parameter --name "/tradequt/dev/stripeWebhookSecret" --value "YOUR_SECRET" --type SecureString --overwrite
 ```
 
 ### GitHub Secrets (for CI/CD)
@@ -94,9 +95,12 @@ aws ssm put-parameter --name "/tradequt/razorpayWebhookSecret" --value "YOUR_SEC
 | `AWS_ACCESS_KEY_ID` | IAM access key |
 | `AWS_SECRET_ACCESS_KEY` | IAM secret key |
 | `GEMINI_API_KEY` | Google Gemini API key |
-| `RAZORPAY_KEY_ID_DEV` / `_PROD` | Razorpay key IDs |
-| `RAZORPAY_KEY_SECRET_DEV` / `_PROD` | Razorpay key secrets |
-| `RAZORPAY_WEBHOOK_SECRET_DEV` / `_PROD` | Razorpay webhook secrets |
+| `STRIPE_SECRET_KEY_DEV` / `_PROD` | Stripe secret keys |
+| `STRIPE_WEBHOOK_SECRET_DEV` / `_PROD` | Stripe webhook secrets |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `ACM_CERTIFICATE_ARN` | ACM wildcard certificate ARN |
+| `HOSTED_ZONE_ID` | Route 53 hosted zone ID |
 
 ### Get Stack Outputs
 
@@ -116,11 +120,13 @@ All endpoints prefixed with `/v1`. Auth required unless noted.
 | POST | `/auth/refresh` | Refresh token (public) |
 | POST | `/auth/forgot-password` | Forgot password (public) |
 | POST | `/auth/confirm-forgot-password` | Reset password (public) |
+| POST | `/auth/firebase-token` | Mint Firebase Custom Token from Cognito JWT |
 | POST | `/trades` | Create trade(s) |
 | GET | `/trades` | List trades (paginated, filterable) |
 | PUT | `/trades/{tradeId}` | Update trade |
 | DELETE | `/trades/{tradeId}` | Delete trade |
 | POST | `/trades/bulk-delete` | Bulk delete trades |
+| POST | `/trades/sync` | Unified cache sync (compare hashes, return stale trades) |
 | POST | `/trades/extract` | Extract trades from image (AI) |
 | GET | `/images/{imageId+}` | Get trade image |
 | POST | `/enhance-text` | AI text enhancement |
@@ -136,35 +142,36 @@ All endpoints prefixed with `/v1`. Auth required unless noted.
 | PUT | `/rules/{ruleId}` | Update rule |
 | PUT | `/rules/{ruleId}/toggle` | Toggle rule |
 | DELETE | `/rules/{ruleId}` | Delete rule |
-| GET | `/analytics/hourly-stats` | Hourly performance |
-| GET | `/analytics/daily-win-rate` | Daily win rate |
-| GET | `/analytics/symbol-distribution` | Symbol breakdown |
-| GET | `/analytics/strategy-distribution` | Strategy breakdown |
+| GET | `/stats` | Aggregated statistics with daily trade hashes |
+| GET | `/analytics` | Analytics data (hourly, daily, distributions) |
+| GET | `/goals/progress` | Goals with progress metrics |
 | GET | `/user/profile` | Get profile |
 | PUT | `/user/profile` | Update profile |
 | PUT | `/user/preferences` | Update preferences |
 | PUT | `/user/notifications` | Update notifications |
 | GET | `/options` | Get saved dropdown options |
 | PUT | `/options` | Update saved options |
-| GET | `/subscriptions/plans` | Get subscription plans (public) |
-| POST | `/subscriptions` | Create subscription |
-| GET/PUT/PATCH/DELETE | `/subscriptions` | Manage subscription |
-| POST | `/payments/create-order` | Create Razorpay order |
-| POST | `/payments/verify` | Verify payment |
-| POST | `/payments/webhook` | Razorpay webhook (public) |
+| GET | `/subscription/plans` | Get subscription plans (public) |
+| GET | `/ad-config` | Get ad placement config (public) |
+| POST | `/stripe/checkout` | Create Stripe checkout session |
+| POST | `/stripe/verify` | Verify Stripe checkout session |
+| POST | `/stripe/manage` | Manage Stripe subscription |
+| POST | `/stripe/webhook` | Stripe webhook (public, no auth) |
+| POST | `/error-report` | Frontend error reporting |
 
 ## DynamoDB Tables
 
 | Table | Keys | Purpose |
 |-------|------|---------|
 | Trades | `userId` (PK), `tradeId` (SK) | Trade records, DynamoDB Streams enabled |
-| TradeStats | `userId` (PK) | Aggregated user statistics |
+| DailyStats | `userId` (PK), `sk` (SK) | Pre-aggregated daily metrics (stats-by-date GSI) |
 | Accounts | `userId` (PK), `accountId` (SK) | Trading accounts with balance tracking |
 | Goals | `userId` (PK), `goalId` (SK) | Trading goals |
 | Rules | `userId` (PK), `ruleId` (SK) | Trading rules |
 | UserPreferences | `userId` (PK) | User settings |
-| SavedOptions | `userId` (PK) | Saved dropdown options |
+| SavedOptions | `userId` (PK) | Saved dropdown options (auto-synced symbols from trades) |
 | Subscriptions | `userId` (PK) | Subscription records |
+| InsightsCache | `userId` (PK), `cacheKey` (SK) | AI insights cache with TTL |
 | AuthRateLimit | `key` (PK) | Rate limiting with TTL |
 
 ## Project Structure
@@ -191,14 +198,13 @@ bun run outputs:dev    # Stack outputs
 bun run url:dev        # API URL
 ```
 
-## Razorpay Webhook Setup
+## Stripe Webhook Setup
 
-After deployment, configure the webhook in [Razorpay Dashboard](https://dashboard.razorpay.com/):
+After deployment, configure the webhook in [Stripe Dashboard](https://dashboard.stripe.com/webhooks):
 
-1. Go to Settings -> Webhooks -> Add New
-2. URL: `{ApiBaseUrl}/payments/webhook`
-3. Events: `subscription.activated`, `subscription.charged`, `subscription.completed`, `subscription.cancelled`, `subscription.paused`, `subscription.resumed`, `payment.captured`
-4. Secret: Use the webhook secret stored in SSM
+1. Add endpoint: `{ApiBaseUrl}/stripe/webhook`
+2. Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_succeeded`, `invoice.payment_failed`
+3. Signing secret: Store in SSM at `/tradequt/{env}/stripeWebhookSecret`
 
 ## Further Reference
 
