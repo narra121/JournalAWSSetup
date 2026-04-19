@@ -681,6 +681,36 @@ Resources:
         Sourcemap: false
         External:
           - "@aws-sdk/*"
+  SyncTradesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/sync-trades/app.handler
+      Timeout: 15
+      MemorySize: 512
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/sync
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/sync-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
   UpdateTradeFunction:
     Type: AWS::Serverless::Function
     Properties:
