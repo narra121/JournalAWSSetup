@@ -93,6 +93,16 @@ export interface DailyStatsRecord {
   [key: string]: any;
 }
 
+/** Shape of a monthly hash record stored in DynamoDB (for two-level cache verification). */
+export interface MonthlyHashRecord {
+  userId: string;
+  sk: string;            // "{accountId}#MONTH#{YYYY-MM}"
+  accountId: string;
+  month: string;         // "YYYY-MM"
+  monthHash: string;     // SHA-256 of sorted day hashes
+  lastUpdated: string;
+}
+
 /** Final aggregated stats returned by GET /v1/stats. */
 export interface AggregatedStats {
   totalTrades: number;
