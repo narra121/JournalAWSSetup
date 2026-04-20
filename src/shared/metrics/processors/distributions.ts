@@ -55,7 +55,7 @@ export class DistributionsProcessor implements MetricProcessor {
     this.sessionDist[session].pnl += pnl;
 
     // Outcome
-    const outcome = trade.outcome || 'UNKNOWN';
+    const outcome = trade.outcome || 'Unknown';
     this.outcomeDist[outcome] = (this.outcomeDist[outcome] || 0) + 1;
   }
 

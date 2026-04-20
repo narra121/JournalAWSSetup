@@ -18,7 +18,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
 
-  const type = (event.queryStringParameters?.type || 'hourly') as AnalyticsType;
+  const type = event.queryStringParameters?.type || 'hourly';
+  const validTypes: AnalyticsType[] = ['hourly', 'daily-win-rate', 'symbol-distribution', 'strategy-distribution'];
+  if (!validTypes.includes(type as AnalyticsType)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid analytics type. Use: hourly, daily-win-rate, symbol-distribution, or strategy-distribution');
+  }
   const accountId = event.queryStringParameters?.accountId || 'ALL';
   const startDate = event.queryStringParameters?.startDate || '2000-01-01';
   const endDate = event.queryStringParameters?.endDate || new Date().toISOString().slice(0, 10);
@@ -34,7 +38,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const stats = aggregateDailyRecords(records, {});
 
     let data: any;
-    switch (type) {
+    switch (type as AnalyticsType) {
       case 'hourly':
         data = formatHourlyStats(stats.hourlyStats);
         break;
@@ -47,8 +51,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       case 'strategy-distribution':
         data = formatStrategyDistribution(stats.strategyDistribution);
         break;
-      default:
-        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid analytics type. Use: hourly, daily-win-rate, symbol-distribution, or strategy-distribution');
     }
 
     logger.info('Analytics retrieved', { type, accountId, recordCount: records.length });

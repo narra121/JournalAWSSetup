@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -92,8 +92,7 @@ describe('delete-trade handler', () => {
   // ── Success ─────────────────────────────────────────────────
 
   it('deletes a trade and returns 200 with the deleted trade', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
 
     const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;
 
@@ -104,20 +103,8 @@ describe('delete-trade handler', () => {
     expect(body.data.trade.symbol).toBe('AAPL');
   });
 
-  it('calls GetCommand with correct key', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
-
-    await handler(makeEvent('trade-abc'), {} as any, () => {});
-
-    const getCalls = ddbMock.commandCalls(GetCommand);
-    expect(getCalls).toHaveLength(1);
-    expect(getCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', tradeId: 'trade-abc' });
-  });
-
-  it('calls DeleteCommand with correct key and condition', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+  it('calls DeleteCommand with correct key, condition, and ReturnValues', async () => {
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
 
     await handler(makeEvent('trade-abc'), {} as any, () => {});
 
@@ -125,11 +112,11 @@ describe('delete-trade handler', () => {
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', tradeId: 'trade-abc' });
     expect(deleteCalls[0].args[0].input.ConditionExpression).toBe('attribute_exists(tradeId)');
+    expect(deleteCalls[0].args[0].input.ReturnValues).toBe('ALL_OLD');
   });
 
   it('cleans up S3 images after deleting trade', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
     s3Mock.on(ListObjectsV2Command).resolves({
       Contents: [{ Key: 'images/user-1/trade-abc/img1.jpg' }],
       IsTruncated: false,
@@ -167,8 +154,10 @@ describe('delete-trade handler', () => {
 
   // ── Not found ───────────────────────────────────────────────
 
-  it('returns 404 when trade does not exist', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
+  it('returns 404 when trade does not exist (ConditionalCheckFailedException)', async () => {
+    const error = new Error('The conditional request failed');
+    (error as any).name = 'ConditionalCheckFailedException';
+    ddbMock.on(DeleteCommand).rejects(error);
 
     const res = await handler(makeEvent('nonexistent-trade'), {} as any, () => {}) as any;
 
@@ -177,23 +166,10 @@ describe('delete-trade handler', () => {
     expect(body.errorCode).toBe('NOT_FOUND');
   });
 
-  it('returns 404 when delete ConditionalCheckFailedException occurs', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    const error = new Error('The conditional request failed');
-    (error as any).name = 'ConditionalCheckFailedException';
-    ddbMock.on(DeleteCommand).rejects(error);
-
-    const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(404);
-    const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('NOT_FOUND');
-  });
-
   // ── DynamoDB errors ─────────────────────────────────────────
 
-  it('returns 500 when DynamoDB GetCommand fails unexpectedly', async () => {
-    ddbMock.on(GetCommand).rejects(new Error('DynamoDB error'));
+  it('returns 500 when DynamoDB DeleteCommand fails unexpectedly', async () => {
+    ddbMock.on(DeleteCommand).rejects(new Error('Unexpected delete error'));
 
     const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;
 
@@ -203,22 +179,10 @@ describe('delete-trade handler', () => {
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
 
-  it('returns 500 when DynamoDB DeleteCommand fails unexpectedly', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).rejects(new Error('Unexpected delete error'));
-
-    const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(500);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
-  });
-
   // ── S3 image cleanup ───────────────────────────────────────
 
   it('deletes multiple S3 images when trade has several images', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
     s3Mock.on(ListObjectsV2Command).resolves({
       Contents: [
         { Key: 'images/user-1/trade-abc/img1.jpg' },
@@ -236,8 +200,7 @@ describe('delete-trade handler', () => {
   });
 
   it('handles S3 pagination when trade has many images', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
     s3Mock.on(ListObjectsV2Command)
       .resolvesOnce({
         Contents: [{ Key: 'images/user-1/trade-abc/img1.jpg' }],
@@ -255,14 +218,12 @@ describe('delete-trade handler', () => {
     expect(listCalls).toHaveLength(2);
     expect(listCalls[1].args[0].input.ContinuationToken).toBe('token1');
 
-    // All keys collected first, then deleted in a single batch (total < 1000)
     const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand);
     expect(deleteCalls).toHaveLength(1);
   });
 
   it('still deletes trade even when S3 has no images', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: existingTrade });
-    ddbMock.on(DeleteCommand).resolves({});
+    ddbMock.on(DeleteCommand).resolves({ Attributes: existingTrade });
     s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
 
     const res = await handler(makeEvent('trade-abc'), {} as any, () => {}) as any;

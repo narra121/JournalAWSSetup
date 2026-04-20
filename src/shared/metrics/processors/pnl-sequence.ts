@@ -88,10 +88,10 @@ function computeMaxDrawdown(pnlValues: number[], totalCapital?: number): number 
 }
 
 function computeSharpeRatio(pnlValues: number[]): number {
-  if (pnlValues.length === 0) return 0;
+  if (pnlValues.length <= 1) return 0;
   const total = pnlValues.reduce((s, v) => s + v, 0);
   const avg = total / pnlValues.length;
-  const variance = pnlValues.reduce((s, v) => s + Math.pow(v - avg, 2), 0) / pnlValues.length;
+  const variance = pnlValues.reduce((s, v) => s + Math.pow(v - avg, 2), 0) / (pnlValues.length - 1);
   const stdDev = Math.sqrt(variance);
   return stdDev > 0 ? avg / stdDev : 0;
 }

@@ -19,7 +19,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const startDate = query.startDate;
   const endDate = query.endDate;
   const includeEquityCurve = query.includeEquityCurve === 'true';
-  const totalCapital = query.totalCapital ? parseFloat(query.totalCapital) : undefined;
+  const parsedCapital = query.totalCapital ? parseFloat(query.totalCapital) : undefined;
+  const totalCapital = parsedCapital !== undefined && Number.isFinite(parsedCapital) ? parsedCapital : undefined;
 
   if (!accountId || !startDate || !endDate) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId, startDate, and endDate are required');

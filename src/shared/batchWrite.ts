@@ -5,6 +5,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function jitteredDelay(baseDelayMs: number, attempt: number): number {
+  const exponential = baseDelayMs * Math.pow(2, attempt - 1);
+  return exponential + Math.random() * exponential;
+}
+
 type DdbLike = {
   send: (command: any) => Promise<any>;
 };
@@ -62,7 +67,7 @@ export async function batchWritePutAll(opts: {
         throw new Error(`BatchWrite did not process all items after ${maxRetries} retries (remaining=${remaining.length})`);
       }
 
-      await sleep(baseDelayMs * Math.pow(2, attempt - 1));
+      await sleep(jitteredDelay(baseDelayMs, attempt));
     }
   }));
 }
@@ -119,7 +124,7 @@ export async function batchWriteDeleteAll(opts: {
         throw new Error(`BatchDelete did not process all items after ${maxRetries} retries (remaining=${remaining.length})`);
       }
 
-      await sleep(baseDelayMs * Math.pow(2, attempt - 1));
+      await sleep(jitteredDelay(baseDelayMs, attempt));
     }
   }));
 }

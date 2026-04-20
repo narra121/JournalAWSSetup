@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { ddb } from '../../shared/dynamo';
-import { GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { removeImagesForTrade } from '../../shared/images';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
@@ -21,24 +21,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
 
-    // Fetch the trade before deleting to return it in response
-    const getResult = await ddb.send(new GetCommand({
-      TableName: TRADES_TABLE,
-      Key: { userId, tradeId }
-    }));
-
-    if (!getResult.Item) {
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
-    }
-
-    const trade = getResult.Item;
-
-    // Conditional delete ensures existence & ownership (ownership via partition key, existence via attribute_exists)
-    await ddb.send(new DeleteCommand({
+    const deleteResult = await ddb.send(new DeleteCommand({
       TableName: TRADES_TABLE,
       Key: { userId, tradeId },
-      ConditionExpression: 'attribute_exists(tradeId)'
+      ConditionExpression: 'attribute_exists(tradeId)',
+      ReturnValues: 'ALL_OLD',
     }));
+
+    const trade = deleteResult.Attributes;
+    if (!trade) {
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
+    }
 
     await removeImagesForTrade(userId, tradeId);
     

@@ -493,11 +493,11 @@ describe('DistributionsProcessor', () => {
     expect(result.sessionDistribution['Unknown']).toBeDefined();
   });
 
-  it("uses 'UNKNOWN' for missing outcome", () => {
+  it("uses 'Unknown' for missing outcome", () => {
     proc.processTrade(makeTrade({ outcome: null }), defaultContext);
 
     const result = proc.getResult();
-    expect(result.outcomeDistribution['UNKNOWN']).toBe(1);
+    expect(result.outcomeDistribution['Unknown']).toBe(1);
   });
 });
 
@@ -740,10 +740,10 @@ describe('PnlSequenceAggregator', () => {
     const result = agg.getResult({});
     expect(result.sharpeRatio).toBe(0);
 
-    // Now test with variance
+    // Now test with variance (sample variance: ÷(N-1))
     agg.reset();
-    // [10, -5]: avg=2.5, variance = ((10-2.5)^2 + (-5-2.5)^2)/2 = (56.25+56.25)/2 = 56.25
-    // stdDev = 7.5, sharpe = 2.5/7.5 = 0.333...
+    // [10, -5]: avg=2.5, variance = ((10-2.5)^2 + (-5-2.5)^2)/1 = 112.5
+    // stdDev = √112.5 ≈ 10.6066, sharpe = 2.5/10.6066 ≈ 0.2357
     agg.merge({
       pnlSequence: [10, -5],
       equityCurvePoints: [],
@@ -752,7 +752,7 @@ describe('PnlSequenceAggregator', () => {
     });
 
     const result2 = agg.getResult({});
-    expect(result2.sharpeRatio).toBeCloseTo(1 / 3, 4);
+    expect(result2.sharpeRatio).toBeCloseTo(2.5 / Math.sqrt(112.5), 4);
   });
 
   it('builds dailyPnl with cumulative sums', () => {

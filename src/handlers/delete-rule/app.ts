@@ -53,6 +53,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         TableName: DAILY_STATS_TABLE,
         KeyConditionExpression: 'userId = :uid',
         ExpressionAttributeValues: { ':uid': userId },
+        ProjectionExpression: 'brokenRulesCounts',
         ExclusiveStartKey: exclusiveStartKey,
       }));
 

@@ -100,7 +100,6 @@ async function ensureDefaultRules(userId: string, existingRules: any[]): Promise
     updatedAt: now
   }));
 
-  // Batch write all default rules
   await batchWritePutAll({ ddb, tableName: RULES_TABLE, items: rules });
 
   console.log('Default rules created', { userId, count: rules.length });
@@ -340,10 +339,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Batch write new records
     const writes: Promise<void>[] = [];
     if (newRules.length > 0) {
-      writes.push(batchWritePutAll({ ddb, tableName: RULES_TABLE, items: newRules }));
+      writes.push(batchWritePutAll({ ddb, tableName: RULES_TABLE, items: newRules, log }));
     }
     if (newGoals.length > 0) {
-      writes.push(batchWritePutAll({ ddb, tableName: GOALS_TABLE, items: newGoals }));
+      writes.push(batchWritePutAll({ ddb, tableName: GOALS_TABLE, items: newGoals, log }));
     }
     await Promise.all(writes);
 
