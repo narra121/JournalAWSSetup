@@ -154,9 +154,8 @@ describe('stripe-webhook handler', () => {
     expect(updateInput.ExpressionAttributeValues[':custId']).toBe('cus_stripe_456');
     expect(updateInput.ExpressionAttributeValues[':status']).toBe('active');
     expect(updateInput.ExpressionAttributeValues[':planId']).toBe('price_pro_monthly');
-    // paidCount is no longer set by checkout handler (handleInvoicePaid is sole owner)
-    expect(updateInput.ExpressionAttributeValues[':paidCount']).toBeUndefined();
-    expect(updateInput.UpdateExpression).not.toContain('paidCount');
+    expect(updateInput.ExpressionAttributeValues[':paidCount']).toBe(1);
+    expect(updateInput.UpdateExpression).toContain('paidCount');
   });
 
   // ── invoice.paid ───────────────────────────────────────────

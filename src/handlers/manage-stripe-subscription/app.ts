@@ -224,6 +224,15 @@ async function handlePut(userId: string, rawBody: string | null): Promise<APIGat
 
   const stripeClient = await getStripe();
 
+  try {
+    await stripeClient.subscriptions.retrieve(stripeSubId);
+  } catch (err: any) {
+    if (err?.code === 'resource_missing') {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Stripe subscription no longer exists. Please create a new subscription.');
+    }
+    throw err;
+  }
+
   if (action === 'pause') {
     await stripeClient.subscriptions.update(stripeSubId, {
       pause_collection: { behavior: 'void' },
@@ -354,8 +363,18 @@ async function handleDelete(userId: string, rawBody: string | null): Promise<API
 
   const stripeClient = await getStripe();
 
-  if (cancelAtCycleEnd) {
-    // Schedule cancellation at end of billing period
+  let stripeSubExists = true;
+  try {
+    await stripeClient.subscriptions.retrieve(stripeSubId);
+  } catch (err: any) {
+    if (err?.code === 'resource_missing') {
+      stripeSubExists = false;
+    } else {
+      throw err;
+    }
+  }
+
+  if (stripeSubExists && cancelAtCycleEnd) {
     await stripeClient.subscriptions.update(stripeSubId, {
       cancel_at_period_end: true,
     });
@@ -384,8 +403,10 @@ async function handleDelete(userId: string, rawBody: string | null): Promise<API
     });
   }
 
-  // Immediate cancellation
-  await stripeClient.subscriptions.cancel(stripeSubId);
+  // Immediate cancellation (or Stripe sub no longer exists)
+  if (stripeSubExists) {
+    await stripeClient.subscriptions.cancel(stripeSubId);
+  }
 
   const now = new Date().toISOString();
   await ddb.send(

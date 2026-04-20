@@ -82,7 +82,7 @@ async function handleCheckoutSessionCompleted(
       TableName: SUBSCRIPTIONS_TABLE,
       Key: { userId },
       UpdateExpression:
-        'SET stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, updatedAt = :updatedAt',
+        'SET stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, paidCount = :paidCount, updatedAt = :updatedAt',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
         ':subId': subscriptionId,
@@ -92,6 +92,7 @@ async function handleCheckoutSessionCompleted(
         ':currentStart': currentStart,
         ':currentEnd': currentEnd,
         ':chargeAt': currentEnd,
+        ':paidCount': 1,
         ':updatedAt': timestamp,
       },
     })
