@@ -69,6 +69,23 @@ Parameters:
     Type: String
     Default: /tradequt/dev/adConfig
     Description: Name of SSM parameter storing the ad placement configuration JSON.
+  AdminSecretParamName:
+    Type: String
+    Default: /tradequt/adminSecret
+    Description: SSM SecureString parameter for admin login password.
+  AdminJwtSecretParamName:
+    Type: String
+    Default: /tradequt/adminJwtSecret
+    Description: SSM SecureString parameter for admin JWT signing secret.
+  CreateAdminInfra:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set to true to create admin S3 bucket, CloudFront distribution, and DNS record.
+  AdminDomainName:
+    Type: String
+    Default: ""
+    Description: Admin panel domain (e.g. admin.tradequt.com). Required when CreateAdminInfra=true.
   UseExistingResources:
     Type: String
     Default: "false"
@@ -100,7 +117,7 @@ Parameters:
     Description: Route 53 hosted zone ID for DNS record creation.
   AllowedOrigins:
     Type: String
-    Default: "https://tradequt.com,https://www.tradequt.com"
+    Default: "https://tradequt.com,https://www.tradequt.com,https://admin.tradequt.com"
     Description: Comma-separated list of allowed CORS origins (e.g. https://tradequt.com,https://www.tradequt.com).
   # --- Frontend infrastructure parameters (CloudFront + S3 hosting) ---
   CreateFrontendInfra:
@@ -134,6 +151,7 @@ Conditions:
   HasGoogleAuth: !Not [!Equals [!Ref GoogleClientId, ""]]
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
   ShouldCreateFrontendInfra: !Equals [!Ref CreateFrontendInfra, "true"]
+  ShouldCreateAdminInfra: !Equals [!Ref CreateAdminInfra, "true"]
   HasFrontendWwwDomain: !Not [!Equals [!Ref FrontendWwwDomain, ""]]
   HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
   IsProd: !Equals [!Ref Environment, "prod"]
@@ -144,6 +162,9 @@ Conditions:
     - !Condition ShouldCreateFrontendInfra
     - !Condition HasHostedZone
     - !Condition HasFrontendWwwDomain
+  CreateAdminDns: !And
+    - !Condition ShouldCreateAdminInfra
+    - !Condition HasHostedZone
 
 Resources:
   UserPool:
@@ -195,15 +216,15 @@ Resources:
         - - https://tradequt.com/auth/callback
           - https://www.tradequt.com/auth/callback
           - https://dev.tradequt.com/auth/callback
-          - http://localhost:5173/auth/callback
-        - - http://localhost:5173/
+          - http://localhost:8080/auth/callback
+        - - http://localhost:8080/
       LogoutURLs: !If
         - HasGoogleAuth
         - - https://tradequt.com/login
           - https://www.tradequt.com/login
           - https://dev.tradequt.com/login
-          - http://localhost:5173/login
-        - - http://localhost:5173/
+          - http://localhost:8080/login
+        - - http://localhost:8080/
 
   # Google Identity Provider (only created when GoogleClientId is provided)
   GoogleIdentityProvider:
@@ -587,6 +608,14 @@ Resources:
             JwtConfiguration:
               issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
               audience: [!Ref UserPoolClient]
+          AdminAuthorizer:
+            FunctionArn: !GetAtt AdminAuthorizerFunction.Arn
+            FunctionInvokeRole: !GetAtt AdminAuthorizerInvokeRole.Arn
+            Identity:
+              Headers:
+                - Authorization
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
         DefaultAuthorizer: CognitoAuthorizer
       CorsConfiguration:
         AllowOrigins: !Split [",", !Ref AllowedOrigins]
@@ -2365,6 +2394,278 @@ Resources:
         External:
           - "@aws-sdk/*"
 
+  # ========================================================================
+  # Admin Panel Functions (Authorizer + 6 Handlers)
+  # ========================================================================
+
+  AdminAuthorizerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeAdminAuthorizer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AdminAuthorizerFunction.Arn
+
+  AdminAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-authorizer/app.handler
+      Environment:
+        Variables:
+          ADMIN_JWT_SECRET_PARAM: !Ref AdminJwtSecretParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminJwtSecretParamName}"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-authorizer/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminLoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-login/app.handler
+      Environment:
+        Variables:
+          ADMIN_SECRET_PARAM: !Ref AdminSecretParamName
+          ADMIN_JWT_SECRET_PARAM: !Ref AdminJwtSecretParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminSecretParamName}"
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminJwtSecretParamName}"
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-login/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminListUsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-list-users/app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-list-users/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-user/app.handler
+      Timeout: 15
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminGetUser
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref GoalsTable, !Sub 'Goals-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, !Sub 'Rules-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref UserPreferencesTable, !Sub 'UserPreferences-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminManageSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-manage-subscription/app.handler
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/subscription
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-manage-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-config/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParametersByPath
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/config
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-config/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminUpdateConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-update-config/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/config
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-update-config/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
   # Custom Domain for API Gateway
   ApiDomainName:
     Type: AWS::ApiGatewayV2::DomainName
@@ -2518,6 +2819,102 @@ Resources:
       Type: A
       AliasTarget:
         DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
+  # ========================================================================
+  # Admin Panel Infrastructure (S3 + CloudFront + DNS)
+  # Created only when CreateAdminInfra = "true".
+  # ========================================================================
+
+  AdminBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateAdminInfra
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "admin.tradequt.com-${Environment}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  AdminBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      Bucket: !Ref AdminBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${AdminBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminDistribution}"
+
+  AdminDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "TradeQut ${Environment} admin panel"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Aliases:
+          - !Ref AdminDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: !Sub "tradequt-admin-${Environment}-s3"
+            DomainName: !GetAtt AdminBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "tradequt-admin-${Environment}-s3"
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  AdminDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateAdminDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref AdminDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt AdminDistribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
 
 Outputs:
