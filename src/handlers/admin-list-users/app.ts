@@ -69,6 +69,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         return {
           userId,
           email,
+          name: getAttr(u.Attributes, 'name') || '',
           status: u.UserStatus,
           createdAt: u.UserCreateDate?.toISOString(),
           enabled: u.Enabled,

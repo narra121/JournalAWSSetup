@@ -2666,6 +2666,158 @@ Resources:
         External:
           - "@aws-sdk/*"
 
+  AdminListUserTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-list-user-trades/app.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/trades
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-list-user-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetUserStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-user-stats/app.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/stats
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-user-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminUpdateUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-update-user/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminUpdateUserAttributes
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-update-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminDeleteUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-delete-user/app.handler
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminDeleteUser
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref GoalsTable, !Sub 'Goals-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, !Sub 'Rules-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref UserPreferencesTable, !Sub 'UserPreferences-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        - S3CrudPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: DELETE
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-delete-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
   # Custom Domain for API Gateway
   ApiDomainName:
     Type: AWS::ApiGatewayV2::DomainName
