@@ -192,6 +192,7 @@ jobs:
               "AllowedOrigins=https://tradequt.com,https://www.tradequt.com,https://admin.tradequt.com" \
               "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
               "GoogleClientSecret=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
+              AdConfigParamName=/tradequt/prod/adConfig \
               CreateAdminInfra=true \
               AdminDomainName=admin.tradequt.com
       
