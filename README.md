@@ -10,7 +10,7 @@ Browser -> API Gateway (Cognito JWT) -> Lambda handlers -> DynamoDB / S3
                                                        -> EventBridge (6h)  -> RebuildStats Lambda
 ```
 
-**Resources**: 49+ Lambda handlers, 10 DynamoDB tables, 2 S3 buckets, Cognito User Pool (with Google OAuth), Stripe integration, Gemini AI (text enhance + trade extraction), Firebase Custom Token minting.
+**Resources**: 53 Lambda handlers, 10 DynamoDB tables, 2 S3 buckets, Cognito User Pool (with Google OAuth), Stripe integration, Gemini AI (text enhance + trade extraction), Firebase Custom Token minting.
 
 ## Prerequisites
 
@@ -142,7 +142,7 @@ All endpoints prefixed with `/v1`. Auth required unless noted.
 | PUT | `/rules/{ruleId}` | Update rule |
 | PUT | `/rules/{ruleId}/toggle` | Toggle rule |
 | DELETE | `/rules/{ruleId}` | Delete rule |
-| GET | `/stats` | Aggregated statistics with daily trade hashes |
+| GET | `/stats` | Aggregated statistics |
 | GET | `/analytics` | Analytics data (hourly, daily, distributions) |
 | GET | `/goals/progress` | Goals with progress metrics |
 | GET | `/user/profile` | Get profile |
@@ -158,6 +158,7 @@ All endpoints prefixed with `/v1`. Auth required unless noted.
 | POST | `/stripe/manage` | Manage Stripe subscription |
 | POST | `/stripe/webhook` | Stripe webhook (public, no auth) |
 | POST | `/error-report` | Frontend error reporting |
+| POST | `/goals` | Create goal |
 
 ## DynamoDB Tables
 
@@ -178,7 +179,7 @@ All endpoints prefixed with `/v1`. Auth required unless noted.
 
 ```
 src/
-  handlers/       # 47 Lambda handlers (one per endpoint)
+  handlers/       # 53 Lambda handlers (one per endpoint)
   shared/         # Shared utilities (dynamo, s3, validation, logger)
   schemas/        # JSON Schema validation files
 template.yaml     # SAM infrastructure-as-code

@@ -8,15 +8,7 @@ const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const RETRYABLE_STATUS_CODES = [429, 503];
 
-const getSystemPrompt = (isTradingNotes: boolean) => {
-  const basePrompt = `You are an expert trading journal assistant. Your task is to enhance the following text (trade note or image description). Improve grammar, clarity, and flow, but CRITICALLY, you must preserve the user's first-person narrative and the original emotional state (whether frustration, excitement, calm, or regret). Do not sanitize the emotion or make it sound overly formal. The goal is for the user to read this later and vividly recall their mindset and feelings at that moment.`;
-
-  const motivationalPrompt = isTradingNotes
-    ? `\n\nAfter enhancing the text, add a double line break and append ONE short, powerful, and contextually relevant motivational quote (e.g., on discipline, patience, resilience, or humility).`
-    : '';
-
-  return basePrompt + motivationalPrompt + `\n\nReturn ONLY the enhanced text${isTradingNotes ? ' followed by the quote' : ''}. No conversational filler.`;
-};
+const SYSTEM_PROMPT = `You are a grammar and spelling corrector. Fix grammar, spelling, and punctuation errors in the given text. Keep the original meaning, tone, and wording intact. Do not add, remove, or rephrase content beyond what is needed to correct errors. Return ONLY the corrected text. No explanations, no filler.`;
 
 // Configurable upstream request timeout (ms); default 30000 (30s)
 const REQUEST_TIMEOUT_MS = (() => {
@@ -69,7 +61,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const { text, isTradingNotes = false } = body;
+    const { text } = body;
     if (!text || typeof text !== 'string' || !text.trim()) {
       return envelope({ 
         statusCode: 400, 
@@ -99,10 +91,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           body: JSON.stringify({
             contents: [{
               role: 'user',
-              parts: [{ text: `${getSystemPrompt(isTradingNotes)}\n\n${text}` }],
+              parts: [{ text: `${SYSTEM_PROMPT}\n\n${text}` }],
             }],
             generationConfig: {
-              temperature: 0.7,
+              temperature: 0.2,
               maxOutputTokens: 2048,
               thinkingConfig: { thinkingBudget: 0 },
             },

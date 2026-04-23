@@ -209,7 +209,7 @@ jobs:
               CustomDomainName=api-dev.tradequt.com \
               "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
               "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \
-              AllowedOrigins=https://dev.tradequt.com \
+              "AllowedOrigins=https://dev.tradequt.com,http://localhost:8080,http://localhost:8081" \
               "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
               "GoogleClientSecret=${{ secrets.GOOGLE_CLIENT_SECRET }}"
 
@@ -222,7 +222,7 @@ jobs:
             --output text)
           aws apigatewayv2 update-api --api-id "$API_ID" \
             --cors-configuration '{
-              "AllowOrigins": ["https://dev.tradequt.com"],
+              "AllowOrigins": ["https://dev.tradequt.com", "http://localhost:8080", "http://localhost:8081"],
               "AllowMethods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
               "AllowHeaders": ["Authorization", "Content-Type", "X-Amz-Date", "X-Api-Key"],
               "ExposeHeaders": ["Content-Type", "Authorization"],

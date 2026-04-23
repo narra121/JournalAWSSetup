@@ -366,35 +366,21 @@ describe('enhance-text handler', () => {
     expect(body.success).toBe(false);
   });
 
-  // ── isTradingNotes flag ────────────────────────────────────
+  // ── System prompt ──────────────────────────────────────────
 
-  it('includes motivational prompt when isTradingNotes is true', async () => {
-    mockFetchSuccess('Enhanced text with quote.\n\n"Stay disciplined."');
-
-    const res = await handler(
-      makeEvent({ text: 'My trade notes', isTradingNotes: true }),
-      {} as any,
-    ) as any;
-
-    expect(res.statusCode).toBe(200);
-    // Verify the prompt includes motivational quote instruction
-    const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    const prompt = fetchCallBody.contents[0].parts[0].text;
-    expect(prompt).toContain('motivational quote');
-  });
-
-  it('does not include motivational prompt when isTradingNotes is false', async () => {
-    mockFetchSuccess('Enhanced text.');
+  it('sends grammar correction system prompt', async () => {
+    mockFetchSuccess('Corrected text.');
 
     const res = await handler(
-      makeEvent({ text: 'Image description', isTradingNotes: false }),
+      makeEvent({ text: 'some text with erors' }),
       {} as any,
     ) as any;
 
     expect(res.statusCode).toBe(200);
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     const prompt = fetchCallBody.contents[0].parts[0].text;
-    expect(prompt).not.toContain('motivational quote');
+    expect(prompt).toContain('grammar');
+    expect(prompt).toContain('spelling');
   });
 
   // ── Error response does not leak API keys ──────────────────
