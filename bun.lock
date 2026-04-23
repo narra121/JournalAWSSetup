@@ -17,11 +17,13 @@
         "ajv": "^8.17.1",
         "ajv-formats": "^3.0.1",
         "firebase-admin": "^13.8.0",
+        "jsonwebtoken": "^9.0.3",
         "stripe": "^17.7.0",
         "uuid": "^9.0.1",
       },
       "devDependencies": {
         "@types/aws-lambda": "^8.10.134",
+        "@types/jsonwebtoken": "^9.0.10",
         "@types/node": "^20.11.0",
         "@types/uuid": "^10.0.0",
         "@typescript-eslint/eslint-plugin": "^7.8.0",
