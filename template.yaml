@@ -2826,6 +2826,17 @@ Resources:
   # Created only when CreateAdminInfra = "true".
   # ========================================================================
 
+  AdminCloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "tradequt-admin-${Environment}-oac"
+        Description: !Sub "OAC for TradeQut ${Environment} admin panel"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
   AdminBucket:
     Type: AWS::S3::Bucket
     Condition: ShouldCreateAdminInfra
@@ -2881,7 +2892,7 @@ Resources:
         Origins:
           - Id: !Sub "tradequt-admin-${Environment}-s3"
             DomainName: !GetAtt AdminBucket.RegionalDomainName
-            OriginAccessControlId: !Ref CloudFrontOAC
+            OriginAccessControlId: !Ref AdminCloudFrontOAC
             S3OriginConfig:
               OriginAccessIdentity: ""
         DefaultCacheBehavior:
