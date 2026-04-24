@@ -58,6 +58,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const endDate = query.endDate;
   const period = query.period;
   const periodKey = query.periodKey || null;
+  const parsedCapital = query.totalCapital ? parseFloat(query.totalCapital) : undefined;
+  const totalCapital = parsedCapital !== undefined && Number.isFinite(parsedCapital) ? parsedCapital : undefined;
 
   if (!accountId || !startDate || !endDate || !period) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId, startDate, endDate, and period are required');
@@ -81,7 +83,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     ]);
 
     // Aggregate daily records into stats
-    const stats = aggregateDailyRecords(dailyRecords, {});
+    const stats = aggregateDailyRecords(dailyRecords, { totalCapital });
 
     // Filter and group goals by period and account
     const filteredGoals = filterGoalsByPeriodAndAccount(goals, period, accountId);
