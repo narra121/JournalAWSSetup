@@ -9,7 +9,7 @@ import { DayOfWeekAggregator } from '../processors/day-of-week';
 import { BrokenRulesProcessor, BrokenRulesAggregator } from '../processors/broken-rules';
 import { MistakesProcessor, MistakesAggregator } from '../processors/mistakes';
 import { LessonsProcessor, LessonsAggregator } from '../processors/lessons';
-import type { TradeRecord, ProcessorContext } from '../types';
+import type { TradeRecord, ProcessorContext, MetricProcessor } from '../types';
 
 function makeTrade(overrides: Record<string, any> = {}): TradeRecord {
   return {
@@ -43,7 +43,7 @@ const defaultContext: ProcessorContext = {
 // ─── CoreStatsProcessor ──────────────────────────────────────────
 
 describe('CoreStatsProcessor', () => {
-  let proc: CoreStatsProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new CoreStatsProcessor();
@@ -137,11 +137,11 @@ describe('CoreStatsAggregator', () => {
     expect(result.expectancy).toBe(25); // (200-100)/4
   });
 
-  it('profitFactor returns 999.99 when no losses (profit exists)', () => {
+  it('profitFactor returns null when there are profits but no losses', () => {
     agg.merge({ tradeCount: 2, wins: 2, losses: 0, breakeven: 0, grossProfit: 100, grossLoss: 0, totalVolume: 2 });
 
     const result = agg.getResult({});
-    expect(result.profitFactor).toBe(999.99);
+    expect(result.profitFactor).toBeNull();
   });
 
   it('profitFactor returns 0 when no profit and no loss', () => {
@@ -165,7 +165,7 @@ describe('CoreStatsAggregator', () => {
 // ─── ExtremesProcessor ───────────────────────────────────────────
 
 describe('ExtremesProcessor', () => {
-  let proc: ExtremesProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new ExtremesProcessor();
@@ -222,7 +222,7 @@ describe('ExtremesAggregator', () => {
 // ─── RiskRewardProcessor ─────────────────────────────────────────
 
 describe('RiskRewardProcessor', () => {
-  let proc: RiskRewardProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new RiskRewardProcessor();
@@ -284,7 +284,7 @@ describe('RiskRewardAggregator', () => {
 // ─── DurationProcessor ───────────────────────────────────────────
 
 describe('DurationProcessor', () => {
-  let proc: DurationProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new DurationProcessor();
@@ -454,7 +454,7 @@ describe('DurationAggregator', () => {
 // ─── DistributionsProcessor ──────────────────────────────────────
 
 describe('DistributionsProcessor', () => {
-  let proc: DistributionsProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new DistributionsProcessor();
@@ -538,7 +538,7 @@ describe('DistributionsAggregator', () => {
 // ─── HourlyProcessor ────────────────────────────────────────────
 
 describe('HourlyProcessor', () => {
-  let proc: HourlyProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new HourlyProcessor();
@@ -634,7 +634,7 @@ describe('HourlyAggregator', () => {
 // ─── PnlSequenceProcessor ───────────────────────────────────────
 
 describe('PnlSequenceProcessor', () => {
-  let proc: PnlSequenceProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new PnlSequenceProcessor();
@@ -872,7 +872,7 @@ describe('DayOfWeekAggregator', () => {
 // ─── BrokenRulesProcessor ──────────────────────────────────────
 
 describe('BrokenRulesProcessor', () => {
-  let proc: BrokenRulesProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new BrokenRulesProcessor();
@@ -984,7 +984,7 @@ describe('BrokenRulesAggregator', () => {
 // ─── BrokenRulesProcessor (brokenRulesDistribution with PnL) ──
 
 describe('BrokenRulesProcessor — brokenRulesDistribution', () => {
-  let proc: BrokenRulesProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new BrokenRulesProcessor();
@@ -1081,7 +1081,7 @@ describe('BrokenRulesAggregator — brokenRulesDistribution', () => {
 // ─── MistakesProcessor ─────────────────────────────────────────
 
 describe('MistakesProcessor', () => {
-  let proc: MistakesProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new MistakesProcessor();
@@ -1191,7 +1191,7 @@ describe('MistakesAggregator', () => {
 // ─── LessonsProcessor ──────────────────────────────────────────
 
 describe('LessonsProcessor', () => {
-  let proc: LessonsProcessor;
+  let proc: MetricProcessor;
 
   beforeEach(() => {
     proc = new LessonsProcessor();

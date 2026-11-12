@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -9,10 +9,15 @@ vi.stubEnv('SUBSCRIPTIONS_TABLE', 'test-subscriptions');
 vi.stubEnv('STRIPE_SECRET_KEY_PARAM', '/tradequt/dev/stripeSecretKey');
 
 // ─── Stripe mock ─────────────────────────────────────────────
+const { refundCreate, subscriptionsCancel } = vi.hoisted(() => ({
+  refundCreate: vi.fn(),
+  subscriptionsCancel: vi.fn(),
+}));
 vi.mock('stripe', () => ({
   default: vi.fn().mockImplementation(() => ({
-    refunds: { create: vi.fn().mockResolvedValue({ id: 're_123' }) },
-    invoices: { list: vi.fn().mockResolvedValue({ data: [{ id: 'inv_123' }] }) },
+    refunds: { create: refundCreate },
+    invoices: { list: vi.fn().mockResolvedValue({ data: [{ id: 'inv_123', payment_intent: 'pi_123' }] }) },
+    subscriptions: { cancel: subscriptionsCancel },
   })),
 }));
 
@@ -50,8 +55,9 @@ async function freshHandler() {
   vi.resetModules();
   vi.doMock('stripe', () => ({
     default: vi.fn().mockImplementation(() => ({
-      refunds: { create: vi.fn().mockResolvedValue({ id: 're_123' }) },
-      invoices: { list: vi.fn().mockResolvedValue({ data: [{ id: 'inv_123' }] }) },
+      refunds: { create: refundCreate },
+      invoices: { list: vi.fn().mockResolvedValue({ data: [{ id: 'inv_123', payment_intent: 'pi_123' }] }) },
+      subscriptions: { cancel: subscriptionsCancel },
     })),
   }));
   const mod = await import('../app');
@@ -67,7 +73,13 @@ function setupSsm() {
 beforeEach(() => {
   ddbMock.reset();
   ssmMock.reset();
+  refundCreate.mockReset().mockResolvedValue({ id: 're_123' });
+  subscriptionsCancel.mockReset().mockResolvedValue({});
 });
+
+const updates = () => ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+const setValues = (input: any) =>
+  Object.fromEntries(Object.entries(input.ExpressionAttributeNames).map(([k, v], i) => [v, input.ExpressionAttributeValues[`:v${i}`]]));
 
 // ─── Tests ───────────────────────────────────────────────────
 describe('admin-manage-subscription handler', () => {
@@ -103,7 +115,7 @@ describe('admin-manage-subscription handler', () => {
   describe('grant_free', () => {
     it('grants 30-day subscription by default', async () => {
       const handler = await freshHandler();
-      ddbMock.on(PutCommand).resolves({});
+      ddbMock.on(UpdateCommand).resolves({});
 
       const res = await handler(makeEvent('user-1', { action: 'grant_free' }), {} as any, () => {}) as any;
       expect(res.statusCode).toBe(200);
@@ -113,34 +125,41 @@ describe('admin-manage-subscription handler', () => {
       expect(body.data.status).toBe('active');
       expect(body.data.periodEnd).toBeDefined();
 
-      const putCalls = ddbMock.commandCalls(PutCommand);
-      expect(putCalls).toHaveLength(1);
-      const item = putCalls[0].args[0].input.Item;
-      expect(item?.userId).toBe('user-1');
-      expect(item?.status).toBe('active');
-      expect(item?.tier).toBe('active');
-      expect(item?.source).toBe('admin_grant');
+      expect(updates()).toHaveLength(1);
+      expect(updates()[0].Key).toEqual({ userId: 'user-1' });
+      expect(setValues(updates()[0])).toMatchObject({ status: 'active', tier: 'active', source: 'admin_grant' });
+      expect(updates()[0].UpdateExpression).not.toContain('REMOVE');
+    });
+
+    it('adds calendar months, not 30-day blocks', async () => {
+      const handler = await freshHandler();
+      ddbMock.on(UpdateCommand).resolves({});
+      const res = (await handler(makeEvent('user-1', { action: 'grant_free', period: 12, unit: 'months' }), {} as any, () => {})) as any;
+      const end = new Date(JSON.parse(res.body).data.periodEnd);
+      const expected = new Date();
+      expected.setMonth(expected.getMonth() + 12);
+      expect(Math.abs(end.getTime() - expected.getTime())).toBeLessThan(5000);
     });
 
     it('grants lifetime subscription when unit is lifetime', async () => {
       const handler = await freshHandler();
-      ddbMock.on(PutCommand).resolves({});
+      ddbMock.on(UpdateCommand).resolves({});
 
       const res = await handler(makeEvent('user-1', { action: 'grant_free', unit: 'lifetime' }), {} as any, () => {}) as any;
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.data.periodEnd).toBe('9999-12-31T23:59:59.000Z');
 
-      const putCalls = ddbMock.commandCalls(PutCommand);
-      const item = putCalls[0].args[0].input.Item;
-      expect(item?.periodEnd).toBe('9999-12-31T23:59:59.000Z');
+      expect(setValues(updates()[0]).periodEnd).toBe('9999-12-31T23:59:59.000Z');
     });
   });
 
   describe('cancel', () => {
-    it('cancels subscription', async () => {
+    it('cancels the subscription and the Stripe subscription, keeping the Stripe ids', async () => {
       const handler = await freshHandler();
-      ddbMock.on(PutCommand).resolves({});
+      setupSsm();
+      ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', stripeSubscriptionId: 'sub_9', stripeCustomerId: 'cus_9' } });
+      ddbMock.on(UpdateCommand).resolves({});
 
       const res = await handler(makeEvent('user-1', { action: 'cancel' }), {} as any, () => {}) as any;
       expect(res.statusCode).toBe(200);
@@ -148,12 +167,9 @@ describe('admin-manage-subscription handler', () => {
       expect(body.success).toBe(true);
       expect(body.data.status).toBe('cancelled');
 
-      const putCalls = ddbMock.commandCalls(PutCommand);
-      expect(putCalls).toHaveLength(1);
-      const item = putCalls[0].args[0].input.Item;
-      expect(item?.userId).toBe('user-1');
-      expect(item?.status).toBe('cancelled');
-      expect(item?.source).toBe('admin_cancel');
+      expect(subscriptionsCancel).toHaveBeenCalledWith('sub_9');
+      expect(setValues(updates()[0])).toMatchObject({ status: 'cancelled', source: 'admin_cancel' });
+      expect(Object.keys(setValues(updates()[0]))).not.toContain('stripeCustomerId');
     });
   });
 
@@ -173,9 +189,9 @@ describe('admin-manage-subscription handler', () => {
       const handler = await freshHandler();
       setupSsm();
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: 'user-1', stripeCustomerId: 'cus_123' },
+        Item: { userId: 'user-1', stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_123' },
       });
-      ddbMock.on(PutCommand).resolves({});
+      ddbMock.on(UpdateCommand).resolves({});
 
       const res = await handler(makeEvent('user-1', { action: 'refund' }), {} as any, () => {}) as any;
       expect(res.statusCode).toBe(200);
@@ -184,12 +200,9 @@ describe('admin-manage-subscription handler', () => {
       expect(body.data.status).toBe('cancelled');
       expect(body.data.refundId).toBe('re_123');
 
-      const putCalls = ddbMock.commandCalls(PutCommand);
-      expect(putCalls).toHaveLength(1);
-      const item = putCalls[0].args[0].input.Item;
-      expect(item?.status).toBe('cancelled');
-      expect(item?.source).toBe('admin_refund');
-      expect(item?.refundId).toBe('re_123');
+      expect(refundCreate).toHaveBeenCalledWith({ payment_intent: 'pi_123' });
+      expect(subscriptionsCancel).toHaveBeenCalledWith('sub_123');
+      expect(setValues(updates()[0])).toMatchObject({ status: 'cancelled', source: 'admin_refund', refundId: 're_123' });
     });
   });
 });

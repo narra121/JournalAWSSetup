@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
@@ -212,6 +212,7 @@ async function callGemini(
         console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${MODELS[i + 1]}`);
         continue;
       }
+      console.error('ExtractTrades Gemini HTTP error', { model, status: resp.status, error: errorText.slice(0, 300) });
       throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
     }
 
@@ -226,7 +227,7 @@ async function callGemini(
   throw new Error('All Gemini models failed');
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   try {
     const userId = getUserId(event);
     if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');

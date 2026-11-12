@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { getUserId } from '../../shared/auth';
@@ -46,7 +46,7 @@ const DAILY_STATS_PROJECTION = [
   'brokenRulesCounts', 'brokenRulesDistribution',
 ].join(', ');
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   if (!userId) {
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
@@ -106,7 +106,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     });
   } catch (error: any) {
     console.error('Get goals progress error', { error, userId, accountId, startDate, endDate, period });
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve goals progress', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve goals progress');
   }
 };
 
@@ -372,7 +372,7 @@ function computeGoalProgress(stats: any, filteredGoals: any[]) {
   const profitTarget = targetMap['profit'] || 0;
   const winRateTarget = targetMap['winRate'] || 0;
   const drawdownTarget = targetMap['maxDrawdown'] || 0;
-  const maxTradesTarget = targetMap['tradeCount'] || 0;
+  const maxTradesTarget = targetMap['maxTrades'] || 0;
 
   return {
     profit: computeProgress(stats.totalPnl, profitTarget, false),

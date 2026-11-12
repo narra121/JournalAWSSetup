@@ -17,6 +17,7 @@ vi.stubEnv('TRADE_STATS_TABLE', 'test-stats');
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('SAVED_OPTIONS_TABLE', 'test-saved-options');
+vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
 
 // Mock DynamoDBDocumentClient (the shared ddb module instantiates at import time)
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -39,6 +40,7 @@ function makeStreamRecord(
     eventID: eventID || `event-${Math.random().toString(36).slice(2)}`,
     eventName,
     dynamodb: {
+      SequenceNumber: eventID || undefined,
       NewImage: newImage ? marshall(newImage) : undefined,
       OldImage: oldImage ? marshall(oldImage) : undefined,
     },
@@ -103,10 +105,10 @@ describe('update-stats stream handler', () => {
     );
     expect(dailyStatsPut).toBeDefined();
     const item = dailyStatsPut!.args[0].input.Item;
-    expect(item.userId).toBe('user-1');
-    expect(item.accountId).toBe('acc-1');
-    expect(item.date).toBe('2026-04-06');
-    expect(item.sk).toBe('acc-1#2026-04-06');
+    expect(item!.userId).toBe('user-1');
+    expect(item!.accountId).toBe('acc-1');
+    expect(item!.date).toBe('2026-04-06');
+    expect(item!.sk).toBe('acc-1#2026-04-06');
   });
 
   // -- REMOVE event ----------------------------------------------------------
@@ -172,7 +174,7 @@ describe('update-stats stream handler', () => {
     expect(gsiQueries.length).toBeGreaterThanOrEqual(2);
 
     const queriedDates = gsiQueries.map(
-      (c) => c.args[0].input.ExpressionAttributeValues[':d'],
+      (c) => c.args[0].input.ExpressionAttributeValues![':start'],
     );
     expect(queriedDates).toContain('2026-04-06');
     expect(queriedDates).toContain('2026-04-08');
@@ -237,7 +239,7 @@ describe('update-stats stream handler', () => {
       .filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
 
     const dateQueries = gsiQueries.filter(
-      (c) => c.args[0].input.ExpressionAttributeValues[':d'] === '2026-04-06',
+      (c) => c.args[0].input.ExpressionAttributeValues![':start'] === '2026-04-06',
     );
     expect(dateQueries).toHaveLength(1);
 
@@ -269,6 +271,71 @@ describe('update-stats stream handler', () => {
   });
 
   // -- Incremental account balance update (ADD delta) -----------------------
+
+  describe('user time zone (B-105)', () => {
+    const late = () => makeTrade({ tradeId: 'late', openDate: '2026-04-06T20:30:00Z', side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 1 });
+
+    it('with Asia/Kolkata the 20:30Z trade belongs to 2026-04-07 and the day is queried by its exact UTC range', async () => {
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'Asia/Kolkata' } });
+      const trade = late();
+      ddbMock.on(QueryCommand).resolves({ Items: [trade] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
+      await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-tz')]), {} as any, () => {});
+      const q = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.IndexName === 'trades-by-date-gsi')!.args[0].input;
+      expect(q.ExpressionAttributeValues).toMatchObject({ ':start': '2026-04-06T18:30:00.000Z', ':end': '2026-04-07T18:29:59.999Z' });
+      const put = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats')!.args[0].input.Item!;
+      expect(put).toMatchObject({ date: '2026-04-07', sk: 'acc-1#2026-04-07' });
+      expect(put.hourlyBreakdown['2']).toBeDefined(); // 20:30Z = 02:00 IST
+    });
+
+    it('without a preference the day stays the UTC date', async () => {
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({});
+      const trade = late();
+      ddbMock.on(QueryCommand).resolves({ Items: [trade] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
+      await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-utc')]), {} as any, () => {});
+      const put = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats')!.args[0].input.Item!;
+      expect(put.date).toBe('2026-04-06');
+    });
+  });
+
+  describe('soft delete (BE-E1)', () => {
+    const trade = () => makeTrade({ side: 'BUY', entryPrice: 100, exitPrice: 120, quantity: 5 }); // pnl +100
+    const accountDelta = () => {
+      const call = ddbMock.commandCalls(UpdateCommand).find((c) => c.args[0].input.TableName === 'test-accounts');
+      return call?.args[0].input.ExpressionAttributeValues![':delta'];
+    };
+    const run = async (name: 'MODIFY' | 'REMOVE', newImage: any, oldImage: any) => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [] } });
+      await handler(makeStreamEvent([makeStreamRecord(name, newImage, oldImage, 'evt-sd')]), {} as any, () => {});
+    };
+
+    it('a trade becoming deleted subtracts its P&L from the account balance', async () => {
+      await run('MODIFY', { ...trade(), deletedAt: '2026-11-11T00:00:00Z' }, trade());
+      expect(accountDelta()).toBe(-100);
+    });
+
+    it('a restored trade adds its P&L back', async () => {
+      await run('MODIFY', trade(), { ...trade(), deletedAt: '2026-11-11T00:00:00Z' });
+      expect(accountDelta()).toBe(100);
+    });
+
+    it('the TTL purge of an already soft-deleted trade does not change the balance', async () => {
+      await run('REMOVE', undefined, { ...trade(), deletedAt: '2026-11-11T00:00:00Z' });
+      expect(accountDelta()).toBeUndefined();
+    });
+
+    it('rebuilds the day from live trades only (a deleted trade is not counted)', async () => {
+      const live = { ...trade(), tradeId: 'live' };
+      const gone = { ...trade(), tradeId: 'gone', deletedAt: '2026-11-11T00:00:00Z' };
+      ddbMock.on(QueryCommand).resolves({ Items: [live, gone] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [live, gone] } });
+      await handler(makeStreamEvent([makeStreamRecord('MODIFY', { ...trade(), deletedAt: 'x' }, trade(), 'evt-sd2')]), {} as any, () => {});
+      const put = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats');
+      expect(put!.args[0].input.Item!.tradeCount).toBe(1);
+    });
+  });
 
   it('adjusts account balance with ADD delta on INSERT', async () => {
     const trade = makeTrade({
@@ -604,8 +671,8 @@ describe('update-stats stream handler', () => {
     // Only one GSI query should be made (for the old valid account's date)
     // The '-1' account is skipped entirely before queryTradesForDay is called
     expect(gsiQueries).toHaveLength(1);
-    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues[':u']).toBe('user-1');
-    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues[':d']).toBe('2026-04-06');
+    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues![':u']).toBe('user-1');
+    expect(gsiQueries[0].args[0].input.ExpressionAttributeValues![':start']).toBe('2026-04-06');
   });
 
   // -- No full table scan (incremental only) --------------------------------
@@ -759,7 +826,7 @@ describe('update-stats stream handler', () => {
     ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' })
       .callsFake((input: any) => {
         callCount++;
-        const date = input.ExpressionAttributeValues[':d'];
+        const date = input.ExpressionAttributeValues[':start'];
         if (date === '2026-04-06') {
           // Succeed for first date
           return { Items: [{ userId: 'user-1', tradeId: 'trade-1' }] };
@@ -831,7 +898,7 @@ describe('update-stats stream handler', () => {
       .commandCalls(PutCommand)
       .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
     expect(dailyStatsPuts).toHaveLength(1);
-    expect(dailyStatsPuts[0].args[0].input.Item.userId).toBe('user-1');
+    expect(dailyStatsPuts[0].args[0].input.Item!.userId).toBe('user-1');
   });
 
   // -- INSERT where accountId is numeric -1 (not string) --------------------

@@ -12,7 +12,9 @@ export const handler = async (event: any) => {
     event.response.autoConfirmUser = true;
     event.response.autoVerifyEmail = true;
 
-    if (email && USER_POOL_ID) {
+    // Link only when the identity provider asserts the address is verified.
+    const emailVerified = String(event.request?.userAttributes?.email_verified) === 'true';
+    if (email && USER_POOL_ID && emailVerified) {
       try {
         const safeEmail = email.replace(/"/g, '\\"');
         const existing = await cognito.send(new ListUsersCommand({
@@ -58,45 +60,7 @@ export const handler = async (event: any) => {
     return event;
   }
 
-  // Case 2: Email/password sign-up — link to existing Google account if one exists
-  if (event.triggerSource === 'PreSignUp_SignUp') {
-    if (email && USER_POOL_ID) {
-      try {
-        const safeEmail = email.replace(/"/g, '\\"');
-        const existing = await cognito.send(new ListUsersCommand({
-          UserPoolId: USER_POOL_ID,
-          Filter: `email = "${safeEmail}"`,
-          Limit: 10,
-        }));
-
-        // Find a Google federated user with this email
-        const googleUser = existing.Users?.find(u =>
-          u.Username?.startsWith('google_') || u.Username?.startsWith('Google_')
-        );
-
-        if (googleUser?.Username) {
-          // Auto-confirm so the link can proceed
-          event.response.autoConfirmUser = true;
-          event.response.autoVerifyEmail = true;
-
-          // Extract Google sub from the federated username (e.g., "Google_123456")
-          const providerSub = googleUser.Username.split('_').slice(1).join('_');
-
-          if (providerSub) {
-            // The new email/password user (being created now) becomes the destination,
-            // and the existing Google identity becomes the source to link
-            // Note: We can't link yet because the new user doesn't exist until after
-            // this trigger completes. We auto-confirm so PostConfirmation can link,
-            // OR Cognito may merge automatically since both have the same verified email.
-            // In practice, with auto-confirm + auto-verify, Cognito treats them as the same user.
-            console.log(`Auto-confirmed email signup for ${email} — Google account exists, Cognito will merge`);
-          }
-        }
-      } catch (err: any) {
-        console.error('Failed to check for existing Google user', err?.message);
-      }
-    }
-  }
-
+  // Email/password sign-up (PreSignUp_SignUp) is never auto-confirmed: without the confirmation code the sign-up has
+  // proven no ownership of the address, even when a Google account with the same email exists.
   return event;
 };

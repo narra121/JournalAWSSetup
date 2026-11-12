@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 
 // Stub env before importing handler
 vi.stubEnv('SUBSCRIPTIONS_TABLE', 'test-subscriptions');
 vi.stubEnv('STRIPE_SECRET_KEY_PARAM', '/test/stripeSecretKey');
+vi.stubEnv('ALLOWED_ORIGINS', 'https://tradequt.com,http://localhost:8080');
+
+vi.mock('../../../shared/stripe-config', async (orig) => ({
+  ...(await orig<typeof import('../../../shared/stripe-config')>()),
+  allProPriceIds: async () => ['price_123', 'price_pro_monthly', 'price_existing'],
+}));
 
 // Mock SSM
 const ssmMock = mockClient(SSMClient);
@@ -92,8 +98,8 @@ beforeEach(() => {
   // Default: no existing subscription
   ddbMock.on(GetCommand).resolves({ Item: undefined });
 
-  // Default: PutCommand succeeds
-  ddbMock.on(PutCommand).resolves({});
+  // Default: UpdateCommand succeeds
+  ddbMock.on(UpdateCommand).resolves({});
 
   // Default: Stripe session creation succeeds
   mockSessionsCreate.mockResolvedValue({
@@ -191,21 +197,35 @@ describe('create-stripe-checkout handler', () => {
     // Verify Stripe was called
     expect(mockSessionsCreate).toHaveBeenCalledOnce();
 
-    // Verify DDB PutCommand was called with correct fields
-    const putCalls = ddbMock.commandCalls(PutCommand);
+    // The session is recorded with UpdateItem: status/trialEnd are never overwritten
+    const putCalls = ddbMock.commandCalls(UpdateCommand);
     expect(putCalls).toHaveLength(1);
     const putInput = putCalls[0].args[0].input;
     expect(putInput.TableName).toBe('test-subscriptions');
-    expect(putInput.Item).toMatchObject({
-      userId: 'user-1',
-      checkoutSessionId: 'cs_test_123',
-      checkoutUrl: 'https://checkout.stripe.com/test',
-      planId: 'price_pro_monthly',
-      status: 'created',
+    expect(putInput.Key).toEqual({ userId: 'user-1' });
+    expect(putInput.ExpressionAttributeValues).toMatchObject({
+      ':sid': 'cs_test_123',
+      ':url': 'https://checkout.stripe.com/test',
+      ':planId': 'price_pro_monthly',
+      ':created': 'created',
     });
-    expect(putInput.Item.createdAt).toBeDefined();
-    expect(putInput.Item.updatedAt).toBeDefined();
+    expect(putInput.UpdateExpression).toContain('if_not_exists(#status');
+    expect(putInput.UpdateExpression).not.toContain('trialEnd');
     expect(putInput.ConditionExpression).toContain('attribute_not_exists');
+  });
+
+  it('rejects a price id that is not a current Pro price', async () => {
+    const res = (await handler(makeEvent({ planId: 'price_attacker_free' }))) as any;
+    expect(res.statusCode).toBe(400);
+    expect(mockSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects success/cancel URLs outside the allowed origins', async () => {
+    const res = (await handler(makeEvent({ planId: 'price_123', successUrl: 'https://evil.example/ok' }))) as any;
+    expect(res.statusCode).toBe(400);
+    expect(mockSessionsCreate).not.toHaveBeenCalled();
+    const ok = (await handler(makeEvent({ planId: 'price_123', successUrl: 'http://localhost:8080/payment/success' }))) as any;
+    expect(ok.statusCode).toBe(200);
   });
 
   // ── Race condition ─────────────────────────────────────────
@@ -213,7 +233,7 @@ describe('create-stripe-checkout handler', () => {
   it('returns 409 on ConditionalCheckFailedException (race condition)', async () => {
     const condError = new Error('The conditional request failed');
     (condError as any).name = 'ConditionalCheckFailedException';
-    ddbMock.on(PutCommand).rejects(condError);
+    ddbMock.on(UpdateCommand).rejects(condError);
 
     const res = await handler(makeEvent({ planId: 'price_123' })) as any;
 
@@ -288,7 +308,7 @@ describe('create-stripe-checkout handler', () => {
     ddbMock.on(GetCommand).resolves({
       Item: { userId: 'user-1', status: 'trial' },
     });
-    ddbMock.on(PutCommand).resolves({});
+    ddbMock.on(UpdateCommand).resolves({});
 
     const res = await handler(makeEvent({ planId: 'price_123' })) as any;
 

@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -8,7 +8,7 @@ import { DEFAULT_USER_PREFERENCES } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
 
@@ -31,6 +31,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('invalid json', { error: (e as any)?.message });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   try {
     const setExpressions: string[] = [];
@@ -59,6 +60,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     setExpressions.push('#updatedAt = :updatedAt');
     expressionAttributeNames['#updatedAt'] = 'updatedAt';
     expressionAttributeValues[':updatedAt'] = new Date().toISOString();
+
+    // Nested SET fails on a missing map, so make sure `notifications` exists first (creates the item for new users).
+    await ddb.send(new UpdateCommand({
+      TableName: USER_PREFERENCES_TABLE,
+      Key: { userId },
+      UpdateExpression: 'SET #notifications = if_not_exists(#notifications, :empty)',
+      ExpressionAttributeNames: { '#notifications': 'notifications' },
+      ExpressionAttributeValues: { ':empty': {} },
+    }));
 
     const result = await ddb.send(new UpdateCommand({
       TableName: USER_PREFERENCES_TABLE,

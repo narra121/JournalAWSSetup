@@ -1,185 +1,68 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('TRADES_TABLE', 'test-trades');
-vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
-
-const ddbMock = mockClient(DynamoDBDocumentClient);
-const s3Mock = mockClient(S3Client);
-
 vi.mock('../../../shared/subscription', () => ({
   checkSubscription: vi.fn().mockResolvedValue(null),
 }));
 
+const ddbMock = mockClient(DynamoDBDocumentClient);
 const { handler } = await import('../app.ts');
 
-function makeJwt(sub: string): string {
-  const header = btoa(JSON.stringify({ alg: 'RS256' }));
-  const payload = btoa(JSON.stringify({ sub }));
-  return `${header}.${payload}.sig`;
-}
+const jwt = `${btoa(JSON.stringify({ alg: 'RS256' }))}.${btoa(JSON.stringify({ sub: 'user-1' }))}.sig`;
 
-function makeEvent(body: any, overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayProxyEventV2 {
+function makeEvent(body?: any, headers: Record<string, string> = { authorization: `Bearer ${jwt}` }): APIGatewayProxyEventV2 {
   return {
-    version: '2.0', routeKey: 'POST /trades/bulk-delete', rawPath: '/trades/bulk-delete', rawQueryString: '',
-    headers: { authorization: `Bearer ${makeJwt('user-1')}`, ...((overrides as any).headers || {}) },
-    requestContext: {
-      accountId: '123', apiId: 'api', domainName: 'api.example.com', domainPrefix: 'api',
-      http: { method: 'POST', path: '/trades/bulk-delete', protocol: 'HTTP/1.1', sourceIp: '127.0.0.1', userAgent: 'test' },
-      requestId: 'req-1', routeKey: 'POST /trades/bulk-delete', stage: '$default',
-      time: '01/Jan/2024:00:00:00 +0000', timeEpoch: 0,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    version: '2.0',
+    routeKey: 'POST /trades/bulk-delete',
+    rawPath: '/trades/bulk-delete',
+    rawQueryString: '',
+    headers,
+    requestContext: { requestId: 'req-1', http: { method: 'POST' } },
+    body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
     isBase64Encoded: false,
-    ...overrides,
   } as unknown as APIGatewayProxyEventV2;
 }
 
+const call = async (e: APIGatewayProxyEventV2) => (await handler(e, {} as any, () => {})) as any;
+
 beforeEach(() => {
   ddbMock.reset();
-  s3Mock.reset();
-  ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
-  s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
-  s3Mock.on(DeleteObjectsCommand).resolves({});
+  ddbMock.on(GetCommand).callsFake((input) => (input.Key.tradeId.startsWith('ghost') ? {} : { Item: { userId: 'user-1', tradeId: input.Key.tradeId } }));
+  ddbMock.on(UpdateCommand).resolves({});
 });
 
-describe('bulk-delete-trades handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent({ tradeIds: ['trade-1'] }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
-  it('deletes multiple trades and returns 200', async () => {
-    const res = await handler(makeEvent({ tradeIds: ['t1', 't2', 't3'] }), {} as any, () => {}) as any;
-
+describe('bulk-delete-trades handler (soft delete)', () => {
+  it('soft-deletes every listed trade and reports unknown ids without failing', async () => {
+    const res = await call(makeEvent({ tradeIds: ['t1', 't2', 'ghost-1'] }));
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    expect(body.data.deletedRequested).toBe(3);
-    expect(body.data.errors).toHaveLength(0);
+    expect(JSON.parse(res.body).data).toMatchObject({ deletedRequested: 3, notFound: ['ghost-1'], errors: [] });
+    expect(JSON.parse(res.body).data.deleted.sort()).toEqual(['t1', 't2']);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(2);
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
-  it('processes trades in chunks of 25', async () => {
-    const ids = Array.from({ length: 30 }, (_, i) => `t${i}`);
-    const res = await handler(makeEvent({ tradeIds: ids }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(200);
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls).toHaveLength(2); // 25 + 5
+  it('de-duplicates ids and accepts exactly 200, rejects 201', async () => {
+    const dup = await call(makeEvent({ tradeIds: ['t1', 't1'] }));
+    expect(JSON.parse(dup.body).data.deletedRequested).toBe(1);
+    expect((await call(makeEvent({ tradeIds: Array.from({ length: 200 }, (_, i) => `t${i}`) }))).statusCode).toBe(200);
+    expect((await call(makeEvent({ tradeIds: Array.from({ length: 201 }, (_, i) => `t${i}`) }))).statusCode).toBe(400);
   });
 
-  it('returns errors for unprocessed items after retries', async () => {
-    ddbMock.on(BatchWriteCommand).resolves({
-      UnprocessedItems: {
-        'test-trades': [{ DeleteRequest: { Key: { userId: 'user-1', tradeId: 't1' } } }],
-      },
-    });
-
-    const res = await handler(makeEvent({ tradeIds: ['t1'] }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.errors.length).toBeGreaterThan(0);
+  it('reports a per-trade failure and carries on', async () => {
+    ddbMock.on(UpdateCommand).callsFake((input) => (input.Key.tradeId === 't1' ? Promise.reject(new Error('throttled')) : {}));
+    const data = JSON.parse((await call(makeEvent({ tradeIds: ['t1', 't2'] }))).body).data;
+    expect(data.deleted).toEqual(['t2']);
+    expect(data.errors).toEqual([{ tradeId: 't1', message: 'throttled' }]);
   });
 
-  it('returns 401 when unauthorized', async () => {
-    const event = makeEvent({ tradeIds: ['t1'] });
-    event.headers = {};
-    const res = await handler(event, {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(401);
-  });
-
-  it('returns 400 when body is missing', async () => {
-    const event = makeEvent(undefined);
-    event.body = undefined;
-    const res = await handler(event, {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(400);
-  });
-
-  it('returns 400 for invalid JSON', async () => {
-    const event = makeEvent({ tradeIds: ['t1'] });
-    event.body = 'not-json{';
-    const res = await handler(event, {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).message).toContain('Invalid JSON');
-  });
-
-  it('returns 400 when tradeIds is empty', async () => {
-    const res = await handler(makeEvent({ tradeIds: [] }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(400);
-  });
-
-  it('returns 400 when tradeIds is not an array', async () => {
-    const res = await handler(makeEvent({ tradeIds: 'not-array' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(400);
-  });
-
-  it('returns 400 when more than 50 tradeIds provided', async () => {
-    const ids = Array.from({ length: 51 }, (_, i) => `t${i}`);
-    const res = await handler(makeEvent({ tradeIds: ids }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).message).toContain('Max 50');
-  });
-
-  it('returns 500 on unexpected DynamoDB error', async () => {
-    ddbMock.on(BatchWriteCommand).rejects(new Error('DynamoDB unavailable'));
-
-    const res = await handler(makeEvent({ tradeIds: ['t1'] }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(500);
-  });
-
-  it('cleans up S3 images for each deleted trade', async () => {
-    await handler(makeEvent({ tradeIds: ['t1', 't2'] }), {} as any, () => {});
-
-    const listCalls = s3Mock.commandCalls(ListObjectsV2Command);
-    expect(listCalls).toHaveLength(2);
-  });
-
-  it('deletes S3 images for each trade even when one S3 deletion fails', async () => {
-    // S3 fails for first trade but succeeds for second
-    s3Mock.on(ListObjectsV2Command)
-      .resolvesOnce({ Contents: [{ Key: 'img1' }], IsTruncated: false }) // t1 list
-      .resolvesOnce({ Contents: [{ Key: 'img2' }], IsTruncated: false }); // t2 list
-    s3Mock.on(DeleteObjectsCommand)
-      .rejectsOnce(new Error('S3 error'))
-      .resolvesOnce({});
-
-    const res = await handler(makeEvent({ tradeIds: ['t1', 't2'] }), {} as any, () => {}) as any;
-
-    // Should still succeed (best-effort image cleanup)
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.deletedRequested).toBe(2);
-  });
-
-  it('uses correct S3 prefix per trade for image cleanup', async () => {
-    s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
-
-    await handler(makeEvent({ tradeIds: ['trade-1', 'trade-2'] }), {} as any, () => {});
-
-    const listCalls = s3Mock.commandCalls(ListObjectsV2Command);
-    expect(listCalls).toHaveLength(2);
-    expect(listCalls[0].args[0].input.Prefix).toBe('images/user-1/trade-1/');
-    expect(listCalls[1].args[0].input.Prefix).toBe('images/user-1/trade-2/');
+  it('400 for bad input, 401 without claims', async () => {
+    expect((await call(makeEvent())).statusCode).toBe(400);
+    expect((await call(makeEvent('{oops'))).statusCode).toBe(400);
+    expect((await call(makeEvent({ tradeIds: [] }))).statusCode).toBe(400);
+    expect((await call(makeEvent({ tradeIds: [1] }))).statusCode).toBe(400);
+    expect((await call(makeEvent({ tradeIds: ['t1'] }, {}))).statusCode).toBe(401);
   });
 });

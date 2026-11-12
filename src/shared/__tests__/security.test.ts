@@ -86,7 +86,7 @@ function makeV1Event(
     requestContext: {
       accountId: '123',
       apiId: 'api',
-      authorizer: {},
+      authorizer: { jwt: { claims: { sub: 'acc1' } } },
       protocol: 'HTTP/1.1',
       httpMethod: 'GET',
       identity: {
@@ -186,12 +186,12 @@ describe('NoSQL injection via trade notes', () => {
 
 describe('XSS in trade tags', () => {
   it('stores <script> tags in trade tags as raw strings', async () => {
-    const trade = { ...validTrade, tags: ['<script>alert(1)</script>', 'normal-tag'] };
+    const trade = { ...validTrade, tags: ['<svg onload=alert(1)>', 'normal-tag'] };
     const res = await createTradeHandler(makeV2Event(trade), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.data.trade.tags).toContain('<script>alert(1)</script>');
+    expect(body.data.trade.tags).toContain('<svg onload=alert(1)>');
     expect(body.data.trade.tags).toContain('normal-tag');
   });
 

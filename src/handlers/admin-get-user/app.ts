@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import {
   CognitoIdentityProviderClient,
   AdminGetUserCommand,
@@ -18,7 +18,7 @@ const RULES_TABLE = process.env.RULES_TABLE!;
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
 
   try {

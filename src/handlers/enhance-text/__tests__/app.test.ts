@@ -29,7 +29,7 @@ function makeEvent(body?: any, overrides: Partial<APIGatewayProxyEventV2> = {}):
     rawPath: '/enhance-text',
     rawQueryString: '',
     headers: {
-      authorization: 'Bearer test-token',
+      authorization: `Bearer ${btoa(JSON.stringify({ alg: 'RS256' }))}.${btoa(JSON.stringify({ sub: 'user-1' }))}.sig`,
     },
     requestContext: {
       accountId: '123',
@@ -212,10 +212,22 @@ describe('enhance-text handler', () => {
 
     const res = await handler(makeEvent({ text: longText }), {} as any) as any;
 
-    // Should either succeed (forward to API) or reject with validation error
-    expect([200, 400, 502]).toContain(res.statusCode);
-    const body = JSON.parse(res.body);
-    expect(body).toBeDefined();
+    // Over the 10,000-character cap: rejected before any model call
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).message).toContain('too long');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts text at exactly the 10,000-character cap', async () => {
+    mockFetchSuccess('ok');
+    const res = (await handler(makeEvent({ text: 'A'.repeat(10000) }), {} as any)) as any;
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns 401 without a verified user and never calls the model', async () => {
+    const res = (await handler(makeEvent({ text: 'hello' }, { headers: {} }), {} as any)) as any;
+    expect(res.statusCode).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('handles extremely long input text (>100000 chars) without crashing', async () => {
@@ -224,8 +236,7 @@ describe('enhance-text handler', () => {
 
     const res = await handler(makeEvent({ text: veryLongText }), {} as any) as any;
 
-    // Must not crash; should either succeed or return a controlled error
-    expect([200, 400, 413, 500, 502]).toContain(res.statusCode);
+    expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body).toBeDefined();
   });

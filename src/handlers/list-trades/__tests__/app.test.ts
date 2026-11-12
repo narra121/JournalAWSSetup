@@ -153,9 +153,9 @@ describe('list-trades handler', () => {
     expect(body.data.pagination.hasMore).toBe(true);
     expect(body.data.pagination.nextCursor).toBeDefined();
     expect(body.data.pagination.limit).toBe(50);
-    // Decode the nextCursor and verify it matches the LastEvaluatedKey
+    // The cursor is the index key of the last record returned
     const decoded = JSON.parse(Buffer.from(body.data.pagination.nextCursor, 'base64').toString('utf-8'));
-    expect(decoded).toEqual(lastKey);
+    expect(decoded).toEqual({ userId: 'user-1', tradeId: 't5', openDate: '2024-06-01' });
     // Backward compat: nextToken still present
     expect(body.data.nextToken).toBe(body.data.pagination.nextCursor);
   });
@@ -399,9 +399,9 @@ describe('list-trades handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.pagination.limit).toBe(25);
 
-    // GSI path over-fetches with Limit = limit * 3 to account for post-filtering
+    // Index pages hold at least 50 rows so post-filtering by account rarely needs a second page
     const call = ddbMock.commandCalls(QueryCommand)[0];
-    expect(call.args[0].input.Limit).toBe(75);
+    expect(call.args[0].input.Limit).toBe(50);
   });
 
   it('defaults limit to 50 when not provided', async () => {
@@ -605,12 +605,15 @@ describe('list-trades handler', () => {
       .resolvesOnce({ Responses: { 'test-trades': chunk1Items } })
       .resolvesOnce({ Responses: { 'test-trades': chunk2Items } });
 
-    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+    const res = await handler(makeEvent({ queryStringParameters: { accountId: 'acc-1', startDate: '2024-01-01', endDate: '2024-12-31', limit: '100' } }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.trades).toHaveLength(150);
+    // Only `limit` records are returned; the cursor points at the last returned one so the other 50 are not lost
+    expect(body.data.trades).toHaveLength(100);
+    expect(body.data.pagination.hasMore).toBe(true);
+    expect(JSON.parse(Buffer.from(body.data.pagination.nextCursor, 'base64').toString()).tradeId).toBe('t99');
 
     // Verify BatchGet was called exactly twice (2 chunks)
     const batchCalls = ddbMock.commandCalls(BatchGetCommand);
@@ -639,5 +642,42 @@ describe('list-trades handler', () => {
       hasMore: false,
       limit: 50,
     });
+  });
+
+  it('fills a page across several index pages when account filtering removes rows, without skipping any', async () => {
+    const row = (i: number) => ({ userId: 'user-1', tradeId: `t${i}`, openDate: `2024-01-${String(i + 1).padStart(2, '0')}` });
+    const full = (i: number, accountId: string) => ({ userId: 'user-1', tradeId: `t${i}`, accountId, symbol: 'X', images: [] });
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({ Items: [row(0), row(1), row(2)], LastEvaluatedKey: row(2) })
+      .resolvesOnce({ Items: [row(3), row(4), row(5)] });
+    ddbMock.on(BatchGetCommand)
+      .resolvesOnce({ Responses: { 'test-trades': [full(0, 'other'), full(1, 'acc-1'), full(2, 'other')] } })
+      .resolvesOnce({ Responses: { 'test-trades': [full(3, 'acc-1'), full(4, 'other'), full(5, 'acc-1')] } });
+    const res = (await handler(makeEvent({ queryStringParameters: { accountId: 'acc-1', startDate: '2024-01-01', endDate: '2024-12-31', limit: '2' } }), {} as any, () => {})) as any;
+    const body = JSON.parse(res.body);
+    expect(body.data.trades.map((t: any) => t.tradeId)).toEqual(['t1', 't3']);
+    // t4 was consumed (filtered), t5 not yet: the cursor is t3 so the next page starts at t4 and still finds t5
+    expect(JSON.parse(Buffer.from(body.data.pagination.nextCursor, 'base64').toString()).tradeId).toBe('t3');
+    expect(body.data.pagination.hasMore).toBe(true);
+  });
+
+  it('retries unprocessed BatchGet keys and fails loudly if they never load', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'a', openDate: '2024-01-01' }] });
+    ddbMock.on(BatchGetCommand).resolvesOnce({ Responses: { 'test-trades': [] }, UnprocessedKeys: { 'test-trades': { Keys: [{ userId: 'user-1', tradeId: 'a' }] } } })
+      .resolvesOnce({ Responses: { 'test-trades': [{ userId: 'user-1', tradeId: 'a', accountId: 'acc-1', images: [] }] } });
+    const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+    expect(JSON.parse(res.body).data.trades).toHaveLength(1);
+  });
+
+  it('filters by importBatchId and treats a non-numeric limit as the default', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'a', openDate: '2024-01-01' }, { userId: 'user-1', tradeId: 'b', openDate: '2024-01-02' }] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [
+      { userId: 'user-1', tradeId: 'a', accountId: 'acc-1', importBatchId: 'b1', images: [] },
+      { userId: 'user-1', tradeId: 'b', accountId: 'acc-1', images: [] },
+    ] } });
+    const res = (await handler(makeEvent({ queryStringParameters: { accountId: 'acc-1', startDate: '2024-01-01', endDate: '2024-12-31', importBatchId: 'b1', limit: 'abc' } }), {} as any, () => {})) as any;
+    const body = JSON.parse(res.body);
+    expect(body.data.trades.map((t: any) => t.tradeId)).toEqual(['a']);
+    expect(body.data.pagination.limit).toBe(50);
   });
 });

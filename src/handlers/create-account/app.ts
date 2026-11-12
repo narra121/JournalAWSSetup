@@ -1,4 +1,5 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import { normalizeCurrency } from '../../shared/currency';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
@@ -28,7 +29,7 @@ const accountSchema = {
   }
 };
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -54,6 +55,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('invalid json', { error: (e as any)?.message });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   const validate = getValidator(accountSchema, 'account');
   const valid = validate(data);
@@ -72,6 +74,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const accountId = uuid();
     const now = new Date().toISOString();
 
+    const currency = normalizeCurrency(data.currency);
+    if (!currency) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Unsupported currency');
+
     const account = {
       userId,
       accountId,
@@ -81,7 +86,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       status: data.status,
       balance: data.balance,
       initialBalance: data.initialBalance,
-      currency: data.currency,
+      currency,
       notes: data.notes || null,
       createdAt: now,
       updatedAt: now

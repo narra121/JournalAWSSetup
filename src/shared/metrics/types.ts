@@ -36,6 +36,8 @@ export interface ProcessorContext {
   userId: string;
   tradeIndex: number;
   totalTradesInDay: number;
+  /** IANA zone the day boundaries and hour buckets follow; unset = UTC. */
+  timeZone?: string | null;
 }
 
 /** Context for aggregation across daily records. */
@@ -105,7 +107,8 @@ export interface AggregatedStats {
   totalVolume: number;
 
   winRate: number;
-  profitFactor: number;
+  /** Null when there are profits but no losses. */
+  profitFactor: number | null;
   avgWin: number;
   avgLoss: number;
   expectancy: number;

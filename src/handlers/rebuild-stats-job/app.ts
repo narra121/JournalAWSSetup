@@ -1,7 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
-import { extractDate } from '../../shared/utils/pnl';
+import { dayOf, getUserTimeZone } from '../../shared/timezone';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -38,7 +38,8 @@ async function getRecentlyChangedUserIds(): Promise<string[]> {
 // ---------------------------------------------------------------------------
 // Step 2: Rebuild stats for a single user (trades query + stats + balances + daily stats)
 // ---------------------------------------------------------------------------
-async function rebuildForUser(userId: string): Promise<void> {
+export async function rebuildForUser(userId: string): Promise<void> {
+  const timeZone = await getUserTimeZone(userId).catch(() => null);
   // Fetch all trades for this user
   let lastEvaluatedKey: any = undefined;
   const trades: any[] = [];
@@ -47,11 +48,11 @@ async function rebuildForUser(userId: string): Promise<void> {
       TableName: TRADES_TABLE,
       KeyConditionExpression: 'userId = :u',
       ExpressionAttributeValues: { ':u': userId },
-      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition,brokenRuleIds,mistakes,lessons',
+      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition,brokenRuleIds,mistakes,lessons,deletedAt',
       ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' },
       ExclusiveStartKey: lastEvaluatedKey,
     }));
-    trades.push(...(resp.Items || []));
+    trades.push(...(resp.Items || []).filter((t: any) => !t.deletedAt));
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
 
@@ -103,7 +104,7 @@ async function rebuildForUser(userId: string): Promise<void> {
   for (const t of trades) {
     const accountId = t.accountId;
     if (!accountId || accountId === '-1' || accountId === -1) continue;
-    const date = extractDate(t.openDate);
+    const date = dayOf(t.openDate, timeZone);
     if (!date) continue;
     const key = `${accountId}#${date}`;
     const group = dailyGroups.get(key);
@@ -114,7 +115,7 @@ async function rebuildForUser(userId: string): Promise<void> {
   const newSkSet = new Set<string>();
   for (const [key, groupTrades] of dailyGroups) {
     const [accountId, date] = key.split('#');
-    const record = computeDailyRecord(userId, accountId, date, groupTrades);
+    const record = computeDailyRecord(userId, accountId, date, groupTrades, timeZone);
     if (record) {
       newSkSet.add(record.sk);
       await ddb.send(new PutCommand({ TableName: DAILY_STATS_TABLE, Item: record }));

@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
@@ -33,7 +33,7 @@ async function getAdConfig(): Promise<any> {
  * Returns ad configuration based on user's subscription tier.
  * Paid/trial users get showAds: false; free-tier users get full ad placements.
  */
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const { headers, multiValueHeaders, ...safeEvent } = event as any;
   const log = makeLogger({ requestId: (event.requestContext as any)?.requestId });
 
@@ -76,6 +76,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     });
   } catch (error: any) {
     log.error('Error getting ad config', { error: error.message });
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to get ad config', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to get ad config');
   }
 };

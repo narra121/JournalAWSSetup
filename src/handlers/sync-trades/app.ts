@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { getUserId } from '../../shared/auth';
@@ -16,7 +16,7 @@ interface SyncRequest {
   clientHashes: Record<string, string>;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
 
@@ -26,6 +26,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   } catch {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON body');
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   const { accountId, startDate, endDate, clientHashes = {} } = body;
 
@@ -157,7 +158,7 @@ async function fetchTradesForDays(
   const items: any[] = [];
   for (const result of batchResults) {
     if (result.Responses?.[TRADES_TABLE]) {
-      items.push(...result.Responses[TRADES_TABLE]);
+      items.push(...result.Responses[TRADES_TABLE].filter((it: any) => !it.deletedAt));
     }
   }
 

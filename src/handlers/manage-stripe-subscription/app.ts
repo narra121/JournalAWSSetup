@@ -40,8 +40,7 @@ function toISO(ts: number | null | undefined): string | null {
 export const handler = async (
   event: APIGatewayProxyEvent | any
 ): Promise<APIGatewayProxyResult> => {
-  const { headers, multiValueHeaders, ...safeEvent } = event;
-  console.log('Event:', JSON.stringify(safeEvent, null, 2));
+  console.log('manage-stripe-subscription', { method: event.requestContext?.http?.method || event.httpMethod, requestId: event.requestContext?.requestId });
 
   try {
     const userId = getUserId(event);
@@ -54,28 +53,28 @@ export const handler = async (
 
     // ─── GET: Fetch subscription details ───────────────────────────────
     if (method === 'GET') {
-      return handleGet(userId);
+      return await handleGet(userId);
     }
 
     // ─── PUT: Pause or Resume ──────────────────────────────────────────
     if (method === 'PUT') {
-      return handlePut(userId, event.body);
+      return await handlePut(userId, event.body);
     }
 
     // ─── PATCH: Undo cancellation ──────────────────────────────────────
     if (method === 'PATCH') {
-      return handlePatch(userId, event.body);
+      return await handlePatch(userId, event.body);
     }
 
     // ─── DELETE: Cancel subscription ───────────────────────────────────
     if (method === 'DELETE') {
-      return handleDelete(userId, event.body);
+      return await handleDelete(userId, event.body);
     }
 
     return errorResponse(405, ErrorCodes.VALIDATION_ERROR, 'Method not allowed');
   } catch (error: any) {
     console.error('Error managing Stripe subscription:', error);
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to manage subscription', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to manage subscription');
   }
 };
 

@@ -1,6 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
+import { getUserId } from '../../shared/auth';
 
 const s3Client = new S3Client({});
 
@@ -13,7 +14,7 @@ interface PathParameters {
  * Takes an image ID and returns the image content with appropriate headers
  * Ensures images cannot be accessed directly via browser URLs
  */
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = async (event: APIGatewayProxyEvent, _context?: unknown, _callback?: unknown): Promise<APIGatewayProxyResult> => {
   try {
     // Verify that the request has proper authorization
     const authHeader = event.headers.authorization || event.headers.Authorization;
@@ -82,6 +83,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         body: JSON.stringify({
           error: 'Invalid image ID format. Expected: accountId/tradeId/filename',
         }),
+      };
+    }
+
+    // Keys are images/<userId>/<tradeId>/<file>: only the owner may read them (other users get the same 404 as a missing image).
+    if (!getUserId(event) || pathParts[0] !== getUserId(event)) {
+      return {
+        statusCode: 404,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Image not found' }),
       };
     }
 

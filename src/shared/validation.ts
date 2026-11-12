@@ -94,6 +94,7 @@ export function serializeException(err: any, opts?: { exposeStack?: boolean }) {
   };
 }
 
-export function errorFromException(err: any, exposeStack = true) {
-  return envelope({ statusCode: 500, error: { code: ErrorCodes.INTERNAL_ERROR, message: err?.message || 'Internal error', exception: serializeException(err, { exposeStack }) } });
+/** 500 envelope for an unexpected exception. The cause is logged by the caller; the body never carries the raw message or stack. */
+export function errorFromException(_err: any, _exposeStack = false) {
+  return envelope({ statusCode: 500, error: { code: ErrorCodes.INTERNAL_ERROR, message: 'Internal error' }, message: 'Internal error' });
 }

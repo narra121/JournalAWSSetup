@@ -1,49 +1,36 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { SSMClient, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 
 const ssm = new SSMClient({});
 
-function maskValue(value: string): string {
-  if (value.length <= 4) return '••••';
-  return '••••' + value.slice(-4);
-}
-
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+/** Only the ad configuration parameter can be written from the admin console. */
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
   try {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
 
-    const { name, value, type } = JSON.parse(event.body);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(event.body);
+    } catch {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
+    }
+    const { name, value } = parsed ?? {};
 
-    if (!name || !value || !type) {
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name, value, and type are required');
+    if (!name || typeof value !== 'string' || !value) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name and value are required');
     }
 
-    if (!name.startsWith('/tradequt/')) {
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name must start with /tradequt/');
+    if (name !== process.env.AD_CONFIG_PARAM) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Only the ad configuration parameter can be changed');
     }
 
-    if (type !== 'String' && type !== 'SecureString') {
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'type must be String or SecureString');
-    }
+    await ssm.send(new PutParameterCommand({ Name: name, Value: value, Type: 'String', Overwrite: true }));
 
-    await ssm.send(new PutParameterCommand({
-      Name: name,
-      Value: value,
-      Type: type,
-      Overwrite: true,
-    }));
-
-    const maskedValue = type === 'SecureString' ? maskValue(value) : value;
-
-    log.info('Config updated', { name, type });
-    return envelope({
-      statusCode: 200,
-      data: { name, type, value: maskedValue },
-      message: 'Config updated',
-    });
+    log.info('Config updated', { name });
+    return envelope({ statusCode: 200, data: { name, type: 'String', value }, message: 'Config updated' });
   } catch (e: any) {
     log.error('Failed to update config', { error: e.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error');

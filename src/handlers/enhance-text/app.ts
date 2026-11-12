@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
@@ -33,13 +33,15 @@ async function getApiKey(): Promise<string> {
   return v;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+const MAX_TEXT_LENGTH = 10_000;
+
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
 
-  if (userId) {
-    const subError = await checkSubscription(userId);
-    if (subError) return subError;
-  }
+  if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
+
+  const subError = await checkSubscription(userId);
+  if (subError) return subError;
 
   try {
     if (!event.body) {
@@ -67,6 +69,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         statusCode: 400, 
         error: { code: 'BadRequest', message: 'Missing or empty text field' }, 
         message: 'Missing or empty text field' 
+      });
+    }
+
+    if (text.length > MAX_TEXT_LENGTH) {
+      return envelope({
+        statusCode: 400,
+        error: { code: 'BadRequest', message: `Text is too long (max ${MAX_TEXT_LENGTH} characters)` },
+        message: `Text is too long (max ${MAX_TEXT_LENGTH} characters)`
       });
     }
 

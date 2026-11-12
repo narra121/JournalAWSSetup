@@ -1,5 +1,5 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import type { ApiHandler } from '../../shared/types';
+import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
@@ -31,13 +31,36 @@ function computePeriodEnd(period?: number, unit?: string): Date {
   if (unit === 'lifetime') {
     return new Date('9999-12-31T23:59:59Z');
   }
-  const days = unit === 'months' ? (period ?? 1) * 30 : (period ?? 30);
   const end = new Date();
-  end.setDate(end.getDate() + days);
+  if (unit === 'months') end.setMonth(end.getMonth() + (period ?? 1));
+  else end.setDate(end.getDate() + (period ?? 30));
   return end;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+async function setStatus(userId: string, fields: Record<string, any>): Promise<void> {
+  const names: Record<string, string> = {};
+  const values: Record<string, any> = {};
+  const sets = Object.entries({ ...fields, updatedAt: new Date().toISOString() }).map(([k, v], i) => {
+    names[`#f${i}`] = k;
+    values[`:v${i}`] = v;
+    return `#f${i} = :v${i}`;
+  });
+  await ddb.send(new UpdateCommand({
+    TableName: SUBSCRIPTIONS_TABLE,
+    Key: { userId },
+    UpdateExpression: `SET ${sets.join(', ')}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+async function cancelStripeSubscription(stripeSubscriptionId: string | undefined): Promise<void> {
+  if (!stripeSubscriptionId) return;
+  const stripe = await getStripeClient();
+  await stripe.subscriptions.cancel(stripeSubscriptionId);
+}
+
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
   try {
     const userId = event.pathParameters?.userId;
@@ -54,31 +77,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     switch (action) {
       case 'grant_free': {
         const periodEnd = computePeriodEnd(period, unit);
-        await ddb.send(new PutCommand({
-          TableName: SUBSCRIPTIONS_TABLE,
-          Item: {
-            userId,
-            status: 'active',
-            tier: 'active',
-            periodEnd: periodEnd.toISOString(),
-            source: 'admin_grant',
-            updatedAt: new Date().toISOString(),
-          },
-        }));
+        await setStatus(userId, {
+          status: 'active',
+          tier: 'active',
+          periodEnd: periodEnd.toISOString(),
+          source: 'admin_grant',
+        });
         log.info('Granted free subscription', { userId, periodEnd: periodEnd.toISOString() });
         return envelope({ statusCode: 200, data: { userId, status: 'active', periodEnd: periodEnd.toISOString() }, message: 'Subscription granted' });
       }
 
       case 'cancel': {
-        await ddb.send(new PutCommand({
-          TableName: SUBSCRIPTIONS_TABLE,
-          Item: {
-            userId,
-            status: 'cancelled',
-            source: 'admin_cancel',
-            updatedAt: new Date().toISOString(),
-          },
-        }));
+        const current = (await ddb.send(new GetCommand({ TableName: SUBSCRIPTIONS_TABLE, Key: { userId } }))).Item;
+        await cancelStripeSubscription(current?.stripeSubscriptionId);
+        await setStatus(userId, { status: 'cancelled', source: 'admin_cancel' });
         log.info('Cancelled subscription', { userId });
         return envelope({ statusCode: 200, data: { userId, status: 'cancelled' }, message: 'Subscription cancelled' });
       }
@@ -99,18 +111,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No invoices found for this customer');
         }
 
-        const refund = await stripe.refunds.create({ invoice: invoices.data[0].id });
-
-        await ddb.send(new PutCommand({
-          TableName: SUBSCRIPTIONS_TABLE,
-          Item: {
-            userId,
-            status: 'cancelled',
-            source: 'admin_refund',
-            refundId: refund.id,
-            updatedAt: new Date().toISOString(),
-          },
-        }));
+        const paymentIntent = invoices.data[0].payment_intent;
+        if (!paymentIntent) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'The latest invoice has no payment to refund');
+        }
+        const refund = await stripe.refunds.create({
+          payment_intent: typeof paymentIntent === 'string' ? paymentIntent : paymentIntent.id,
+        });
+        await cancelStripeSubscription(sub.stripeSubscriptionId);
+        await setStatus(userId, { status: 'cancelled', source: 'admin_refund', refundId: refund.id });
 
         log.info('Refunded subscription', { userId, refundId: refund.id });
         return envelope({ statusCode: 200, data: { userId, status: 'cancelled', refundId: refund.id }, message: 'Subscription refunded' });

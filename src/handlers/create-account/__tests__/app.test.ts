@@ -122,6 +122,14 @@ describe('create-account handler', () => {
 
   // ── Auth errors ─────────────────────────────────────────────
 
+  it('accepts INR and stores the currency upper-cased; rejects unknown codes', async () => {
+    const ok = (await handler(makeEvent({ ...validAccount, currency: 'inr' }), {} as any, () => {})) as any;
+    expect(ok.statusCode).toBe(201);
+    expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.Item!.currency).toBe('INR');
+    const bad = (await handler(makeEvent({ ...validAccount, currency: 'ABC' }), {} as any, () => {})) as any;
+    expect(bad.statusCode).toBe(400);
+  });
+
   it('returns 401 when authorization header is missing', async () => {
     const event = makeEvent(validAccount);
     event.headers = {};

@@ -1,11 +1,11 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, ConfirmSignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   try {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const { email, code } = JSON.parse(event.body);

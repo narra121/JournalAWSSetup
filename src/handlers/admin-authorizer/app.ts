@@ -3,19 +3,21 @@ import { verifyAdminToken } from '../../shared/admin-jwt';
 
 const ssm = new SSMClient({});
 
-let cachedJwtSecret: string | undefined;
+const SECRET_TTL_MS = 15 * 60 * 1000;
+let cachedJwtSecret: { value: string; at: number } | undefined;
 
 async function getJwtSecret(): Promise<string> {
-  if (cachedJwtSecret) return cachedJwtSecret;
+  if (cachedJwtSecret && Date.now() - cachedJwtSecret.at < SECRET_TTL_MS) return cachedJwtSecret.value;
   const paramName = process.env.ADMIN_JWT_SECRET_PARAM;
   if (!paramName) throw new Error('ADMIN_JWT_SECRET_PARAM not configured');
   const res = await ssm.send(new GetParameterCommand({
     Name: paramName,
     WithDecryption: true,
   }));
-  cachedJwtSecret = res.Parameter?.Value;
-  if (!cachedJwtSecret) throw new Error('Admin JWT secret not found in SSM');
-  return cachedJwtSecret;
+  const value = res.Parameter?.Value;
+  if (!value) throw new Error('Admin JWT secret not found in SSM');
+  cachedJwtSecret = { value, at: Date.now() };
+  return value;
 }
 
 /** @internal Exposed for testing only */

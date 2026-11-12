@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -8,7 +8,7 @@ import { DEFAULT_USER_PREFERENCES } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
 

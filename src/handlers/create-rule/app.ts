@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
@@ -9,7 +9,7 @@ import { checkSubscription } from '../../shared/subscription';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -35,6 +35,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('invalid json', { error: (e as any)?.message });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   if (!data.rule || typeof data.rule !== 'string' || data.rule.trim().length === 0) {
     log.warn('invalid rule text');

@@ -34,18 +34,16 @@ async function getCachedSSMParam(name: string): Promise<string | undefined> {
 /**
  * Get available subscription plans
  * Returns Stripe Price IDs grouped by currency (INR or USD).
- * Query param: ?currency=INR|USD (defaults to USD)
+ * Query param: ?currency=INR|USD; without it the currency follows the viewer's country (CloudFront-Viewer-Country: IN → INR).
  */
 export const handler = async (
   event: APIGatewayProxyEvent | any
 ): Promise<APIGatewayProxyResult> => {
-  const { headers, multiValueHeaders, ...safeEvent } = event;
-  console.log('Event:', JSON.stringify(safeEvent, null, 2));
-
   try {
     // Get requested currency from query params
     const queryParams = event.queryStringParameters || {};
-    const currency = (queryParams.currency || 'USD').toUpperCase();
+    const viewerCountry = (event.headers?.['cloudfront-viewer-country'] || '').toUpperCase();
+    const currency = (queryParams.currency || (viewerCountry === 'IN' ? 'INR' : 'USD')).toUpperCase();
 
     if (currency !== 'INR' && currency !== 'USD') {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid currency. Use INR or USD.');
@@ -68,37 +66,38 @@ export const handler = async (
     });
   } catch (error: any) {
     console.error('Error fetching plans:', error);
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to fetch subscription plans', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to fetch subscription plans');
   }
 };
 
+// Amounts are in the smallest unit (paise, cents) and mirror scripts/stripe/lib.mjs PRICES.
 const PLAN_CONFIG: Record<string, Record<string, { amount: number; name: string; description: string; savings?: string; monthlyEquivalent?: number }>> = {
   inr: {
     monthly: {
-      amount: 99,
+      amount: 199,
       name: 'TradeQut Pro Monthly',
       description: 'Monthly subscription — full access to all features',
     },
     yearly: {
-      amount: 999,
+      amount: 1499,
       name: 'TradeQut Pro Annual',
-      description: 'Annual subscription — full access, save 17%',
-      savings: '17%',
-      monthlyEquivalent: 83,
+      description: 'Annual subscription — full access, save 37%',
+      savings: '37%',
+      monthlyEquivalent: 125,
     },
   },
   usd: {
     monthly: {
-      amount: 199, // $1.99 stored in cents
+      amount: 999, // $9.99 stored in cents
       name: 'TradeQut Pro Monthly',
       description: 'Monthly subscription — full access to all features',
     },
     yearly: {
-      amount: 1999, // $19.99 stored in cents
+      amount: 7900, // $79 stored in cents
       name: 'TradeQut Pro Annual',
-      description: 'Annual subscription — full access, save 17%',
-      savings: '17%',
-      monthlyEquivalent: 167, // $1.67 in cents
+      description: 'Annual subscription — full access, save 34%',
+      savings: '34%',
+      monthlyEquivalent: 658, // $6.58 in cents
     },
   },
 };
@@ -109,7 +108,7 @@ async function getPlanDetails(
   currency: string,
 ): Promise<any | null> {
   try {
-    const paramName = `/tradequt/${STAGE_NAME}/stripe/price/${period}_${suffix}`;
+    const paramName = `/tradequt/${STAGE_NAME}/stripe/price/pro_${period === 'monthly' ? 'month' : 'year'}_${suffix}`;
     console.log(`Fetching SSM parameter: ${paramName}`);
 
     const planId = await getCachedSSMParam(paramName);

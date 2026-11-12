@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -8,9 +8,10 @@ import { checkSubscription } from '../../shared/subscription';
 
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
-const validCategories = ['symbols', 'strategies', 'sessions', 'marketConditions', 'newsEvents', 'mistakes', 'lessons', 'timeframes'];
+const validCategories = ['symbols', 'strategies', 'sessions', 'marketConditions', 'newsEvents', 'mistakes', 'lessons', 'timeframes', 'tags'];
+const MAX_TAG_LENGTH = 24;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -37,6 +38,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
 
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
+  }
+
   // Validate that all provided categories are valid
   for (const key of Object.keys(data)) {
     if (key !== 'userId' && key !== 'updatedAt' && key !== 'createdAt' && !validCategories.includes(key)) {
@@ -55,6 +60,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         if (typeof item !== 'string') {
           log.warn('category items must be strings', { category: key });
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `All items in ${key} must be strings`);
+        }
+        if (key === 'tags' && item.length > MAX_TAG_LENGTH) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Tags can have at most ${MAX_TAG_LENGTH} characters`);
         }
       }
     }
@@ -78,6 +86,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       mistakes: data.mistakes ?? existing.mistakes ?? [],
       lessons: data.lessons ?? existing.lessons ?? [],
       timeframes: data.timeframes ?? existing.timeframes ?? [],
+      tags: data.tags ?? existing.tags ?? [],
+      ...(existing.createdAt ? { createdAt: existing.createdAt } : {}),
       updatedAt: new Date().toISOString()
     };
 

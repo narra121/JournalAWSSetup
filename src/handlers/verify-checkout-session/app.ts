@@ -65,7 +65,9 @@ export const handler = async (
 
       if (sub) {
         const now = new Date().toISOString();
-        await ddb.send(
+        try {
+          // Only the latest session recorded for this user may activate; it is cleared on use so a replay cannot re-activate.
+          await ddb.send(
           new UpdateCommand({
             TableName: SUBSCRIPTIONS_TABLE,
             Key: { userId },
@@ -76,9 +78,12 @@ export const handler = async (
               currentStart = :periodStart,
               currentEnd = :periodEnd,
               chargeAt = :periodEnd,
-              updatedAt = :now`,
-            ExpressionAttributeNames: { '#status': 'status' },
+              updatedAt = :now
+              REMOVE checkoutSessionId, checkoutUrl, #src, periodEnd`,
+            ConditionExpression: 'checkoutSessionId = :sid',
+            ExpressionAttributeNames: { '#status': 'status', '#src': 'source' },
             ExpressionAttributeValues: {
+              ':sid': sessionId,
               ':active': 'active',
               ':subId': sub.id,
               ':custId': typeof session.customer === 'string' ? session.customer : session.customer?.id || '',
@@ -88,7 +93,15 @@ export const handler = async (
               ':now': now,
             },
           })
-        );
+          );
+        } catch (err: any) {
+          if (err.name !== 'ConditionalCheckFailedException') throw err;
+          // Session already applied (webhook) or not the user's latest one: report the stored state, change nothing.
+          const current = await ddb.send(new GetCommand({ TableName: SUBSCRIPTIONS_TABLE, Key: { userId } }));
+          if (current.Item?.status !== 'active') {
+            return envelope({ statusCode: 200, data: { status: 'pending', message: 'Payment is still being processed. Please wait a moment.' } });
+          }
+        }
       }
 
       return envelope({

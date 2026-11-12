@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -30,7 +30,7 @@ async function queryItemsForAccount(tableName: string, keyField: string, userId:
   return items;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -75,19 +75,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     log.info('found items to delete', { trades: tradesToDelete.length, goals: goalsToDelete.length, accountId });
     
-    // Delete images for each trade
-    if (tradesToDelete.length > 0) {
-      log.info('deleting images for trades', { count: tradesToDelete.length });
-      
-      // Delete images in parallel batches to improve performance
-      const imageDeletePromises = tradesToDelete.map(trade => 
-        removeImagesForTrade(userId, trade.tradeId)
-      );
-      
-      await Promise.all(imageDeletePromises);
-      log.info('deleted all trade images', { count: tradesToDelete.length });
-    }
-    
     // Delete trades and goals in parallel using batchWriteDeleteAll
     await Promise.all([
       batchWriteDeleteAll({
@@ -109,6 +96,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId }
     }));
+
+    // Screenshots last and best effort: the records are already gone, so a storage hiccup must not turn the
+    // delete into a 500 or leave the user's data half deleted; failures are logged for a retry by operations.
+    if (tradesToDelete.length > 0) {
+      const results = await Promise.allSettled(tradesToDelete.map(trade => removeImagesForTrade(userId, trade.tradeId)));
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) log.error('image cleanup failed for some trades', { failed, total: tradesToDelete.length, accountId });
+    }
 
     log.info('account and all associated data deleted', {
       accountId,

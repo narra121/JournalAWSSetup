@@ -3,6 +3,7 @@ import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
+import { getUserEmail, paymentFailedMail, sendEmail } from '../../shared/email';
 
 const ssmClient = new SSMClient({});
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
@@ -42,11 +43,63 @@ function unixToISO(unix: number): string {
   return new Date(unix * 1000).toISOString();
 }
 
+/** Maps Stripe subscription statuses onto the statuses stored in the Subscriptions table. */
+export function normalizeStatus(stripeStatus: string): string {
+  switch (stripeStatus) {
+    case 'active':
+    case 'trialing':
+      return 'active';
+    case 'past_due':
+    case 'unpaid':
+      return 'past_due';
+    case 'canceled':
+    case 'incomplete_expired':
+      return 'cancelled';
+    case 'paused':
+      return 'paused';
+    default:
+      return stripeStatus;
+  }
+}
+
+/** Condition that rejects an event older than the last one applied (Stripe delivers out of order and retries). */
+const FRESH_EVENT = 'attribute_not_exists(lastStripeEventAt) OR lastStripeEventAt <= :eventAt';
+
+/** Runs an update guarded by FRESH_EVENT; a stale event is acknowledged without changing anything. */
+async function applyFresh(
+  eventAt: string,
+  update: { UpdateExpression: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues: Record<string, any>; ConditionExpression?: string },
+  userId: string,
+  label: string
+): Promise<void> {
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: SUBSCRIPTIONS_TABLE,
+        Key: { userId },
+        UpdateExpression: update.UpdateExpression.replace(/^SET /, 'SET lastStripeEventAt = :eventAt, '),
+        ConditionExpression: update.ConditionExpression
+          ? `(${update.ConditionExpression}) AND (${FRESH_EVENT})`
+          : FRESH_EVENT,
+        ExpressionAttributeNames: update.ExpressionAttributeNames,
+        ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ':eventAt': eventAt },
+      })
+    );
+  } catch (err: any) {
+    if (err.name === 'ConditionalCheckFailedException') {
+      console.log(`${label}: stale or duplicate event skipped`, { userId });
+      return;
+    }
+    throw err;
+  }
+}
+
 /* ---------- Event handlers ---------- */
 
 async function handleCheckoutSessionCompleted(
   session: Stripe.Checkout.Session,
-  stripe: Stripe
+  stripe: Stripe,
+  eventAt: string
 ): Promise<void> {
   const userId = session.metadata?.userId;
   if (!userId) {
@@ -73,18 +126,23 @@ async function handleCheckoutSessionCompleted(
   }
 
   const priceId = subscription.items.data[0]?.price.id;
+  const currency = subscription.items.data[0]?.price.currency?.toUpperCase();
+  const interval = subscription.items.data[0]?.price.recurring?.interval ?? null;
+  const amount = subscription.items.data[0]?.price.unit_amount ?? null;
   const currentStart = unixToISO(subscription.current_period_start);
   const currentEnd = unixToISO(subscription.current_period_end);
   const timestamp = new Date().toISOString();
 
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
+  await applyFresh(
+    eventAt,
+    {
       UpdateExpression:
-        'SET stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, paidCount = :paidCount, updatedAt = :updatedAt',
-      ExpressionAttributeNames: { '#status': 'status' },
+        'SET currency = :currency, #interval = :interval, amount = :amount, stripeSubscriptionId = :subId, stripeCustomerId = :custId, #status = :status, planId = :planId, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, paidCount = :paidCount, updatedAt = :updatedAt REMOVE checkoutSessionId, checkoutUrl, #src, periodEnd',
+      ExpressionAttributeNames: { '#status': 'status', '#src': 'source', '#interval': 'interval' },
       ExpressionAttributeValues: {
+        ':currency': currency ?? null,
+        ':interval': interval,
+        ':amount': amount,
         ':subId': subscriptionId,
         ':custId': customerId,
         ':status': 'active',
@@ -95,7 +153,9 @@ async function handleCheckoutSessionCompleted(
         ':paidCount': 1,
         ':updatedAt': timestamp,
       },
-    })
+    },
+    userId,
+    'checkout.session.completed'
   );
 
   console.log('checkout.session.completed processed', {
@@ -108,7 +168,8 @@ async function handleCheckoutSessionCompleted(
 
 async function handleInvoicePaid(
   invoice: Stripe.Invoice,
-  stripe: Stripe
+  stripe: Stripe,
+  eventAt: string
 ): Promise<void> {
   const subscriptionId = invoice.subscription as string;
   if (!subscriptionId) {
@@ -136,42 +197,35 @@ async function handleInvoicePaid(
   const timestamp = new Date().toISOString();
   const invoiceId = invoice.id;
 
-  // Use ConditionExpression to prevent double-counting on Stripe retries
-  try {
-    await ddb.send(
-      new UpdateCommand({
-        TableName: SUBSCRIPTIONS_TABLE,
-        Key: { userId },
-        UpdateExpression:
-          'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt, lastInvoiceId = :invoiceId',
-        ConditionExpression: 'attribute_not_exists(lastInvoiceId) OR lastInvoiceId <> :invoiceId',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':zero': 0,
-          ':inc': 1,
-          ':currentStart': currentStart,
-          ':currentEnd': currentEnd,
-          ':chargeAt': currentEnd,
-          ':status': 'active',
-          ':updatedAt': timestamp,
-          ':invoiceId': invoiceId,
-        },
-      })
-    );
+  await applyFresh(
+    eventAt,
+    {
+      UpdateExpression:
+        'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt, lastInvoiceId = :invoiceId',
+      ConditionExpression: 'attribute_not_exists(lastInvoiceId) OR lastInvoiceId <> :invoiceId',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':zero': 0,
+        ':inc': 1,
+        ':currentStart': currentStart,
+        ':currentEnd': currentEnd,
+        ':chargeAt': currentEnd,
+        ':status': 'active',
+        ':updatedAt': timestamp,
+        ':invoiceId': invoiceId,
+      },
+    },
+    userId,
+    'invoice.paid'
+  );
 
-    console.log('invoice.paid processed', { userId, subscriptionId, invoiceId });
-  } catch (err: any) {
-    if (err.name === 'ConditionalCheckFailedException') {
-      console.log('invoice.paid: duplicate event skipped', { userId, invoiceId });
-      return;
-    }
-    throw err;
-  }
+  console.log('invoice.paid processed', { userId, subscriptionId, invoiceId });
 }
 
 async function handleInvoicePaymentFailed(
   invoice: Stripe.Invoice,
-  stripe: Stripe
+  stripe: Stripe,
+  eventAt: string
 ): Promise<void> {
   const subscriptionId = invoice.subscription as string;
   if (!subscriptionId) {
@@ -189,97 +243,114 @@ async function handleInvoicePaymentFailed(
     return;
   }
 
-  const timestamp = new Date().toISOString();
-
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
+  await applyFresh(
+    eventAt,
+    {
       UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
         ':status': 'past_due',
-        ':updatedAt': timestamp,
+        ':updatedAt': new Date().toISOString(),
       },
-    })
+    },
+    userId,
+    'invoice.payment_failed'
   );
 
   console.log('invoice.payment_failed processed', { userId, subscriptionId });
+  await notifyPaymentFailed(userId);
 }
 
-async function handleSubscriptionUpdated(
-  subscription: Stripe.Subscription
+/** One mail per user per day, however many times Stripe retries; a mail problem never fails the webhook. */
+async function notifyPaymentFailed(userId: string): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    await ddb.send(
+      new UpdateCommand({
+        TableName: SUBSCRIPTIONS_TABLE,
+        Key: { userId },
+        UpdateExpression: 'SET paymentFailedEmailOn = :d',
+        ConditionExpression: 'attribute_not_exists(paymentFailedEmailOn) OR paymentFailedEmailOn <> :d',
+        ExpressionAttributeValues: { ':d': today },
+      })
+    );
+    const to = await getUserEmail(userId);
+    if (to) await sendEmail(paymentFailedMail(to));
+  } catch (err: any) {
+    if (err.name !== 'ConditionalCheckFailedException') console.error('payment_failed_email_error', { userId, error: err.message });
+  }
+}
+
+/** Handles both customer.subscription.created and customer.subscription.updated. */
+async function handleSubscriptionChanged(
+  subscription: Stripe.Subscription,
+  eventAt: string,
+  label: string
 ): Promise<void> {
   const userId = subscription.metadata?.userId;
   if (!userId) {
-    console.warn('customer.subscription.updated: no userId in metadata');
+    console.warn(`${label}: no userId in metadata`);
     return;
   }
 
-  const timestamp = new Date().toISOString();
-  const updates: string[] = ['updatedAt = :updatedAt'];
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = { ':updatedAt': timestamp };
+  // One status decision: pause wins, then cancel-at-period-end, otherwise Stripe's normalised status.
+  let status = normalizeStatus(subscription.status);
+  if (subscription.pause_collection) status = 'paused';
+  else if (subscription.cancel_at_period_end) status = 'cancellation_requested';
 
-  // Detect cancellation request (cancel at period end)
-  if (subscription.cancel_at_period_end) {
-    updates.push('#status = :status');
-    names['#status'] = 'status';
-    values[':status'] = 'cancellation_requested';
-    console.log('Subscription cancellation requested', { userId });
-  }
-
-  // Detect pause
-  if (subscription.pause_collection) {
-    updates.push('#status = :status');
-    names['#status'] = 'status';
-    values[':status'] = 'paused';
-    console.log('Subscription paused', { userId });
-  }
-
-  // Detect plan change
   const currentPriceId = subscription.items.data[0]?.price.id;
+  const updates = [
+    '#status = :status',
+    'updatedAt = :updatedAt',
+    'currentStart = :currentStart',
+    'currentEnd = :currentEnd',
+    'chargeAt = :chargeAt',
+    'stripeSubscriptionId = :subId',
+  ];
+  const values: Record<string, any> = {
+    ':status': status,
+    ':updatedAt': new Date().toISOString(),
+    ':currentStart': unixToISO(subscription.current_period_start),
+    ':currentEnd': unixToISO(subscription.current_period_end),
+    ':chargeAt': unixToISO(subscription.current_period_end),
+    ':subId': subscription.id,
+  };
   if (currentPriceId) {
     updates.push('planId = :planId');
     values[':planId'] = currentPriceId;
+    const price = subscription.items.data[0]?.price;
+    updates.push('#interval = :interval', 'amount = :amount', 'currency = :currency');
+    values[':interval'] = price?.recurring?.interval ?? null;
+    values[':amount'] = price?.unit_amount ?? null;
+    values[':currency'] = price?.currency?.toUpperCase() ?? null;
+  }
+  if (typeof subscription.customer === 'string') {
+    updates.push('stripeCustomerId = :custId');
+    values[':custId'] = subscription.customer;
   }
 
-  // Update period info
-  updates.push('currentStart = :currentStart');
-  updates.push('currentEnd = :currentEnd');
-  updates.push('chargeAt = :chargeAt');
-  values[':currentStart'] = unixToISO(subscription.current_period_start);
-  values[':currentEnd'] = unixToISO(subscription.current_period_end);
-  values[':chargeAt'] = unixToISO(subscription.current_period_end);
-
-  // If no status was set above (no cancel/pause), use subscription.status from Stripe
-  if (!values[':status']) {
-    updates.push('#status = :status');
-    names['#status'] = 'status';
-    values[':status'] = subscription.status === 'active' ? 'active' : subscription.status;
-  }
-
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
+  await applyFresh(
+    eventAt,
+    {
       UpdateExpression: `SET ${updates.join(', ')}`,
-      ExpressionAttributeNames: Object.keys(names).length > 0 ? names : undefined,
+      ExpressionAttributeNames: { '#status': 'status', ...(currentPriceId ? { '#interval': 'interval' } : {}) },
       ExpressionAttributeValues: values,
-    })
+    },
+    userId,
+    label
   );
 
-  console.log('customer.subscription.updated processed', {
+  console.log(`${label} processed`, {
     userId,
     subscriptionId: subscription.id,
-    cancelAtPeriodEnd: subscription.cancel_at_period_end,
-    pauseCollection: !!subscription.pause_collection,
+    status,
     priceId: currentPriceId,
   });
 }
 
 async function handleSubscriptionDeleted(
-  subscription: Stripe.Subscription
+  subscription: Stripe.Subscription,
+  eventAt: string
 ): Promise<void> {
   const userId = subscription.metadata?.userId;
   if (!userId) {
@@ -289,19 +360,19 @@ async function handleSubscriptionDeleted(
 
   const timestamp = new Date().toISOString();
 
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression:
-        'SET #status = :status, endedAt = :endedAt, updatedAt = :updatedAt',
+  await applyFresh(
+    eventAt,
+    {
+      UpdateExpression: 'SET #status = :status, endedAt = :endedAt, updatedAt = :updatedAt',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
         ':status': 'cancelled',
         ':endedAt': timestamp,
         ':updatedAt': timestamp,
       },
-    })
+    },
+    userId,
+    'customer.subscription.deleted'
   );
 
   console.log('customer.subscription.deleted processed', {
@@ -366,35 +437,38 @@ export const handler = async (
       id: stripeEvent.id,
     });
 
+    const eventAt = stripeEvent.created ? unixToISO(stripeEvent.created) : new Date().toISOString();
+
     // Route events to handlers
     switch (stripeEvent.type) {
       case 'checkout.session.completed': {
         const session = stripeEvent.data.object as Stripe.Checkout.Session;
-        await handleCheckoutSessionCompleted(session, stripe);
+        await handleCheckoutSessionCompleted(session, stripe, eventAt);
         break;
       }
 
       case 'invoice.paid': {
         const invoice = stripeEvent.data.object as Stripe.Invoice;
-        await handleInvoicePaid(invoice, stripe);
+        await handleInvoicePaid(invoice, stripe, eventAt);
         break;
       }
 
       case 'invoice.payment_failed': {
         const invoice = stripeEvent.data.object as Stripe.Invoice;
-        await handleInvoicePaymentFailed(invoice, stripe);
+        await handleInvoicePaymentFailed(invoice, stripe, eventAt);
         break;
       }
 
+      case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const subscription = stripeEvent.data.object as Stripe.Subscription;
-        await handleSubscriptionUpdated(subscription);
+        await handleSubscriptionChanged(subscription, eventAt, stripeEvent.type);
         break;
       }
 
       case 'customer.subscription.deleted': {
         const subscription = stripeEvent.data.object as Stripe.Subscription;
-        await handleSubscriptionDeleted(subscription);
+        await handleSubscriptionDeleted(subscription, eventAt);
         break;
       }
 
@@ -411,7 +485,7 @@ export const handler = async (
       }),
     };
   } catch (error: any) {
-    console.error('Error processing Stripe webhook:', error);
+    console.error('stripe_webhook_failed', { error: error.message });
     return {
       statusCode: 500,
       body: JSON.stringify({

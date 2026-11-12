@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, ConfirmForgotPasswordCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
@@ -7,7 +7,7 @@ import { validatePassword } from '../../shared/passwordValidation';
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   try {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     const { email, code, newPassword } = JSON.parse(event.body);

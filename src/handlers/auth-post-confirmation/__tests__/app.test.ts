@@ -44,21 +44,21 @@ describe('auth-post-confirmation handler', () => {
     const putCalls = ddbMock.commandCalls(PutCommand);
     expect(putCalls).toHaveLength(1);
     expect(putCalls[0].args[0].input.TableName).toBe('test-subscriptions');
-    expect(putCalls[0].args[0].input.Item.userId).toBe('user-123');
+    expect(putCalls[0].args[0].input.Item!.userId).toBe('user-123');
   });
 
-  it('sets trialEnd to 30 days in the future', async () => {
+  it('sets trialEnd to 14 days in the future', async () => {
     const event = makeEvent('PostConfirmation_ConfirmSignUp');
 
     await handler(event);
 
     const putCalls = ddbMock.commandCalls(PutCommand);
     expect(putCalls).toHaveLength(1);
-    const trialEnd = new Date(putCalls[0].args[0].input.Item.trialEnd);
+    const trialEnd = new Date(putCalls[0].args[0].input.Item!.trialEnd);
     const now = new Date();
     const diffDays = (trialEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
-    expect(diffDays).toBeGreaterThan(29);
-    expect(diffDays).toBeLessThan(31);
+    expect(diffDays).toBeGreaterThan(13);
+    expect(diffDays).toBeLessThan(15);
   });
 
   it('sets status to trial in the subscription record', async () => {
@@ -68,7 +68,7 @@ describe('auth-post-confirmation handler', () => {
 
     const putCalls = ddbMock.commandCalls(PutCommand);
     expect(putCalls).toHaveLength(1);
-    expect(putCalls[0].args[0].input.Item.status).toBe('trial');
+    expect(putCalls[0].args[0].input.Item!.status).toBe('trial');
   });
 
   it('uses ConditionExpression to prevent overwriting existing subscription', async () => {

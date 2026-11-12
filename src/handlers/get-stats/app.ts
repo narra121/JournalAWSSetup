@@ -1,5 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { buildAdvancedStats } from '../../shared/advanced-stats';
+import { getUserTimeZone } from '../../shared/timezone';
 import { ddb } from '../../shared/dynamo';
 import { getUserId } from '../../shared/auth';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
@@ -40,16 +42,60 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const stats = aggregateDailyRecords(records, { totalCapital, includeEquityCurve });
 
+    // All accounts: also one aggregate per account currency (amounts in different currencies must not be summed).
+    let perCurrency: Record<string, unknown> = {};
+    if (accountId === 'ALL') {
+      const currencies = await accountCurrencies(userId);
+      const groups = new Map<string, DailyStatsRecord[]>();
+      const unassigned: DailyStatsRecord[] = [];
+      for (const record of records) {
+        if (record.accountId === '-1') unassigned.push(record);
+        else {
+          const currency = currencies.get(record.accountId) ?? 'UNKNOWN';
+          groups.set(currency, [...(groups.get(currency) ?? []), record]);
+        }
+      }
+      perCurrency = {
+        byCurrency: Object.fromEntries([...groups].map(([currency, rows]) => [currency, aggregateDailyRecords(rows, { totalCapital, includeEquityCurve })])),
+        unassigned: unassigned.length ? aggregateDailyRecords(unassigned, { totalCapital, includeEquityCurve }) : null,
+        currencies: [...groups.keys()].sort(),
+      };
+    }
+
+    // Day buckets, hours and weekdays follow the zone stored in the user's preferences (UTC when none is set).
+    const timeZone = (await getUserTimeZone(userId).catch(() => null)) ?? 'UTC';
+
+    const sections = (query.sections || '').split(',');
+    const advanced = sections.includes('advanced') ? { advanced: buildAdvancedStats(stats, totalCapital) } : {};
+
     return envelope({
       statusCode: 200,
-      data: { ...stats, dailyTradeHashes },
+      data: { ...stats, ...perCurrency, ...advanced, timeZone, dailyTradeHashes },
       message: 'Stats retrieved successfully',
     });
   } catch (error: any) {
     console.error('Get stats error', { error, userId, accountId, startDate, endDate });
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve stats', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve stats');
   }
 };
+
+/** accountId → currency for the user's accounts. */
+async function accountCurrencies(userId: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  let key: Record<string, any> | undefined;
+  do {
+    const res = await ddb.send(new QueryCommand({
+      TableName: process.env.ACCOUNTS_TABLE!,
+      KeyConditionExpression: 'userId = :u',
+      ExpressionAttributeValues: { ':u': userId },
+      ProjectionExpression: 'accountId, currency',
+      ExclusiveStartKey: key,
+    }));
+    for (const it of res.Items ?? []) map.set(it.accountId, String(it.currency ?? 'UNKNOWN').toUpperCase());
+    key = res.LastEvaluatedKey;
+  } while (key);
+  return map;
+}
 
 /**
  * Query all accounts using the GSI (stats-by-date-gsi).

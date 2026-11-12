@@ -270,9 +270,10 @@ describe('delete-account handler', () => {
 
     const res = await handler(makeEvent('acc-1'), {} as any, () => {}) as any;
 
-    // The handler uses Promise.all which will cause this to fail
-    // This test documents the current behavior -- if S3 fails, the whole operation fails
-    expect(res.statusCode).toBe(500);
+    // Records are deleted first; screenshot cleanup is best effort, so the delete still succeeds
+    expect(res.statusCode).toBe(200);
+    const deleted = ddbMock.commandCalls(DeleteCommand).filter((c) => c.args[0].input.TableName === 'test-accounts');
+    expect(deleted).toHaveLength(1);
   });
 
   it('handles large number of trades requiring multiple batch deletes', async () => {

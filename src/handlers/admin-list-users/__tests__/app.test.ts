@@ -55,7 +55,7 @@ function makeCognitoUser(overrides?: {
   status?: string;
   enabled?: boolean;
   createdAt?: Date;
-}) {
+}): any {
   const sub = overrides?.sub ?? 'user-abc-123';
   const email = overrides?.email ?? 'test@example.com';
   const identities = overrides?.identities;

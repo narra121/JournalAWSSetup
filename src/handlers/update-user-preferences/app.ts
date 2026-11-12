@@ -1,14 +1,14 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { DEFAULT_USER_PREFERENCES } from '../../shared/defaults';
+import { DEFAULT_PERIODS, DEFAULT_USER_PREFERENCES, WEEK_STARTS, isValidTimeZone } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
 
@@ -32,10 +32,34 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
 
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
+  }
+  if (data.timeZone !== undefined && !isValidTimeZone(data.timeZone)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'timeZone must be an IANA time zone such as Asia/Kolkata');
+  }
+  if (data.weekStart !== undefined && !(WEEK_STARTS as readonly string[]).includes(data.weekStart)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, "weekStart must be 'mon' or 'sun'");
+  }
+  if (data.defaultPeriod !== undefined && !(DEFAULT_PERIODS as readonly string[]).includes(data.defaultPeriod)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `defaultPeriod must be one of ${DEFAULT_PERIODS.join(', ')}`);
+  }
+  if (data.pnlPalette !== undefined && !(typeof data.pnlPalette === 'string' && /^[a-z0-9-]{1,24}$/.test(data.pnlPalette))) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'pnlPalette must be 1-24 lowercase letters, digits or dashes');
+  }
+
   try {
     const setExpressions: string[] = [];
     const expressionAttributeNames: Record<string, string> = {};
     const expressionAttributeValues: Record<string, any> = {};
+
+    for (const field of ['timeZone', 'weekStart', 'pnlPalette', 'defaultPeriod'] as const) {
+      if (data[field] !== undefined) {
+        setExpressions.push(`#${field} = :${field}`);
+        expressionAttributeNames[`#${field}`] = field;
+        expressionAttributeValues[`:${field}`] = data[field];
+      }
+    }
 
     if (data.darkMode !== undefined) {
       setExpressions.push('#darkMode = :darkMode');

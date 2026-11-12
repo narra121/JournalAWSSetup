@@ -3,7 +3,7 @@ import { createDefaultRules, createDefaultSavedOptions } from '../../shared/user
 import { ddb } from '../../shared/dynamo';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const TRIAL_DAYS = 30;
+const TRIAL_DAYS = 14;
 
 export const handler = async (event: any) => {
   const userId = event.request.userAttributes.sub;
@@ -19,7 +19,7 @@ export const handler = async (event: any) => {
     const results = await Promise.allSettled([
       createDefaultRules(userId),
       createDefaultSavedOptions(userId),
-      // Start 30-day free trial
+      // Start 14-day free trial
       ddb.send(new PutCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Item: {

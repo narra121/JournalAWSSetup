@@ -43,10 +43,10 @@ function makeEvent(
 
 function mockSSMPrices(currency: 'usd' | 'inr') {
   ssmMock
-    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/monthly_${currency}` })
+    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/pro_month_${currency}` })
     .resolves({ Parameter: { Value: `price_test_monthly_${currency}` } });
   ssmMock
-    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/yearly_${currency}` })
+    .on(GetParameterCommand, { Name: `/tradequt/test/stripe/price/pro_year_${currency}` })
     .resolves({ Parameter: { Value: `price_test_yearly_${currency}` } });
 }
 
@@ -127,9 +127,9 @@ describe('get-subscription-plans handler', () => {
     expect(body.data.plans).toEqual([]);
   });
 
-  // ── 5. Returns correct amounts: USD $1.99/$19.99, INR 99/999 ──
+  // ── 5. Returns correct amounts: USD $9.99/$79, INR 199/1499 ──
 
-  it('returns correct amounts for USD: $1.99 monthly, $19.99 yearly', async () => {
+  it('returns correct amounts for USD: $9.99 monthly, $79 yearly', async () => {
     mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
@@ -138,12 +138,12 @@ describe('get-subscription-plans handler', () => {
     const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    // USD amounts are stored in cents (199, 1999) but displayed as dollars
-    expect(monthly.amount).toBe(1.99);
-    expect(yearly.amount).toBe(19.99);
+    // USD amounts are stored in cents (999, 7900) but displayed as dollars
+    expect(monthly.amount).toBe(9.99);
+    expect(yearly.amount).toBe(79);
   });
 
-  it('returns correct amounts for INR: 99 monthly, 999 yearly', async () => {
+  it('returns correct amounts for INR: 199 monthly, 1499 yearly', async () => {
     mockSSMPrices('inr');
 
     const res = await handler(makeEvent({ currency: 'INR' })) as any;
@@ -153,8 +153,8 @@ describe('get-subscription-plans handler', () => {
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
     // INR amounts are in rupees directly
-    expect(monthly.amount).toBe(99);
-    expect(yearly.amount).toBe(999);
+    expect(monthly.amount).toBe(199);
+    expect(yearly.amount).toBe(1499);
   });
 
   // ── 6. Returns savings info for yearly plans ───────────────────
@@ -167,9 +167,9 @@ describe('get-subscription-plans handler', () => {
     const body = JSON.parse(res.body);
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    expect(yearly.savings).toBe('17%');
+    expect(yearly.savings).toBe('34%');
     expect(yearly.monthlyEquivalent).toBeDefined();
-    expect(yearly.monthlyEquivalent).toBe(1.67); // $1.67 in dollars
+    expect(yearly.monthlyEquivalent).toBe(6.58); // $6.58 in dollars
   });
 
   it('returns savings info for yearly INR plans', async () => {
@@ -180,8 +180,8 @@ describe('get-subscription-plans handler', () => {
     const body = JSON.parse(res.body);
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    expect(yearly.savings).toBe('17%');
-    expect(yearly.monthlyEquivalent).toBe(83);
+    expect(yearly.savings).toBe('37%');
+    expect(yearly.monthlyEquivalent).toBe(125);
   });
 
   it('monthly plans do not have savings info', async () => {
@@ -223,13 +223,13 @@ describe('get-subscription-plans handler', () => {
 
   it('returns partial plans when only monthly SSM param exists', async () => {
     ssmMock
-      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/monthly_usd' })
+      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/pro_month_usd' })
       .resolves({ Parameter: { Value: 'price_test_monthly_usd' } });
 
     const paramNotFound = new Error('Parameter not found');
     (paramNotFound as any).name = 'ParameterNotFound';
     ssmMock
-      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/yearly_usd' })
+      .on(GetParameterCommand, { Name: '/tradequt/test/stripe/price/pro_year_usd' })
       .rejects(paramNotFound);
 
     const res = await handler(makeEvent()) as any;
@@ -252,5 +252,17 @@ describe('get-subscription-plans handler', () => {
     expect(monthly.description).toBeDefined();
     expect(monthly.interval).toBe(1);
     expect(monthly.currency).toBe('USD');
+  });
+
+  it('defaults to INR for viewers in India when no ?currency is given', async () => {
+    mockSSMPrices('inr');
+    const res = (await handler(makeEvent(undefined, { headers: { 'cloudfront-viewer-country': 'IN' } }))) as any;
+    expect(JSON.parse(res.body).data.currency).toBe('INR');
+  });
+
+  it('an explicit ?currency wins over the viewer country', async () => {
+    mockSSMPrices('usd');
+    const res = (await handler(makeEvent({ currency: 'USD' }, { headers: { 'cloudfront-viewer-country': 'IN' } }))) as any;
+    expect(JSON.parse(res.body).data.currency).toBe('USD');
   });
 });

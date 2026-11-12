@@ -311,7 +311,7 @@ describe('analytics handler', () => {
 
     const calls = ddbMock.commandCalls(QueryCommand);
     const values = calls[0].args[0].input.ExpressionAttributeValues;
-    expect(values[':startDate']).toBe('2024-03-01');
-    expect(values[':endDate']).toBe('2024-03-31');
+    expect(values![':startDate']).toBe('2024-03-01');
+    expect(values![':endDate']).toBe('2024-03-31');
   });
 });

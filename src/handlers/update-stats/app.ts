@@ -1,9 +1,11 @@
+import { removeImagesForTrade } from '../../shared/images';
 import { DynamoDBStreamHandler, DynamoDBStreamEvent } from 'aws-lambda';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
-import { extractDate, calcPnL } from '../../shared/utils/pnl';
+import { calcPnL } from '../../shared/utils/pnl';
+import { dayOf, dayRangeUtc, getUserTimeZone } from '../../shared/timezone';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
@@ -18,12 +20,14 @@ const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
  * Fetch all trades for a given (userId, accountId, date) from the GSI.
  * GSI is KEYS_ONLY — query for keys, then BatchGet full records.
  */
-async function queryTradesForDay(userId: string, accountId: string, date: string): Promise<any[]> {
+async function queryTradesForDay(userId: string, accountId: string, date: string, timeZone?: string | null): Promise<any[]> {
+  // The day is a calendar day in the user's zone, i.e. an exact UTC range of openDate values.
+  const { start, end } = dayRangeUtc(date, timeZone);
   const gsiResult = await ddb.send(new QueryCommand({
     TableName: TRADES_TABLE,
     IndexName: 'trades-by-date-gsi',
-    KeyConditionExpression: 'userId = :u AND begins_with(openDate, :d)',
-    ExpressionAttributeValues: { ':u': userId, ':d': date },
+    KeyConditionExpression: 'userId = :u AND openDate BETWEEN :start AND :end',
+    ExpressionAttributeValues: { ':u': userId, ':start': start, ':end': end },
   }));
   const gsiItems = gsiResult.Items || [];
   if (gsiItems.length === 0) return [];
@@ -48,7 +52,7 @@ async function queryTradesForDay(userId: string, accountId: string, date: string
     }
   }
 
-  return fullItems.filter((it: any) => it.accountId === accountId);
+  return fullItems.filter((it: any) => it.accountId === accountId && !it.deletedAt && dayOf(it.openDate, timeZone) === date);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +148,13 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     const affectedDays = new Map<string, Set<string>>(); // "userId#accountId" → Set<date>
     const balanceDeltas = new Map<string, number>(); // "userId#accountId" → pnlDelta
     const symbolsByUser = new Map<string, Set<string>>(); // userId → Set<symbol>
+    const purgedTrades: { userId: string; tradeId: string }[] = []; // soft-deleted trades removed by TTL
     const tupleToEventIds = new Map<string, Set<string>>(); // "userId#accountId#date" → Set<eventID>
+    const zones = new Map<string, string | null>(); // userId → IANA time zone preference
+    const zoneOf = async (userId: string): Promise<string | null> => {
+      if (!zones.has(userId)) zones.set(userId, await getUserTimeZone(userId).catch(() => null));
+      return zones.get(userId) ?? null;
+    };
 
     for (const record of event.Records) {
       if (!record.dynamodb) continue;
@@ -157,11 +167,21 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
         : null;
       const userId = newImage?.userId || oldImage?.userId;
       if (!userId) continue;
+      if (record.eventName === 'REMOVE' && oldImage?.deletedAt && oldImage.tradeId) {
+        purgedTrades.push({ userId, tradeId: oldImage.tradeId });
+      }
 
-      const newPnl = newImage ? (calcPnL(newImage) ?? 0) : 0;
-      const oldPnl = oldImage ? (calcPnL(oldImage) ?? 0) : 0;
+      // A soft-deleted trade counts as removed for balances; restoring counts as an insert. Day records are rebuilt
+      // from the table (which skips deleted trades), so the real images still decide which days to rebuild.
+      const newLive = newImage && !newImage.deletedAt ? newImage : null;
+      const oldLive = oldImage && !oldImage.deletedAt ? oldImage : null;
+      const effectiveEvent = newLive && oldLive ? 'MODIFY' : newLive ? 'INSERT' : oldLive ? 'REMOVE' : 'NONE';
+      const newPnl = newLive ? (calcPnL(newLive) ?? 0) : 0;
+      const oldPnl = oldLive ? (calcPnL(oldLive) ?? 0) : 0;
       const newAcct = newImage?.accountId;
       const oldAcct = oldImage?.accountId;
+      const liveNewAcct = newLive?.accountId;
+      const liveOldAcct = oldLive?.accountId;
       const isValidAcct = (a: any) => a && a !== '-1' && String(a) !== '-1';
 
       // --- Collect symbols for SavedOptions sync ---
@@ -174,9 +194,10 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
 
       // --- Track affected days for DailyStats rebuild ---
-      const eventId = record.eventID || '';
+      const eventId = record.dynamodb.SequenceNumber || '';
+      const tz = await zoneOf(userId);
       if (isValidAcct(newAcct)) {
-        const date = extractDate(newImage!.openDate);
+        const date = dayOf(newImage!.openDate, tz);
         if (date) {
           const key = `${userId}#${newAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
@@ -187,7 +208,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
         }
       }
       if (isValidAcct(oldAcct)) {
-        const date = extractDate(oldImage!.openDate);
+        const date = dayOf(oldImage!.openDate, tz);
         if (date) {
           const key = `${userId}#${oldAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
@@ -199,21 +220,21 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
 
       // --- Compute balance deltas (incremental) ---
-      if (record.eventName === 'INSERT') {
-        // New trade: add its PnL
-        if (isValidAcct(newAcct)) {
-          const key = `${userId}#${newAcct}`;
+      if (effectiveEvent === 'INSERT') {
+        // New (or restored) trade: add its PnL
+        if (isValidAcct(liveNewAcct)) {
+          const key = `${userId}#${liveNewAcct}`;
           balanceDeltas.set(key, (balanceDeltas.get(key) || 0) + newPnl);
         }
-      } else if (record.eventName === 'REMOVE') {
-        // Deleted trade: subtract its PnL
-        if (isValidAcct(oldAcct)) {
-          const key = `${userId}#${oldAcct}`;
+      } else if (effectiveEvent === 'REMOVE') {
+        // Deleted (or soft-deleted) trade: subtract its PnL
+        if (isValidAcct(liveOldAcct)) {
+          const key = `${userId}#${liveOldAcct}`;
           balanceDeltas.set(key, (balanceDeltas.get(key) || 0) - oldPnl);
         }
-      } else if (record.eventName === 'MODIFY') {
+      } else if (effectiveEvent === 'MODIFY') {
         // Updated trade: handle account change and/or PnL change
-        if (oldAcct === newAcct && isValidAcct(newAcct)) {
+        if (liveOldAcct === liveNewAcct && isValidAcct(liveNewAcct)) {
           // Same account — apply PnL diff
           const delta = newPnl - oldPnl;
           if (delta !== 0) {
@@ -241,7 +262,8 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
 
       for (const date of dates) {
         try {
-          const trades = await queryTradesForDay(userId, accountId, date);
+          const tz = await zoneOf(userId);
+          const trades = await queryTradesForDay(userId, accountId, date, tz);
 
           if (trades.length === 0) {
             await ddb.send(new DeleteCommand({
@@ -249,7 +271,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
               Key: { userId, sk: `${accountId}#${date}` },
             }));
           } else {
-            const record = computeDailyRecord(userId, accountId, date, trades);
+            const record = computeDailyRecord(userId, accountId, date, trades, tz);
             if (record) {
               await ddb.send(new PutCommand({
                 TableName: DAILY_STATS_TABLE,
@@ -290,12 +312,14 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       ...([...symbolsByUser].map(([userId, symbols]) =>
         syncSymbolsToSavedOptions(userId, symbols)
       )),
+      // Screenshots of a trade whose 30-day restore window ended go with it.
+      ...purgedTrades.map(({ userId, tradeId }) => removeImagesForTrade(userId, tradeId)),
     ]);
   } catch (e) {
     console.error('Failed processing stream event', e);
     for (const record of event.Records) {
-      if (record.eventID) {
-        failures.push({ itemIdentifier: record.eventID });
+      if (record.dynamodb?.SequenceNumber) {
+        failures.push({ itemIdentifier: record.dynamodb?.SequenceNumber });
       }
     }
   }

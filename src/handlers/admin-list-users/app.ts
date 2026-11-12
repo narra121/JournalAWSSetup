@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import {
   CognitoIdentityProviderClient,
   ListUsersCommand,
@@ -21,7 +21,7 @@ function getAttr(
   return attrs?.find((a) => a.Name === name)?.Value;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
   try {
     log.info('admin-list-users invoked');

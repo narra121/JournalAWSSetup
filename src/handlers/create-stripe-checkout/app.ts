@@ -1,11 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { makeLogger } from '../../shared/logger';
+import { allProPriceIds, checkoutOrigin, isAllowedUrl } from '../../shared/stripe-config';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
@@ -66,6 +67,7 @@ export const handler = async (
     log.warn('invalid json');
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   const { planId, successUrl, cancelUrl } = data;
 
@@ -75,6 +77,14 @@ export const handler = async (
   }
 
   try {
+    if (!(await allProPriceIds()).includes(planId)) {
+      log.warn('plan not allowed', { planId });
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Unknown planId');
+    }
+    if ((successUrl && !isAllowedUrl(successUrl)) || (cancelUrl && !isAllowedUrl(cancelUrl))) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'successUrl and cancelUrl must point to an allowed origin');
+    }
+
     // Check for existing active subscription
     const existing = await ddb.send(
       new GetCommand({
@@ -121,10 +131,7 @@ export const handler = async (
     // Initialize Stripe
     const stripeClient = await getStripeInstance();
 
-    // Whitelist allowed origins for checkout URLs
-    const ALLOWED_ORIGINS = ['https://tradequt.com', 'https://www.tradequt.com', 'http://localhost:3000'];
-    const requestOrigin = event.headers?.origin;
-    const origin = requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://tradequt.com';
+    const origin = checkoutOrigin(event.headers?.origin);
 
     // Create Stripe Checkout Session
     const session = await stripeClient.checkout.sessions.create({
@@ -152,30 +159,23 @@ export const handler = async (
 
     const now = new Date().toISOString();
 
-    // Store checkout record in DynamoDB with ConditionExpression to prevent duplicates
+    // Record the session; status and trialEnd stay as they are until payment succeeds. Subscribers are blocked above.
     await ddb.send(
-      new PutCommand({
+      new UpdateCommand({
         TableName: SUBSCRIPTIONS_TABLE,
-        Item: {
-          userId,
-          checkoutSessionId: session.id,
-          checkoutUrl: session.url,
-          planId,
-          status: 'created',
-          createdAt: now,
-          updatedAt: now,
-        },
-        ConditionExpression: 'attribute_not_exists(userId) OR #status IN (:cancelled, :expired, :created, :trial, :completed, :paused)',
-        ExpressionAttributeNames: {
-          '#status': 'status',
-        },
+        Key: { userId },
+        UpdateExpression: 'SET checkoutSessionId = :sid, checkoutUrl = :url, planId = :planId, #status = if_not_exists(#status, :created), createdAt = if_not_exists(createdAt, :now), updatedAt = :now',
+        ConditionExpression: 'attribute_not_exists(userId) OR NOT (#status IN (:active, :past_due, :cancellation_requested))',
+        ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
-          ':cancelled': 'cancelled',
-          ':expired': 'expired',
+          ':sid': session.id,
+          ':url': session.url,
+          ':planId': planId,
           ':created': 'created',
-          ':trial': 'trial',
-          ':completed': 'completed',
-          ':paused': 'paused',
+          ':now': now,
+          ':active': 'active',
+          ':past_due': 'past_due',
+          ':cancellation_requested': 'cancellation_requested',
         },
       })
     );

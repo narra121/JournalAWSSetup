@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { PutCommand, BatchWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
@@ -9,12 +9,24 @@ import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorF
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
+import { tagsError } from '../../shared/tags';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_IMAGES_PER_TRADE = 6;
+
+/** CONTRACT §6 optional fields (plus importBatchId); only fields present in the request are stored. */
+function contractFields(t: any): Record<string, any> {
+  const out: Record<string, any> = {};
+  const numeric = ['fees', 'grossPnl', 'contractMultiplier', 'strike'];
+  const text = ['assetClass', 'underlying', 'optionType', 'expiry', 'externalId', 'importSource', 'importBatchId'];
+  for (const f of numeric) if (t[f] !== undefined && t[f] !== null && t[f] !== '') out[f] = Number(t[f]);
+  for (const f of text) if (typeof t[f] === 'string' && t[f] !== '') out[f] = t[f];
+  return out;
+}
 
 /** Shared risk/reward calculation for both bulk and single paths */
 function calculateRiskReward(t: { riskRewardRatio?: any; entryPrice?: any; exitPrice?: any; stopLoss?: any }): number | null {
@@ -35,7 +47,7 @@ function calculateRiskReward(t: { riskRewardRatio?: any; entryPrice?: any; exitP
   return null;
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   try {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
@@ -48,6 +60,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (!event.body) { log.warn('missing body'); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body'); }
   let data: any;
   try { data = JSON.parse(event.body); } catch (e) { log.warn('invalid json', { error: (e as any)?.message }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
   log.debug('parsed body', { keys: Object.keys(data) });
 
     // Validate single create payload (bulk handled separately below)
@@ -75,21 +88,34 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         try {
           const requiredFields = ['symbol','side','quantity','openDate'];
       for (const f of requiredFields) if (t[f] === undefined || t[f] === null || t[f] === '') { log.debug('bulk item missing field', { index, field: f }); throw new Error(`Missing field ${f}`); }
+          if (t.tags !== undefined) { const tagProblem = tagsError(t.tags); if (tagProblem) throw new Error(tagProblem); }
           const tradeIdLocal = uuid();
             const idemKeyItem = t.idempotencyKey || t.idemKey || null;
+            const requestedAccounts: string[] = Array.isArray(t.accountIds) && t.accountIds.length > 0 ? t.accountIds : ['-1'];
+            let accountsToCreate = requestedAccounts;
             if (idemKeyItem) {
-              try {
-                const existing = await ddb.send(new QueryCommand({
-                  TableName: TRADES_TABLE,
-                  IndexName: 'user-idempotency-gsi',
-                  KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
-                  ExpressionAttributeValues: { ':u': userId, ':k': idemKeyItem }
-                }));
-        if (existing.Items && existing.Items[0]) { skipped.push({ index, tradeId: existing.Items[0].tradeId, reason: 'idempotent_duplicate' }); log.info('bulk idempotent skip', { index }); return null; }
-      } catch (e) { log.warn('bulk idempotency lookup failed', { index, error: (e as any)?.message }); }
+              // Stored form is `<key>-<accountId>`; skip the accounts that already hold this trade.
+              const missing: string[] = [];
+              for (const accountId of requestedAccounts) {
+                let existingItem: any;
+                try {
+                  const existing = await ddb.send(new QueryCommand({
+                    TableName: TRADES_TABLE,
+                    IndexName: 'user-idempotency-gsi',
+                    KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
+                    ExpressionAttributeValues: { ':u': userId, ':k': `${idemKeyItem}-${accountId || '-1'}` },
+                  }));
+                  existingItem = existing.Items?.[0];
+                } catch (e) { log.warn('bulk idempotency lookup failed', { index, error: (e as any)?.message }); }
+                if (existingItem) skipped.push({ index, tradeId: existingItem.tradeId, accountId, reason: 'idempotent_duplicate' });
+                else missing.push(accountId);
+              }
+              if (missing.length === 0) { log.info('bulk idempotent skip', { index }); return null; }
+              accountsToCreate = missing;
             }
           // Process images for this trade
           const imagesInput: any[] = Array.isArray(t.images) ? t.images : [];
+          if (imagesInput.length > MAX_IMAGES_PER_TRADE) throw new Error(`A trade can have at most ${MAX_IMAGES_PER_TRADE} images`);
           const images: any[] = [];
           const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB decoded size limit
           const bulkUploadTasks: Array<{ imgId: string; key: string; buffer: Buffer; contentType: string; timeframe: string | null; description: string | null }> = [];
@@ -112,10 +138,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : contentType === 'image/webp' ? '.webp' : '.jpg';
               const key = `images/${userId}/${tradeIdLocal}/${imgId}${ext}`;
               bulkUploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
-            } else if (img.url) {
-              // Accept direct key if provided (internal import use). Ignore arbitrary external URLs for bulk path.
-              if (img.url.startsWith('images/')) {
-                images.push({ id: imgId, key: img.url, timeframe: img.timeframe || null, description: img.description || null });
+            } else if (img.key || img.url) {
+              // A key from POST /uploads/images (or an internal import). Arbitrary external URLs are ignored on the bulk path.
+              const uploaded = typeof img.key === 'string' ? img.key : img.url;
+              if (uploaded.startsWith(`images/${userId}/`)) {
+                images.push({ id: imgId, key: uploaded, timeframe: img.timeframe || null, description: img.description || null });
               }
             }
           }
@@ -145,10 +172,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const outcome = t.outcome;
           const nowLocal = new Date().toISOString();
           
-          // Get accountIds - if multiple accounts, create separate entry for each
-          const accountIds = Array.isArray(t.accountIds) && t.accountIds.length > 0 
-            ? t.accountIds 
-            : ['-1']; // No account specified, use -1 for 'all accounts'
+          const accountIds = accountsToCreate;
           
           const itemsToCreate = accountIds.map((accountId: string) => {
             const tradeId = accountIds.length > 1 ? uuid() : tradeIdLocal; // Unique ID per account if multiple
@@ -178,10 +202,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               tags: Array.isArray(t.tags) ? t.tags : [],
               images,
               brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
+              ...contractFields(t),
               createdAt: nowLocal,
               updatedAt: nowLocal,
             };
-            if (idemKeyItem) item.idempotencyKey = `${idemKeyItem}${accountId ? `-${accountId}` : ''}`;
+            if (idemKeyItem) item.idempotencyKey = `${idemKeyItem}-${accountId || '-1'}`;
             return item;
           });
           
@@ -202,7 +227,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       for (let batch = 0; batch < itemsArr.length; batch += PARALLEL_BATCH) {
         const batchSlice = itemsArr.slice(batch, batch + PARALLEL_BATCH);
         const results = await Promise.allSettled(
-          batchSlice.map((item, idx) => processOne(item, batch + idx))
+          batchSlice.map((item: any, idx: number) => processOne(item, batch + idx))
         );
 
         for (const result of results) {
@@ -255,13 +280,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   for (const f of required) if (data[f] === undefined || data[f] === null || data[f] === '') { log.warn('single create missing field', { field: f }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Missing field ${f}`); }
     const idemKey = event.headers?.['Idempotency-Key'] || event.headers?.['idempotency-key'];
     let tradeId = uuid();
+    const accountIds: string[] = Array.isArray(data.accountIds) && data.accountIds.length > 0 ? data.accountIds : ['-1'];
     if (idemKey) {
       try {
+        // Stored form is `<key>-<accountId>`; a repeat is recognised by the first account's record.
         const existing = await ddb.send(new QueryCommand({
           TableName: TRADES_TABLE,
           IndexName: 'user-idempotency-gsi',
           KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
-          ExpressionAttributeValues: { ':u': userId, ':k': idemKey }
+          ExpressionAttributeValues: { ':u': userId, ':k': `${idemKey}-${accountIds[0] || '-1'}` }
         }));
         if (existing.Items && existing.Items[0]) {
           log.info('single create idempotent repeat', { tradeId: existing.Items[0].tradeId });
@@ -276,7 +303,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
               return { ...im, id: im.id || im.key || '' };
             });
           }
-          return envelope({ statusCode: 200, data: existingItem });
+          return envelope({ statusCode: 200, data: { trade: existingItem }, message: 'Trade already created' });
         }
       } catch (e) { log.warn('idempotency lookup failed', { error: (e as any)?.message }); }
     }
@@ -310,9 +337,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : contentType === 'image/webp' ? '.webp' : '.jpg';
         const key = `images/${userId}/${tradeId}/${imgId}${ext}`;
         uploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
-      } else if (img.url) {
-        const keyCandidate = normalizePotentialKey(img.url, IMAGES_BUCKET);
-        if (keyCandidate) {
+      } else if (img.key || img.url) {
+        const keyCandidate = typeof img.key === 'string' ? img.key : normalizePotentialKey(img.url, IMAGES_BUCKET);
+        if (keyCandidate && keyCandidate.startsWith(`images/${userId}/`)) {
           images.push({ id: imgId, key: keyCandidate, timeframe: img.timeframe || null, description: img.description || null });
         }
       }
@@ -346,10 +373,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const now = new Date().toISOString();
     
-    // Get accountIds - if multiple accounts, create separate entry for each
-    const accountIds = Array.isArray(data.accountIds) && data.accountIds.length > 0 
-      ? data.accountIds 
-      : ['-1']; // No account specified, use -1 for 'all accounts'
+    // One entry per account (accountIds defaults to ['-1'], computed above).
     
     const itemsToCreate = accountIds.map((accountId: string) => {
       const itemTradeId = accountIds.length > 1 ? uuid() : tradeId; // Unique ID per account if multiple
@@ -378,11 +402,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         outcome,
         tags: Array.isArray(data.tags) ? data.tags : [],
         brokenRuleIds: Array.isArray(data.brokenRuleIds) ? data.brokenRuleIds : [],
+        ...contractFields(data),
         images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
         createdAt: now,
         updatedAt: now,
       };
-      if (idemKey) item.idempotencyKey = `${idemKey}${accountId ? `-${accountId}` : ''}`;
+      if (idemKey) item.idempotencyKey = `${idemKey}-${accountId || '-1'}`;
       return item;
     });
 

@@ -211,6 +211,19 @@ describe('extract-trades handler', () => {
     expect(body.errorCode).toBe('GeminiTimeout');
   });
 
+  it('logs the Gemini HTTP failure (model, status, provider message) before returning the error', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      fetchMock.mockResolvedValue({ ok: false, status: 429, statusText: 'Too Many Requests', text: async () => 'You exceeded your current quota' });
+      const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
+      expect(res.statusCode).toBe(500);
+      const hit = err.mock.calls.find((c) => c[0] === 'ExtractTrades Gemini HTTP error');
+      expect(hit?.[1]).toEqual({ model: 'gemini-2.5-flash', status: 429, error: 'You exceeded your current quota' });
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it('returns 500 when extraction fails for single image (non-parseable response)', async () => {
     mockGeminiNonJson();
 

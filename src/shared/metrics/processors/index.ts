@@ -19,6 +19,7 @@ import { DayOfWeekAggregator } from './day-of-week';
 import { BrokenRulesProcessor, BrokenRulesAggregator } from './broken-rules';
 import { MistakesProcessor, MistakesAggregator } from './mistakes';
 import { LessonsProcessor, LessonsAggregator } from './lessons';
+import { SegmentsProcessor, SegmentsAggregator } from './segments';
 
 // --- Daily processors (run per-trade when building daily record) ---
 metricRegistry.registerDaily(new CoreStatsProcessor());
@@ -31,6 +32,7 @@ metricRegistry.registerDaily(new PnlSequenceProcessor());
 metricRegistry.registerDaily(new BrokenRulesProcessor());
 metricRegistry.registerDaily(new MistakesProcessor());
 metricRegistry.registerDaily(new LessonsProcessor());
+metricRegistry.registerDaily(new SegmentsProcessor());
 
 // --- Aggregation processors (run per-daily-record when building response) ---
 metricRegistry.registerAggregation(new CoreStatsAggregator());
@@ -44,3 +46,4 @@ metricRegistry.registerAggregation(new DayOfWeekAggregator());
 metricRegistry.registerAggregation(new BrokenRulesAggregator());
 metricRegistry.registerAggregation(new MistakesAggregator());
 metricRegistry.registerAggregation(new LessonsAggregator());
+metricRegistry.registerAggregation(new SegmentsAggregator());

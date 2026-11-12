@@ -12,7 +12,8 @@ export interface RateLimitOptions {
 export async function checkRateLimit(opts: RateLimitOptions) {
   const now = Math.floor(Date.now() / 1000);
   const newTtl = now + opts.windowSeconds;
-  const key = opts.key;
+  // Case and surrounding spaces must not give an attacker a fresh bucket (e-mails in keys).
+  const key = opts.key.trim().toLowerCase();
 
   // Atomic increment: ADD count +1, SET ttl only if not already set
   const res = await ddb.send(new UpdateCommand({

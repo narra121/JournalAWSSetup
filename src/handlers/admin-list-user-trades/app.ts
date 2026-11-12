@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
@@ -10,7 +10,7 @@ const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = event.pathParameters?.userId;
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
@@ -142,6 +142,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       const fullMap = new Map(fullItems.map((it: any) => [it.tradeId, it]));
       items = items.map((it: any) => fullMap.get(it.tradeId) || it);
     }
+
+    items = items.filter((it: any) => !it.deletedAt);
 
     // Account filter applied AFTER full data is fetched (GSI doesn't have accountId)
     if (shouldFilterByAccount) {

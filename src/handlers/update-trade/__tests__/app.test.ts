@@ -130,12 +130,93 @@ describe('update-trade handler', () => {
     expect(putCalls).toHaveLength(2);
   });
 
-  it('sets accountId to -1 when no accountIds provided', async () => {
-    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingTrade, accountId: '-1' } });
+  const written = () => {
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    const names = input.ExpressionAttributeNames as Record<string, string>;
+    const values = input.ExpressionAttributeValues as Record<string, any>;
+    return Object.fromEntries(Object.entries(names).map(([n, field]) => [field, values[`:${field}`]]));
+  };
 
-    const res = await handler(makeEvent('trade-1', { symbol: 'TSLA' }), {} as any, () => {}) as any;
+  describe('partial updates leave omitted fields unchanged (BE-R10)', () => {
+    const stored = { ...existingTrade, pnl: 123.45, netPnl: 120, riskRewardRatio: 2.5, riskAmount: 0, images: [] };
 
-    expect(res.statusCode).toBe(200);
+    it('a notes-only edit keeps accountId, pnl, netPnl and riskRewardRatio', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored } });
+      await handler(makeEvent('trade-1', { tradeNotes: 'new note' }), {} as any, () => {});
+      expect(written()).toMatchObject({ accountId: 'acc-1', pnl: 123.45, netPnl: 120, riskRewardRatio: 2.5, tradeNotes: 'new note' });
+    });
+
+    it('recomputes pnl only when an input of the formula changes', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored } });
+      await handler(makeEvent('trade-1', { exitPrice: 170 }), {} as any, () => {});
+      expect(written().pnl).toBe(2000);
+    });
+
+    it('an explicit pnl wins over the formula, and null stays null', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored } });
+      await handler(makeEvent('trade-1', { exitPrice: 170, pnl: 5 }), {} as any, () => {});
+      expect(written().pnl).toBe(5);
+      ddbMock.resetHistory();
+      await handler(makeEvent('trade-1', { pnl: null }), {} as any, () => {});
+      expect(written().pnl).toBeNull();
+    });
+
+    it('moves the trade only when accountIds / accountId is sent', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored } });
+      await handler(makeEvent('trade-1', { accountIds: ['acc-9'] }), {} as any, () => {});
+      expect(written().accountId).toBe('acc-9');
+    });
+  });
+
+  describe('tags (BE-E3)', () => {
+    it('stores up to 10 tags of at most 24 characters', async () => {
+      const res = (await handler(makeEvent('trade-1', { tags: ['breakout', 'a+'] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(written().tags).toEqual(['breakout', 'a+']);
+    });
+
+    it('400 for 11 tags or a tag longer than 24 characters, and for a null body', async () => {
+      expect(((await handler(makeEvent('trade-1', { tags: Array.from({ length: 11 }, (_, i) => `t${i}`) }), {} as any, () => {})) as any).statusCode).toBe(400);
+      expect(((await handler(makeEvent('trade-1', { tags: ['x'.repeat(25)] }), {} as any, () => {})) as any).statusCode).toBe(400);
+      const nul = makeEvent('trade-1', null);
+      expect(((await handler(nul, {} as any, () => {})) as any).statusCode).toBe(400);
+    });
+  });
+
+  describe('images', () => {
+    it('keeps an image the client sends back as received (id = key) and does not delete it', async () => {
+      const key = 'images/user-1/trade-1/a.png';
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, images: [{ id: 'img-a', key }] } });
+      await handler(makeEvent('trade-1', { images: [{ id: key, key }] }), {} as any, () => {});
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+      expect((written().images as any[])[0]).toMatchObject({ id: 'img-a', key });
+    });
+
+    it("drops a key under another user's prefix instead of attaching it", async () => {
+      await handler(makeEvent('trade-1', { images: [{ id: 'x', url: 'images/user-2/t/secret.png' }] }), {} as any, () => {});
+      expect(written().images).toEqual([]);
+    });
+
+    it('attaches an uploaded key under the caller prefix, drops foreign keys, and caps images at 6', async () => {
+      await handler(makeEvent('trade-1', { images: [{ id: 'n1', key: 'images/user-1/upload/a.png' }, { id: 'n2', key: 'images/user-2/upload/b.png' }] }), {} as any, () => {});
+      expect((written().images as any[]).map((i) => i.key)).toEqual(['images/user-1/upload/a.png']);
+      const seven = Array.from({ length: 7 }, (_, i) => ({ id: `i${i}`, key: `images/user-1/upload/${i}.png` }));
+      expect(((await handler(makeEvent('trade-1', { images: seven }), {} as any, () => {})) as any).statusCode).toBe(400);
+    });
+
+    it('never deletes objects outside the caller prefix', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, images: [{ id: 'old', key: 'images/user-2/t/other.png' }] } });
+      await handler(makeEvent('trade-1', { images: [] }), {} as any, () => {});
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+    });
+
+    it('rejects unsupported inline types and oversized inline images with 400', async () => {
+      const bad = (await handler(makeEvent('trade-1', { images: [{ base64Data: 'data:application/pdf;base64,AAAA' }] }), {} as any, () => {})) as any;
+      expect(bad.statusCode).toBe(400);
+      const big = 'data:image/png;base64,' + Buffer.alloc(5 * 1024 * 1024 + 10).toString('base64');
+      const res = (await handler(makeEvent('trade-1', { images: [{ base64Data: big }] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(400);
+    });
   });
 
   // ── Auth errors ─────────────────────────────────────────────

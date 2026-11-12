@@ -15,6 +15,14 @@ const ssmMock = mockClient(SSMClient);
 // Mock DynamoDB
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
+const sendEmailMock = vi.fn();
+const getUserEmailMock = vi.fn();
+vi.mock('../../../shared/email', async (orig) => ({
+  ...(await orig<typeof import('../../../shared/email')>()),
+  getUserEmail: (...a: any[]) => getUserEmailMock(...a),
+  sendEmail: (...a: any[]) => sendEmailMock(...a),
+}));
+
 // Mock Stripe
 const mockConstructEvent = vi.fn();
 const mockSubscriptionsRetrieve = vi.fn();
@@ -84,6 +92,8 @@ beforeEach(() => {
   mockConstructEvent.mockReset();
   mockSubscriptionsRetrieve.mockReset();
   mockSubscriptionsUpdate.mockReset();
+  sendEmailMock.mockReset().mockResolvedValue(undefined);
+  getUserEmailMock.mockReset().mockResolvedValue(null);
 
   // Default SSM returns valid secrets
   ssmMock.on(GetParameterCommand).resolves({
@@ -150,11 +160,11 @@ describe('stripe-webhook handler', () => {
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.TableName).toBe('test-subscriptions');
     expect(updateInput.Key).toEqual({ userId: 'user-1' });
-    expect(updateInput.ExpressionAttributeValues[':subId']).toBe('sub_stripe_789');
-    expect(updateInput.ExpressionAttributeValues[':custId']).toBe('cus_stripe_456');
-    expect(updateInput.ExpressionAttributeValues[':status']).toBe('active');
-    expect(updateInput.ExpressionAttributeValues[':planId']).toBe('price_pro_monthly');
-    expect(updateInput.ExpressionAttributeValues[':paidCount']).toBe(1);
+    expect(updateInput.ExpressionAttributeValues![':subId']).toBe('sub_stripe_789');
+    expect(updateInput.ExpressionAttributeValues![':custId']).toBe('cus_stripe_456');
+    expect(updateInput.ExpressionAttributeValues![':status']).toBe('active');
+    expect(updateInput.ExpressionAttributeValues![':planId']).toBe('price_pro_monthly');
+    expect(updateInput.ExpressionAttributeValues![':paidCount']).toBe(1);
     expect(updateInput.UpdateExpression).toContain('paidCount');
   });
 
@@ -184,10 +194,10 @@ describe('stripe-webhook handler', () => {
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.Key).toEqual({ userId: 'user-1' });
     expect(updateInput.UpdateExpression).toContain('paidCount');
-    expect(updateInput.ExpressionAttributeValues[':inc']).toBe(1);
-    expect(updateInput.ExpressionAttributeValues[':status']).toBe('active');
-    expect(updateInput.ExpressionAttributeValues[':currentStart']).toBeDefined();
-    expect(updateInput.ExpressionAttributeValues[':currentEnd']).toBeDefined();
+    expect(updateInput.ExpressionAttributeValues![':inc']).toBe(1);
+    expect(updateInput.ExpressionAttributeValues![':status']).toBe('active');
+    expect(updateInput.ExpressionAttributeValues![':currentStart']).toBeDefined();
+    expect(updateInput.ExpressionAttributeValues![':currentEnd']).toBeDefined();
   });
 
   it('skips invoice.paid when billing_reason is subscription_create', async () => {
@@ -229,10 +239,48 @@ describe('stripe-webhook handler', () => {
     expect(res.statusCode).toBe(200);
 
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls).toHaveLength(1);
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.Key).toEqual({ userId: 'user-1' });
-    expect(updateInput.ExpressionAttributeValues[':status']).toBe('past_due');
+    expect(updateInput.ExpressionAttributeValues![':status']).toBe('past_due');
+  });
+
+  describe('payment failed e-mail (BE-E7)', () => {
+    const failed = () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('invoice.payment_failed', { id: 'inv_1', subscription: 'sub_1' }));
+      mockSubscriptionsRetrieve.mockResolvedValue({ id: 'sub_1', metadata: { userId: 'user-1' } });
+      return handler(makeEvent('{}')) as any;
+    };
+
+    it('mails the user once a day with a link to billing', async () => {
+      getUserEmailMock.mockResolvedValue('u@example.com');
+      const res = await failed();
+      expect(res.statusCode).toBe(200);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect(sendEmailMock.mock.calls[0][0]).toMatchObject({ to: 'u@example.com', subject: 'Your TradeQut payment failed' });
+      expect(sendEmailMock.mock.calls[0][0].text).toContain('/app/billing');
+    });
+
+    it('does not mail again the same day (Stripe retries)', async () => {
+      getUserEmailMock.mockResolvedValue('u@example.com');
+      let calls = 0;
+      ddbMock.on(UpdateCommand).callsFake((input) => {
+        if (String(input.UpdateExpression).includes('paymentFailedEmailOn') && calls++ > 0) {
+          return Promise.reject(Object.assign(new Error('c'), { name: 'ConditionalCheckFailedException' }));
+        }
+        return {};
+      });
+      await failed();
+      await failed();
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('a mail failure never fails the webhook', async () => {
+      getUserEmailMock.mockResolvedValue('u@example.com');
+      sendEmailMock.mockRejectedValue(new Error('SES sandbox'));
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      expect((await failed()).statusCode).toBe(200);
+      spy.mockRestore();
+    });
   });
 
   // ── customer.subscription.updated (cancel at period end) ───
@@ -258,7 +306,7 @@ describe('stripe-webhook handler', () => {
     expect(updateCalls).toHaveLength(1);
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.Key).toEqual({ userId: 'user-1' });
-    expect(updateInput.ExpressionAttributeValues[':status']).toBe('cancellation_requested');
+    expect(updateInput.ExpressionAttributeValues![':status']).toBe('cancellation_requested');
   });
 
   // ── customer.subscription.deleted ──────────────────────────
@@ -279,8 +327,8 @@ describe('stripe-webhook handler', () => {
     expect(updateCalls).toHaveLength(1);
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.Key).toEqual({ userId: 'user-1' });
-    expect(updateInput.ExpressionAttributeValues[':status']).toBe('cancelled');
-    expect(updateInput.ExpressionAttributeValues[':endedAt']).toBeDefined();
+    expect(updateInput.ExpressionAttributeValues![':status']).toBe('cancelled');
+    expect(updateInput.ExpressionAttributeValues![':endedAt']).toBeDefined();
   });
 
   // ── Unhandled event type ───────────────────────────────────
@@ -342,7 +390,7 @@ describe('stripe-webhook handler', () => {
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-b64' });
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':status']).toBe('active');
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':status']).toBe('active');
   });
 
   // ── Internal error ─────────────────────────────────────────
@@ -362,5 +410,79 @@ describe('stripe-webhook handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.error.code).toBe('WEBHOOK_PROCESSING_FAILED');
+  });
+
+  // ── Status mapping, ordering and replay protection ─────────
+
+  const subscription = (over: Record<string, any> = {}) => ({
+    id: 'sub_1',
+    customer: 'cus_1',
+    status: 'active',
+    metadata: { userId: 'user-1' },
+    cancel_at_period_end: false,
+    pause_collection: null,
+    items: { data: [{ price: { id: 'price_pro_month' } }] },
+    current_period_start: 1700000000,
+    current_period_end: 1702592000,
+    ...over,
+  });
+
+  it.each([
+    ['active', 'active'],
+    ['trialing', 'active'],
+    ['past_due', 'past_due'],
+    ['unpaid', 'past_due'],
+    ['canceled', 'cancelled'],
+    ['incomplete_expired', 'cancelled'],
+  ])('maps Stripe status %s to %s', async (stripeStatus, expected) => {
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.updated', subscription({ status: stripeStatus })));
+    await handler(makeEvent('{}'));
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues![':status']).toBe(expected);
+  });
+
+  it('handles customer.subscription.created like an update', async () => {
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.created', subscription()));
+    const res = (await handler(makeEvent('{}'))) as any;
+    expect(res.statusCode).toBe(200);
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues![':status']).toBe('active');
+    expect(input.ExpressionAttributeValues![':custId']).toBe('cus_1');
+  });
+
+  it('writes #status once even when the subscription is paused and cancelling (single SET)', async () => {
+    mockConstructEvent.mockReturnValue(
+      makeWebhookEvent('customer.subscription.updated', subscription({ pause_collection: { behavior: 'void' }, cancel_at_period_end: true })),
+    );
+    await handler(makeEvent('{}'));
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression!.match(/#status = /g)).toHaveLength(1);
+    expect(input.ExpressionAttributeValues![':status']).toBe('paused');
+  });
+
+  it('guards every write with the event time so an older event cannot overwrite a newer one', async () => {
+    mockConstructEvent.mockReturnValue({ ...makeWebhookEvent('customer.subscription.deleted', { id: 'sub_1', metadata: { userId: 'user-1' } }), created: 1700000500 });
+    await handler(makeEvent('{}'));
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain('lastStripeEventAt <= :eventAt');
+    expect(input.ExpressionAttributeValues![':eventAt']).toBe(new Date(1700000500 * 1000).toISOString());
+  });
+
+  it('acknowledges (200) a stale or replayed event rejected by the condition', async () => {
+    const err = new Error('cond');
+    err.name = 'ConditionalCheckFailedException';
+    ddbMock.on(UpdateCommand).rejects(err);
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('checkout.session.completed', { metadata: { userId: 'user-1' }, subscription: 'sub_1', customer: 'cus_1' }));
+    mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+    const res = (await handler(makeEvent('{}'))) as any;
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('logs stripe_webhook_failed when processing throws', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    ddbMock.on(UpdateCommand).rejects(new Error('boom'));
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.deleted', { id: 'sub_1', metadata: { userId: 'user-1' } }));
+    await handler(makeEvent('{}'));
+    expect(spy.mock.calls.some((c) => c[0] === 'stripe_webhook_failed')).toBe(true);
+    spy.mockRestore();
   });
 });

@@ -4,7 +4,7 @@ import type { Logger } from '../logger.ts';
 
 // ─── Helpers ───────────────────────────────────────────────────
 
-let logSpy: ReturnType<typeof vi.spyOn>;
+let logSpy: any;
 
 function getLastLogEntry(): Record<string, any> {
   const lastCall = logSpy.mock.calls[logSpy.mock.calls.length - 1];
@@ -12,12 +12,13 @@ function getLastLogEntry(): Record<string, any> {
 }
 
 function getAllLogEntries(): Array<Record<string, any>> {
-  return logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+  return logSpy.mock.calls.map((call: any[]) => JSON.parse(call[0] as string));
 }
 
 // ─── Setup ─────────────────────────────────────────────────────
 
 beforeEach(() => {
+  vi.stubEnv('LOG_LEVEL', 'debug');
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -344,5 +345,37 @@ describe('makeLogger', () => {
     expect(logger.warn).toBeDefined();
     expect(logger.error).toBeDefined();
     expect(logger.debug).toBeDefined();
+  });
+
+  describe('LOG_LEVEL', () => {
+    const emitAll = () => {
+      const logger = makeLogger();
+      logger.debug('d');
+      logger.info('i');
+      logger.warn('w');
+      logger.error('e');
+      return getAllLogEntries().map((e) => e.level);
+    };
+
+    it('defaults to info (debug is dropped)', () => {
+      vi.stubEnv('LOG_LEVEL', '');
+      expect(emitAll()).toEqual(['INFO', 'WARN', 'ERROR']);
+    });
+
+    it('warn keeps warn and error; error keeps only errors; debug keeps everything', () => {
+      vi.stubEnv('LOG_LEVEL', 'warn');
+      expect(emitAll()).toEqual(['WARN', 'ERROR']);
+      logSpy.mockClear();
+      vi.stubEnv('LOG_LEVEL', 'error');
+      expect(emitAll()).toEqual(['ERROR']);
+      logSpy.mockClear();
+      vi.stubEnv('LOG_LEVEL', 'debug');
+      expect(emitAll()).toEqual(['DEBUG', 'INFO', 'WARN', 'ERROR']);
+    });
+
+    it('an unknown value falls back to info', () => {
+      vi.stubEnv('LOG_LEVEL', 'verbose');
+      expect(emitAll()).toEqual(['INFO', 'WARN', 'ERROR']);
+    });
   });
 });

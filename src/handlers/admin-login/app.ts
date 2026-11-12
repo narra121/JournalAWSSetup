@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { timingSafeEqual } from 'crypto';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
@@ -11,29 +11,38 @@ const ssm = new SSMClient({});
 const ADMIN_SECRET_PARAM = process.env.ADMIN_SECRET_PARAM!;
 const ADMIN_JWT_SECRET_PARAM = process.env.ADMIN_JWT_SECRET_PARAM!;
 
-let cachedAdminSecret: string | undefined;
-let cachedJwtSecret: string | undefined;
+const SECRET_TTL_MS = 15 * 60 * 1000;
+let cachedAdminSecret: { value: string; at: number } | undefined;
+let cachedJwtSecret: { value: string; at: number } | undefined;
+
+/** @internal Exposed for testing only */
+export function _clearSecretCache(): void {
+  cachedAdminSecret = undefined;
+  cachedJwtSecret = undefined;
+}
 
 async function getAdminSecret(): Promise<string> {
-  if (cachedAdminSecret) return cachedAdminSecret;
+  if (cachedAdminSecret && Date.now() - cachedAdminSecret.at < SECRET_TTL_MS) return cachedAdminSecret.value;
   const res = await ssm.send(new GetParameterCommand({
     Name: ADMIN_SECRET_PARAM,
     WithDecryption: true,
   }));
-  cachedAdminSecret = res.Parameter?.Value;
-  if (!cachedAdminSecret) throw new Error('Admin secret not found in SSM');
-  return cachedAdminSecret;
+  const value = res.Parameter?.Value;
+  if (!value) throw new Error('Admin secret not found in SSM');
+  cachedAdminSecret = { value, at: Date.now() };
+  return value;
 }
 
 async function getJwtSecret(): Promise<string> {
-  if (cachedJwtSecret) return cachedJwtSecret;
+  if (cachedJwtSecret && Date.now() - cachedJwtSecret.at < SECRET_TTL_MS) return cachedJwtSecret.value;
   const res = await ssm.send(new GetParameterCommand({
     Name: ADMIN_JWT_SECRET_PARAM,
     WithDecryption: true,
   }));
-  cachedJwtSecret = res.Parameter?.Value;
-  if (!cachedJwtSecret) throw new Error('Admin JWT secret not found in SSM');
-  return cachedJwtSecret;
+  const value = res.Parameter?.Value;
+  if (!value) throw new Error('Admin JWT secret not found in SSM');
+  cachedJwtSecret = { value, at: Date.now() };
+  return value;
 }
 
 function constantTimeCompare(a: string, b: string): boolean {
@@ -47,15 +56,19 @@ function constantTimeCompare(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
   try {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
 
-    const { password } = JSON.parse(event.body);
-    if (!password) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'password is required');
+    let parsed: any;
+    try { parsed = JSON.parse(event.body); } catch { return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON'); }
+    const password = parsed?.password;
+    if (typeof password !== 'string' || !password) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'password is required');
 
-    const rl = await checkRateLimit({ key: 'admin-login', limit: 5, windowSeconds: 300 });
+    // Per source IP: one attacker cannot lock the real admin out, and each address still gets only 5 tries per 5 minutes.
+    const sourceIp = event.requestContext?.http?.sourceIp || 'unknown';
+    const rl = await checkRateLimit({ key: `admin-login:${sourceIp}`, limit: 5, windowSeconds: 300 });
     if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
 
     const [adminSecret, jwtSecret] = await Promise.all([

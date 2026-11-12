@@ -26,3 +26,6 @@ test-results/
 
 # GitHub secrets configuration
 set-github-secrets.ps1
+
+# Lambda bundles
+dist/

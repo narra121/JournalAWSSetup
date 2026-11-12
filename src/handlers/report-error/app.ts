@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createHash } from 'crypto';
 import { errorReportSchema } from '../../schemas';
@@ -10,7 +10,7 @@ const ERROR_REPORTS_BUCKET = process.env.ERROR_REPORTS_BUCKET!;
 const s3 = new S3Client({});
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   try {
     // 1. Check body exists and size
     if (!event.body) {

@@ -21,7 +21,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_123456',
-      request: { userAttributes: { email: 'google@example.com' } },
+      request: { userAttributes: { email: 'google@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -42,7 +42,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_789012',
-      request: { userAttributes: { email: 'shared@example.com' } },
+      request: { userAttributes: { email: 'shared@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -71,7 +71,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_111111',
-      request: { userAttributes: { email: 'new@example.com' } },
+      request: { userAttributes: { email: 'new@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -92,7 +92,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_222222',
-      request: { userAttributes: { email: 'google@example.com' } },
+      request: { userAttributes: { email: 'google@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -114,7 +114,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_ExternalProvider',
       userName: 'Google_333333',
-      request: { userAttributes: { email: 'fail@example.com' } },
+      request: { userAttributes: { email: 'fail@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -131,7 +131,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'new-user',
-      request: { userAttributes: { email: 'normal@example.com' } },
+      request: { userAttributes: { email: 'normal@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -141,7 +141,7 @@ describe('auth-pre-signup handler', () => {
     expect(result.response.autoVerifyEmail).toBeUndefined();
   });
 
-  it('auto-confirms email signup when existing Google account has same email', async () => {
+  it('does NOT auto-confirm an email signup when a Google account has the same email (no ownership proof)', async () => {
     cognitoMock.on(ListUsersCommand).resolves({
       Users: [
         { Username: 'Google_444444', UserStatus: 'EXTERNAL_PROVIDER', Attributes: [{ Name: 'email', Value: 'both@example.com' }] },
@@ -152,14 +152,28 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'email-user',
-      request: { userAttributes: { email: 'both@example.com' } },
+      request: { userAttributes: { email: 'both@example.com', email_verified: 'true' } },
       response: {},
     };
 
     const result = await handler(event);
 
-    expect(result.response.autoConfirmUser).toBe(true);
-    expect(result.response.autoVerifyEmail).toBe(true);
+    expect(result.response.autoConfirmUser).toBeUndefined();
+    expect(result.response.autoVerifyEmail).toBeUndefined();
+    expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(0);
+  });
+
+  it('does not link a Google identity whose email the provider did not verify', async () => {
+    const event = {
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_ExternalProvider',
+      userName: 'Google_777',
+      request: { userAttributes: { email: 'victim@example.com', email_verified: 'false' } },
+      response: {},
+    };
+    await handler(event);
+    expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(0);
+    expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)).toHaveLength(0);
   });
 
   it('does not auto-confirm email signup if ListUsers fails', async () => {
@@ -169,7 +183,7 @@ describe('auth-pre-signup handler', () => {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_SignUp',
       userName: 'email-user',
-      request: { userAttributes: { email: 'error@example.com' } },
+      request: { userAttributes: { email: 'error@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -185,7 +199,7 @@ describe('auth-pre-signup handler', () => {
     const event = {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_AdminCreateUser',
-      request: { userAttributes: { email: 'admin@example.com' } },
+      request: { userAttributes: { email: 'admin@example.com', email_verified: 'true' } },
       response: {},
     };
 
@@ -199,7 +213,7 @@ describe('auth-pre-signup handler', () => {
     const event = {
       userPoolId: TEST_POOL_ID,
       triggerSource: 'PreSignUp_AdminCreateUser',
-      request: { userAttributes: { email: 'test@example.com' } },
+      request: { userAttributes: { email: 'test@example.com', email_verified: 'true' } },
       response: {},
     };
 

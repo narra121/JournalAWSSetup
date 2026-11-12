@@ -15,15 +15,15 @@ concurrency:
 
 permissions:
   contents: read
-  deployments: write
-  id-token: write
 
 env:
   AWS_REGION: us-east-1
-  SAM_CLI_TELEMETRY: 0
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_PROFILE: ""
+  TRADEQUT_RESEARCH: ${{ runner.temp }}/tradequt
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' ||
@@ -37,197 +37,26 @@ jobs:
           bun-version: "1.3.12"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - uses: aws-actions/setup-sam@v2
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            **/node_modules
-          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock', '**/package.json') }}
-          restore-keys: |
-            bun-${{ runner.os }}-
-      - name: Cache SAM build
-        uses: actions/cache@v4
-        with:
-          path: .aws-sam/cache
-          key: sam-build-${{ runner.os }}-${{ hashFiles('src/**/*.ts', 'template.yaml') }}
-          restore-keys: |
-            sam-build-${{ runner.os }}-
-      - name: Install dependencies (fresh for Linux native deps)
-        run: rm -rf node_modules bun.lock package-lock.json && bun install
-      - name: Validate SAM template
-        run: sam validate --region $AWS_REGION
+          python-version: '3.12'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install SAM CLI and cfn-lint
+        run: |
+          pip install "aws-sam-cli>=1.172.1"
+          pip install "cfn-lint>=1.60.0"
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS identity
         run: aws sts get-caller-identity
-      - name: Install esbuild globally for SAM
-        run: bun install -g esbuild@latest
-      - name: Ensure esbuild present
-        run: bunx esbuild --version
-      - name: SAM Build
-        run: sam build --parallel --cached
-      - name: Upload SAM build artifacts
+      - name: Deploy to dev (tests, typecheck, lint, build, change set with guard, backups, smoke)
+        run: node scripts/deploy.mjs --stage dev
+      - name: Keep the change set and backup record
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sam-build
-          path: .aws-sam/build
-
-  deploy-dev:
-    runs-on: ubuntu-latest
-    needs: build
-    environment: dev
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.12"
-      - uses: actions/download-artifact@v4
-        with:
-          name: sam-build
-          path: .aws-sam/build
-      - uses: aws-actions/setup-sam@v2
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
-      - name: Store Gemini API Key in SSM
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          aws ssm put-parameter \
-            --name "/tradequt/geminiApiKey" \
-            --value "${GEMINI_API_KEY}" \
-            --type "SecureString" \
-            --overwrite \
-            --region $AWS_REGION
-
-      - name: Store Stripe Secret Key in SSM
-        env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY_DEV }}
-        run: |
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripeSecretKey" \
-            --value "${STRIPE_SECRET_KEY}" \
-            --type "SecureString" \
-            --overwrite \
-            --region $AWS_REGION
-
-      - name: Store Stripe Webhook Secret in SSM
-        env:
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET_DEV }}
-        run: |
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripeWebhookSecret" \
-            --value "${STRIPE_WEBHOOK_SECRET}" \
-            --type "SecureString" \
-            --overwrite \
-            --region $AWS_REGION
-
-      - name: Store Stripe Price IDs in SSM
-        run: |
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripe/price/monthly_inr" \
-            --value "${{ secrets.STRIPE_PRICE_MONTHLY_INR_DEV }}" \
-            --type "String" \
-            --overwrite \
-            --region $AWS_REGION
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripe/price/yearly_inr" \
-            --value "${{ secrets.STRIPE_PRICE_YEARLY_INR_DEV }}" \
-            --type "String" \
-            --overwrite \
-            --region $AWS_REGION
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripe/price/monthly_usd" \
-            --value "${{ secrets.STRIPE_PRICE_MONTHLY_USD_DEV }}" \
-            --type "String" \
-            --overwrite \
-            --region $AWS_REGION
-          aws ssm put-parameter \
-            --name "/tradequt/dev/stripe/price/yearly_usd" \
-            --value "${{ secrets.STRIPE_PRICE_YEARLY_USD_DEV }}" \
-            --type "String" \
-            --overwrite \
-            --region $AWS_REGION
-
-      - name: Store Google Client Secret in SSM
-        env:
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: |
-          if [ -n "${GOOGLE_CLIENT_SECRET}" ]; then
-            aws ssm put-parameter \
-              --name "/tradequt/googleClientSecret" \
-              --value "${GOOGLE_CLIENT_SECRET}" \
-              --type "SecureString" \
-              --overwrite \
-              --region $AWS_REGION
-          fi
-
-      - name: Store Firebase Service Account Key in SSM
-        env:
-          FIREBASE_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
-        run: |
-          if [ -n "${FIREBASE_SA_KEY}" ]; then
-            aws ssm put-parameter \
-              --name "/tradequt/firebase-service-account" \
-              --value "${FIREBASE_SA_KEY}" \
-              --type "SecureString" \
-              --overwrite \
-              --region $AWS_REGION
-          fi
-
-      - name: Deploy to Dev
-        run: |
-          sam deploy \
-            --stack-name tradequt-dev \
-            --s3-bucket tradequt-sam-artifacts \
-            --s3-prefix tradequt-backend \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --parameter-overrides \
-              StageName=tradequt-dev \
-              Environment=dev \
-              ApiVersion=v1 \
-              LogRetentionDays=7 \
-              GeminiApiKeyParamName=/tradequt/geminiApiKey \
-              StripeSecretKeyParamName=/tradequt/dev/stripeSecretKey \
-              StripeWebhookSecretParamName=/tradequt/dev/stripeWebhookSecret \
-              UseExistingResources=false \
-              CustomDomainName=api-dev.tradequt.com \
-              "CertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}" \
-              "HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}" \
-              "AllowedOrigins=https://dev.tradequt.com,https://admin-dev.tradequt.com,http://localhost:8080,http://localhost:8081" \
-              "GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }}" \
-              "GoogleClientSecret=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
-              CreateAdminInfra=true \
-              AdminDomainName=admin-dev.tradequt.com
-
-      - name: Fix CORS (SAM transform bug workaround)
-        run: |
-          API_ID=$(aws cloudformation describe-stack-resource \
-            --stack-name tradequt-dev \
-            --logical-resource-id HttpApi \
-            --query "StackResourceDetail.PhysicalResourceId" \
-            --output text)
-          aws apigatewayv2 update-api --api-id "$API_ID" \
-            --cors-configuration '{
-              "AllowOrigins": ["https://dev.tradequt.com", "https://admin-dev.tradequt.com", "http://localhost:8080", "http://localhost:8081"],
-              "AllowMethods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-              "AllowHeaders": ["Authorization", "Content-Type", "X-Amz-Date", "X-Api-Key"],
-              "ExposeHeaders": ["Content-Type", "Authorization"],
-              "MaxAge": 3600
-            }'
-
+          name: dev-deploy-record
+          path: ${{ runner.temp }}/tradequt/build/backups/

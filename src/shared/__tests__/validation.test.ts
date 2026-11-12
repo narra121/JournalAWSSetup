@@ -207,13 +207,15 @@ describe('serializeException', () => {
 // ─── errorFromException ─────────────────────────────────────────
 
 describe('errorFromException', () => {
-  it('returns a 500 envelope with INTERNAL_ERROR code', () => {
-    const res = errorFromException(new Error('db timeout'));
+  it('returns a 500 envelope with INTERNAL_ERROR code and never the raw message or stack', () => {
+    const res = errorFromException(new Error('db timeout at arn:aws:dynamodb:table/Trades'), true);
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
-    expect(body.message).toBe('db timeout');
+    expect(body.message).toBe('Internal error');
+    expect(res.body).not.toContain('dynamodb');
+    expect(res.body).not.toContain('stack');
   });
 
   it('handles null error gracefully', () => {

@@ -62,7 +62,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
   } catch (error: any) {
     console.error('Analytics error', { error, userId, type });
-    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve analytics', error.message);
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve analytics');
   }
 };
 

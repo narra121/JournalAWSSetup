@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { GetCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { makeLogger } from '../../shared/logger';
@@ -8,12 +8,16 @@ import { v4 as uuid } from 'uuid';
 import { normalizePotentialKey, extractKeyFromS3Url } from '../../shared/s3';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
+import { tagsError } from '../../shared/tags';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const s3 = new S3Client({});
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGES_PER_TRADE = 6;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const requestId = event.requestContext.requestId;
   const log = makeLogger({ requestId, userId });
@@ -28,10 +32,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     let data: any;
     try { data = JSON.parse(event.body); } catch { return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON'); }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
+    if (data.tags !== undefined) {
+      const tagProblem = tagsError(data.tags);
+      if (tagProblem) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, tagProblem);
+    }
 
     // Fetch current item for merging arrays/images if needed (scoped by userId + tradeId)
     const current = await ddb.send(new GetCommand({ TableName: TRADES_TABLE, Key: { userId, tradeId } }));
-    if (!current.Item) return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
+    if (!current.Item || current.Item.deletedAt) return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
     const existing: any = current.Item;
 
     // Handle partial closes: if data.partialCloses is array of { quantity, exitPrice, time } apply FIFO reduction.
@@ -68,12 +77,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (Array.isArray(data.images)) {
       const prevImages: any[] = Array.isArray(existing.images) ? existing.images : [];
       const incoming: any[] = data.images;
+      if (incoming.length > MAX_IMAGES_PER_TRADE) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `A trade can have at most ${MAX_IMAGES_PER_TRADE} images`);
       const incomingById = new Map<string, any>();
       const finalImages: any[] = [];
       // Build incoming map & process (upload only new base64 or changed content via new id)
       for (const raw of incoming) {
         const imgId = raw.id || uuid();
-        let existingImg = prevImages.find(i => i.id === imgId);
+        const sentKey = typeof raw.key === 'string' ? raw.key : (typeof raw.id === 'string' && raw.id.startsWith('images/') ? raw.id : undefined);
+        let existingImg = prevImages.find(i => i.id === imgId || (sentKey && i.key === sentKey));
         let url = existingImg?.url;
         // If client sent a data URI in the url field, normalize to base64Data path
         if (!raw.base64Data && typeof raw.url === 'string' && /^data:image\//i.test(raw.url)) {
@@ -86,25 +97,34 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const match = /^data:(.+);base64,(.*)$/i.exec(b64);
           let contentType = 'image/jpeg';
           if (match) { contentType = match[1]; b64 = match[2]; }
+          if (!ALLOWED_IMAGE_TYPES.includes(contentType)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Unsupported image type: ${contentType}`);
           const buffer = Buffer.from(b64, 'base64');
-          const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : '.jpg';
+          if (buffer.byteLength > MAX_IMAGE_BYTES) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Inline image exceeds 5MB limit');
+          const ext = contentType === 'image/png' ? '.png' : contentType === 'image/gif' ? '.gif' : contentType === 'image/webp' ? '.webp' : '.jpg';
           const key = `images/${userId}/${tradeId}/${imgId}${ext}`;
           await s3.send(new PutObjectCommand({ Bucket: IMAGES_BUCKET, Key: key, Body: buffer, ContentType: contentType }));
           url = undefined;
           existingImg = { id: imgId, key };
           finalImages.push({ id: imgId, key, timeframe: raw.timeframe || null, description: raw.description || null });
           continue;
+        } else if (typeof raw.key === 'string' && !existingImg) {
+          // A key from POST /uploads/images: only the caller's own prefix may be attached.
+          if (!raw.key.startsWith(`images/${userId}/`)) continue;
+          finalImages.push({ id: imgId, key: raw.key, timeframe: raw.timeframe || null, description: raw.description || null });
+          continue;
         } else if (raw.url) {
           // If incoming raw.url is actually an S3 key keep as key
           if (raw.url.startsWith('images/')) {
-            finalImages.push({ id: imgId, key: raw.url, timeframe: raw.timeframe || existingImg?.timeframe || null, description: raw.description || existingImg?.description || null });
+            // A key outside the caller's own prefix is dropped, never attached.
+            if (!raw.url.startsWith(`images/${userId}/`)) continue;
+            finalImages.push({ id: existingImg?.id ?? imgId, key: raw.url, timeframe: raw.timeframe || existingImg?.timeframe || null, description: raw.description || existingImg?.description || null });
             continue;
           } else {
             url = raw.url; // legacy external url fallback
           }
         }
         const merged = {
-          id: imgId,
+          id: existingImg?.id ?? imgId,
           ...(existingImg?.key ? { key: existingImg.key } : {}),
           ...(url ? { url } : {}),
           timeframe: raw.timeframe !== undefined ? raw.timeframe : (existingImg?.timeframe ?? null),
@@ -121,7 +141,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           const k = img.key || normalizePotentialKey(img.url, IMAGES_BUCKET);
           return k ? { Key: k } : null;
         })
-        .filter((entry): entry is { Key: string } => !!entry);
+        .filter((entry): entry is { Key: string } => !!entry && entry.Key.startsWith(`images/${userId}/`));
       if (toDeleteKeys.length) {
         await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: toDeleteKeys } }));
       }
@@ -156,7 +176,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ? data.accountIds 
       : (data.accountId ? [data.accountId] : []);
     
-    const existingAccountId = existing.accountId || '-1';
     let additionalTrades: any[] = [];
     
     if (incomingAccountIds.length > 1) {
@@ -178,10 +197,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } else if (incomingAccountIds.length === 1) {
       // Single account: just update the accountId
       existing.accountId = incomingAccountIds[0];
-    } else {
-      // No accountIds provided: store as -1
-      existing.accountId = '-1';
     }
+    // No accountIds in the body: the stored accountId stays as it is.
 
     // Recompute derived fields if relevant, but respect values passed in request
     // If request body includes pnl/netPnl, use those; otherwise calculate
@@ -189,25 +206,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const exitPrice = existing.exitPrice != null ? Number(existing.exitPrice) : null;
     const quantityNum = existing.quantity != null ? Number(existing.quantity) : null;
     // Apply provided overrides first
-    if ('pnl' in data) {
-      existing.pnl = Number(data.pnl);
-    } else if (entryPrice != null && exitPrice != null && quantityNum != null) {
+    // `existing.pnl` already holds an explicit value from the body (null stays null). Without one, P&L is recomputed
+    // only when an input of the formula changed or nothing is stored yet; a notes-only edit leaves it untouched.
+    const pnlInputsChanged = ['entryPrice', 'exitPrice', 'quantity', 'side'].some((f) => f in data);
+    const pnlChanged = 'pnl' in data || pnlInputsChanged || existing.pnl == null;
+    if (!('pnl' in data) && (pnlInputsChanged || existing.pnl == null) && entryPrice != null && exitPrice != null && quantityNum != null) {
       existing.pnl = existing.side === 'BUY'
         ? (exitPrice - entryPrice) * quantityNum
         : (entryPrice - exitPrice) * quantityNum;
     }
     if ('netPnl' in data) {
-      existing.netPnl = Number(data.netPnl);
-    } else if (existing.pnl != null) {
+      existing.netPnl = data.netPnl === null || data.netPnl === '' ? null : Number(data.netPnl);
+    } else if (existing.pnl != null && (pnlChanged || existing.netPnl == null)) {
       const commission = existing.commission ? Number(existing.commission) : 0;
       const fees = existing.fees ? Number(existing.fees) : 0;
       existing.netPnl = existing.pnl - (commission + fees);
     }
     const riskAmount = existing.riskAmount ? Number(existing.riskAmount) : 0;
     // Calculate riskRewardRatio: use existing.pnl if present
-    existing.riskRewardRatio = existing.pnl != null && riskAmount > 0
-      ? Number((existing.pnl / riskAmount).toFixed(4))
-      : null;
+    if (existing.pnl != null && riskAmount > 0) existing.riskRewardRatio = Number((existing.pnl / riskAmount).toFixed(4));
   // Do not auto-set outcome; keep whatever currently stored / provided
     existing.updatedAt = new Date().toISOString();
     // Persist full object (replace strategy) with stricter condition (must belong to user and exist)

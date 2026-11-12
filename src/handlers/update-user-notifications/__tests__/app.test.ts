@@ -92,8 +92,11 @@ describe('update-user-notifications handler', () => {
     expect(body.data.notifications.weeklyReport).toBe(false);
     expect(body.data.notifications.goalAlerts).toBe(false);
 
+    // First call creates the `notifications` map when it is missing, second sets the flags.
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0].args[0].input.UpdateExpression).toContain('if_not_exists');
+    expect(updateCalls[1].args[0].input.UpdateExpression).toContain('#notifications.#tradeReminders');
   });
 
   it('handles partial update with only tradeReminders', async () => {

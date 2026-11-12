@@ -133,7 +133,7 @@ describe('rebuild-stats-job handler', () => {
     // Account balance should be initialBalance(10000) + 50 = 10050
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(10050);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(10050);
   });
 
   it('handles user with no trades (all deleted since last daily stats write)', async () => {
@@ -164,7 +164,7 @@ describe('rebuild-stats-job handler', () => {
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
     // (75 - 50) * 4 = 100; balance = 1000 + 100 = 1100
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1100);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1100);
   });
 
   it('calculates PnL correctly for SELL trades: (entry - exit) * qty', async () => {
@@ -179,7 +179,7 @@ describe('rebuild-stats-job handler', () => {
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
     // (200 - 180) * 2 = 40; balance = 1000 + 40 = 1040
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1040);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1040);
   });
 
   // ── Skipping ────────────────────────────────────────────────
@@ -199,7 +199,7 @@ describe('rebuild-stats-job handler', () => {
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
     // Only the second trade counts: (110-100)*10 = 100; balance = 5000 + 100 = 5100
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(5100);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(5100);
   });
 
   // ── Account balance updates ─────────────────────────────────
@@ -220,7 +220,7 @@ describe('rebuild-stats-job handler', () => {
     const updateInput = updateCalls[0].args[0].input;
     expect(updateInput.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
     // PnL = (120-100)*5 = 100; balance = 10000 + 100 = 10100
-    expect(updateInput.ExpressionAttributeValues[':balance']).toBe(10100);
+    expect(updateInput.ExpressionAttributeValues![':balance']).toBe(10100);
   });
 
   // ── Multiple users ──────────────────────────────────────────
@@ -253,7 +253,7 @@ describe('rebuild-stats-job handler', () => {
     // Both users should get account balance updates
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBe(2);
-    const accountIds = updateCalls.map((c) => c.args[0].input.Key.accountId);
+    const accountIds = updateCalls.map((c) => c.args[0].input.Key!.accountId);
     expect(accountIds).toContain('acc-1');
     expect(accountIds).toContain('acc-2');
   });
@@ -320,7 +320,7 @@ describe('rebuild-stats-job handler', () => {
     // balance = 1000 + (-100) = 900
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(900);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(900);
   });
 
   it('processes trade with quantity = 0 resulting in pnl = 0', async () => {
@@ -335,7 +335,7 @@ describe('rebuild-stats-job handler', () => {
     // (110 - 100) * 0 = 0; balance = 1000 + 0 = 1000
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1000);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1000);
   });
 
   it('handles trade with negative prices', async () => {
@@ -350,7 +350,7 @@ describe('rebuild-stats-job handler', () => {
     // (5 - (-1)) * 10 = 60; balance = 1000 + 60 = 1060
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues[':balance']).toBe(1060);
+    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1060);
   });
 
   it('skips balance update when account not found (GetCommand returns no Item)', async () => {
@@ -416,9 +416,9 @@ describe('rebuild-stats-job handler', () => {
     );
     expect(dailyStatsPut).toBeDefined();
     const item = dailyStatsPut!.args[0].input.Item;
-    expect(item.userId).toBe('user-1');
-    expect(item.accountId).toBe('acc-1');
-    expect(item.date).toBe('2026-01-15');
+    expect(item!.userId).toBe('user-1');
+    expect(item!.accountId).toBe('acc-1');
+    expect(item!.date).toBe('2026-01-15');
   });
 
   it('processes users concurrently in batches of 5', async () => {

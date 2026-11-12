@@ -1,0 +1,3150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ROLLBACK template - the API Gateway-era backend (base 768ead7) with PITR and Retain added. Use only per docs/runbooks/prod-cutover.md (Rollback B).
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Architectures:
+      - arm64
+    Timeout: 10
+    MemorySize: 256
+    Tracing: PassThrough
+    Environment:
+      Variables:
+        # Allow either newly created resources or existing ones passed in via parameters
+        TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+        RATE_LIMIT_TABLE: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        ACCOUNTS_TABLE: !If [CreateNewDataResources, !Ref AccountsTable, '']
+        GOALS_TABLE: !If [CreateNewDataResources, !Ref GoalsTable, '']
+        RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+        USER_PREFERENCES_TABLE: !If [CreateNewDataResources, !Ref UserPreferencesTable, '']
+        SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        DAILY_STATS_TABLE: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        ERROR_REPORTS_BUCKET: !If [CreateNewDataResources, !Ref ErrorReportsBucket, '']
+        SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+        USER_POOL_ID: !Ref UserPool
+        USER_POOL_CLIENT_ID: !Ref UserPoolClient
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+        LOG_LEVEL: info
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: Deployment stage (lowercase) used in resource names.
+    AllowedPattern: '^[a-z0-9-]+$'
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Environment name (dev or prod) used for SSM parameter paths and configuration.
+  ApiVersion:
+    Type: String
+    Default: v1
+    Description: API version prefix (e.g. v1)
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,1827,3653]
+    Description: CloudWatch Logs retention in days (10 is not supported; choose nearest 7 or 14).
+  GeminiApiKeyParamName:
+    Type: String
+    Default: /tradequt/geminiApiKey
+    Description: Name of SSM SecureString parameter storing the Gemini API key.
+  StripeSecretKeyParamName:
+    Type: String
+    Default: /tradequt/dev/stripeSecretKey
+    Description: Name of SSM SecureString parameter storing the Stripe secret key.
+  StripeWebhookSecretParamName:
+    Type: String
+    Default: /tradequt/dev/stripeWebhookSecret
+    Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
+  FirebaseServiceAccountParamName:
+    Type: String
+    Default: /tradequt/firebase-service-account
+    Description: SSM SecureString parameter storing the Firebase service account JSON key.
+  AdConfigParamName:
+    Type: String
+    Default: /tradequt/dev/adConfig
+    Description: Name of SSM parameter storing the ad placement configuration JSON.
+  AdminSecretParamName:
+    Type: String
+    Default: /tradequt/adminSecret
+    Description: SSM SecureString parameter for admin login password.
+  AdminJwtSecretParamName:
+    Type: String
+    Default: /tradequt/adminJwtSecret
+    Description: SSM SecureString parameter for admin JWT signing secret.
+  CreateAdminInfra:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set to true to create admin S3 bucket, CloudFront distribution, and DNS record.
+  AdminDomainName:
+    Type: String
+    Default: ""
+    Description: Admin panel domain (e.g. admin.tradequt.com). Required when CreateAdminInfra=true.
+  UseExistingResources:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true","false"]
+    Description: Set to true to reuse existing DynamoDB tables & S3 bucket instead of creating new ones.
+  ExistingTradesTableName:
+    Type: String
+    Default: ""
+    Description: Name of an existing Trades table (required if UseExistingResources=true)
+  ExistingImagesBucketName:
+    Type: String
+    Default: ""
+    Description: Name of an existing Images bucket (required if UseExistingResources=true)
+  ExistingAuthRateLimitTableName:
+    Type: String
+    Default: ""
+    Description: Name of an existing AuthRateLimit table (required if UseExistingResources=true)
+  CustomDomainName:
+    Type: String
+    Default: ""
+    Description: Custom domain name for the API (e.g. api.tradequt.com). Leave empty to skip.
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN for the custom domain (must be in us-east-1).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: Route 53 hosted zone ID for DNS record creation.
+  AllowedOrigins:
+    Type: String
+    Default: "https://tradequt.com,https://www.tradequt.com,https://admin.tradequt.com"
+    Description: Comma-separated list of allowed CORS origins (e.g. https://tradequt.com,https://www.tradequt.com).
+  # --- Frontend infrastructure parameters (CloudFront + S3 hosting) ---
+  CreateFrontendInfra:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Set to "true" on first deployment to create S3 bucket, CloudFront distribution,
+      and DNS records for the frontend. Leave "false" for existing environments.
+      Once created, keep "true" so CloudFormation manages the resources.
+  FrontendDomainName:
+    Type: String
+    Default: ""
+    Description: Primary domain for the frontend (e.g. dev.tradequt.com or tradequt.com). Required when CreateFrontendInfra=true.
+  FrontendWwwDomain:
+    Type: String
+    Default: ""
+    Description: Optional www alias for the frontend (e.g. www.tradequt.com). Leave empty for dev environments.
+  GoogleClientId:
+    Type: String
+    Default: ""
+    Description: Google OAuth Client ID for Sign-In with Google. Leave empty to skip Google auth setup.
+  GoogleClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Google OAuth Client Secret (SSM Secure references not supported for Cognito IdP).
+
+Conditions:
+  CreateNewDataResources: !Equals [!Ref UseExistingResources, "false"]
+  HasGoogleAuth: !Not [!Equals [!Ref GoogleClientId, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
+  ShouldCreateFrontendInfra: !Equals [!Ref CreateFrontendInfra, "true"]
+  ShouldCreateAdminInfra: !Equals [!Ref CreateAdminInfra, "true"]
+  HasFrontendWwwDomain: !Not [!Equals [!Ref FrontendWwwDomain, ""]]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+  IsProd: !Equals [!Ref Environment, "prod"]
+  CreateFrontendDns: !And
+    - !Condition ShouldCreateFrontendInfra
+    - !Condition HasHostedZone
+  CreateFrontendWwwDns: !And
+    - !Condition ShouldCreateFrontendInfra
+    - !Condition HasHostedZone
+    - !Condition HasFrontendWwwDomain
+  CreateAdminDns: !And
+    - !Condition ShouldCreateAdminInfra
+    - !Condition HasHostedZone
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub TradeQutUserPool-${StageName}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpFunction.Arn
+        PostConfirmation: !GetAtt PostConfirmationFunction.Arn
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    # Ensure Google IdP exists before client references it as SupportedIdentityProvider
+    DependsOn: GoogleIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: web
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders: !If
+        - HasGoogleAuth
+        - - COGNITO
+          - Google
+        - - COGNITO
+      AllowedOAuthFlowsUserPoolClient: !If [HasGoogleAuth, true, false]
+      AllowedOAuthFlows: !If
+        - HasGoogleAuth
+        - - code
+        - !Ref AWS::NoValue
+      AllowedOAuthScopes: !If
+        - HasGoogleAuth
+        - - openid
+          - email
+          - profile
+        - !Ref AWS::NoValue
+      CallbackURLs: !If
+        - HasGoogleAuth
+        - - https://tradequt.com/auth/callback
+          - https://www.tradequt.com/auth/callback
+          - https://dev.tradequt.com/auth/callback
+          - http://localhost:8080/auth/callback
+        - - http://localhost:8080/
+      LogoutURLs: !If
+        - HasGoogleAuth
+        - - https://tradequt.com/login
+          - https://www.tradequt.com/login
+          - https://dev.tradequt.com/login
+          - http://localhost:8080/login
+        - - http://localhost:8080/
+
+  # Google Identity Provider (only created when GoogleClientId is provided)
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogleAuth
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Ref GoogleClientSecret
+        authorize_scopes: "openid email profile"
+      AttributeMapping:
+        email: email
+        name: name
+        username: sub
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: HasGoogleAuth
+    Properties:
+      Domain: !Sub "auth-${StageName}.tradequt.com"
+      UserPoolId: !Ref UserPool
+      CustomDomainConfig:
+        CertificateArn: !Ref CertificateArn
+
+  AuthDomainDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasGoogleAuth
+    DependsOn: UserPoolDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "auth-${StageName}.tradequt.com"
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt UserPoolDomain.CloudFrontDistribution
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  # Cognito trigger Lambda functions
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-pre-signup/app.handler
+      # Override Globals env vars to break circular dep: UserPool → this function → UserPool/UserPoolClient
+      Environment:
+        Variables:
+          USER_POOL_ID: "COGNITO_TRIGGER"
+          USER_POOL_CLIENT_ID: "COGNITO_TRIGGER"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-pre-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  PostConfirmationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-post-confirmation/app.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+      # Override Globals env vars to break circular dep: UserPool → this function → UserPool/UserPoolClient
+      Environment:
+        Variables:
+          USER_POOL_ID: "COGNITO_TRIGGER"
+          USER_POOL_CLIENT_ID: "COGNITO_TRIGGER"
+          RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+          SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-post-confirmation/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PreSignUpFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  # Standalone policy for PreSignUp — avoids circular dep (UserPool → PreSignUpFunction → Role → UserPool)
+  PreSignUpCognitoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: PreSignUpCognitoAccess
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+              - cognito-idp:AdminLinkProviderForUser
+            Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
+      Roles:
+        - !Ref PreSignUpFunctionRole
+
+  PostConfirmationInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PostConfirmationFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  ErrorReportsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateNewDataResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ErrorReportsLifecycle
+            Status: Enabled
+            Prefix: errors/
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: GLACIER
+            ExpirationInDays: 365
+      Tags:
+        - Key: Project
+          Value: TradeQut
+
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateNewDataResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Restrict CORS to only allow authenticated API calls, not direct browser access
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Split [",", !Ref AllowedOrigins]
+            AllowedHeaders:
+              - "Authorization"
+              - "Content-Type"
+            AllowedMethods: [GET, PUT]
+            MaxAge: 300
+      # Block all public access - images can only be accessed through Lambda
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldImages
+            Status: Enabled
+            Prefix: images/
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: GLACIER_IR
+            ExpirationInDays: 1825
+
+  # Explicit bucket policy to enforce secure transport only
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateNewDataResources
+    Properties:
+      Bucket: !Ref ImagesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: 
+              - !Sub "arn:aws:s3:::${ImagesBucket}/*"
+              - !Sub "arn:aws:s3:::${ImagesBucket}"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  TradesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      # Include ApiVersion so table replacement can occur when adding new GSIs; avoids multi-GSI update limit
+      TableName: !Sub Trades-${StageName}-${ApiVersion}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: tradeId
+          AttributeType: S
+        - AttributeName: openDate
+          AttributeType: S
+        - AttributeName: idempotencyKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: tradeId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: trades-by-date-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: openDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+        - IndexName: user-idempotency-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: idempotencyKey
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+  DailyStatsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub DailyStats-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: stats-by-date-gsi
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AuthRateLimitTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub AuthRateLimit-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Accounts-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: accountId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: accountId
+          KeyType: RANGE
+
+  GoalsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Goals-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: goalId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: goalId
+          KeyType: RANGE
+
+  RulesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Rules-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: ruleId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: ruleId
+          KeyType: RANGE
+
+  UserPreferencesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub UserPreferences-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  SavedOptionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub SavedOptions-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  SubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: CreateNewDataResources
+    Properties:
+      TableName: !Sub Subscriptions-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience: [!Ref UserPoolClient]
+          AdminAuthorizer:
+            FunctionArn: !GetAtt AdminAuthorizerFunction.Arn
+            FunctionInvokeRole: !GetAtt AdminAuthorizerInvokeRole.Arn
+            Identity:
+              Headers:
+                - Authorization
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+        DefaultAuthorizer: CognitoAuthorizer
+      CorsConfiguration:
+        AllowOrigins: !Split [",", !Ref AllowedOrigins]
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+          - X-Amz-Date
+          - X-Api-Key
+        ExposeHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 3600
+
+  CreateTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-trade/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  ListTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-trades/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  SyncTradesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/sync-trades/app.handler
+      Timeout: 15
+      MemorySize: 512
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/sync
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/sync-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  UpdateTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-trade/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/{tradeId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  DeleteTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-trade/app.handler
+
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/{tradeId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-trade/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  BulkDeleteTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/bulk-delete-trades/app.handler
+
+      Description: Bulk delete trades
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/bulk-delete
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/bulk-delete-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  GetImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-image/app.handler
+
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: "/v1/images/{imageId+}"
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-image/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  UpdateStatsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-stats/app.handler
+
+      Timeout: 30
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt StatsDLQ.Arn
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt TradesTable.StreamArn
+            StartingPosition: LATEST
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 2
+            DestinationConfig:
+              OnFailure:
+                Destination: !GetAtt StatsDLQ.Arn
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  StatsDLQ:
+    Type: AWS::SQS::Queue
+    Condition: CreateNewDataResources
+    Properties:
+      QueueName: !Sub stats-dlq-${StageName}
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  StatsFunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateNewDataResources
+    Properties:
+      AlarmName: !Sub StatsFunctionErrors-${StageName}
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UpdateStatsFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+  RebuildAllStatsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/rebuild-stats-job/app.handler
+
+      Description: Periodic full stats rebuild for all users (scan Trades)
+      Timeout: 180
+      MemorySize: 512
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Name: !Sub RebuildStats-${StageName}
+            Description: Periodic full stats rebuild
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/rebuild-stats-job/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  GetStatsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-stats/app.handler
+      Timeout: 15
+      MemorySize: 256
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/stats
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  GetGoalsProgressFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-goals-progress/app.handler
+      Timeout: 15
+      MemorySize: 256
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref GoalsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals/progress
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-goals-progress/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AuthSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-signup/app.handler
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:SignUp
+              - cognito-idp:ListUsers
+            Resource: !GetAtt UserPool.Arn
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/signup
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  AuthConfirmSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-confirm-signup/app.handler
+
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref UserPool
+          RULES_TABLE: !If [CreateNewDataResources, !Ref RulesTable, '']
+          SAVED_OPTIONS_TABLE: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ConfirmSignUp
+              - cognito-idp:AdminGetUser
+            Resource: !GetAtt UserPool.Arn
+        - !If
+          - CreateNewDataResources
+          - Statement:
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:BatchWriteItem
+              Resource:
+                - !GetAtt RulesTable.Arn
+                - !GetAtt SavedOptionsTable.Arn
+          - !Ref AWS::NoValue
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/confirm-signup
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-confirm-signup/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  AuthLoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-login/app.handler
+
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:InitiateAuth
+            Resource: '*'
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-login/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  AuthRefreshFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-refresh/app.handler
+
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:InitiateAuth
+            Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/refresh
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-refresh/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  FirebaseTokenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/firebase-token/app.handler
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          FIREBASE_SERVICE_ACCOUNT_PARAM: !Ref FirebaseServiceAccountParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${FirebaseServiceAccountParamName}"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/firebase-token
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/firebase-token/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  AuthForgotPasswordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-forgot-password/app.handler
+
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ForgotPassword
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/forgot-password
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-forgot-password/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+  AuthConfirmForgotPasswordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/auth-confirm-forgot-password/app.handler
+
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ConfirmForgotPassword
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !If [CreateNewDataResources, !GetAtt AuthRateLimitTable.Arn, !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingAuthRateLimitTableName}"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/auth/confirm-forgot-password
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/auth-confirm-forgot-password/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  ExtractTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/extract-trades/app.handler
+
+      Description: Extract structured trades from an image using Gemini vision model
+      Timeout: 90
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins: !Split [",", !Ref AllowedOrigins]
+          AllowHeaders:
+            - authorization
+            - content-type
+          AllowMethods:
+            - POST
+          MaxAge: 3600
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/trades/extract
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/extract-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  EnhanceTextFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/enhance-text/app.handler
+
+      Description: Enhance text (notes, descriptions) using Gemini model
+      Timeout: 60
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Environment:
+        Variables:
+          GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/enhance-text
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/enhance-text/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Account Management Functions
+  ListAccountsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-accounts/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-accounts/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  CreateAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-account/app.handler
+
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTable
+          GOALS_TABLE: !Ref GoalsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-account/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateAccountStatusFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-account-status/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}/status
+            Method: PATCH
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-account-status/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  DeleteAccountFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-account/app.handler
+
+      Environment:
+        Variables:
+          TRADES_TABLE: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+          IMAGES_BUCKET: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+          GOALS_TABLE: !Ref GoalsTable
+          RULES_TABLE: !Ref RulesTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+        - S3CrudPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/accounts/{accountId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-account/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Goals and Rules Functions
+  CreateGoalFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-goal/app.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-goal/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateGoalFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-goal/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/goals/{goalId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-goal/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  ListRulesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/list-rules/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/list-rules/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  GetRulesGoalsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-rules-goals/app.handler
+
+      Environment:
+        Variables:
+          RULES_TABLE: !Ref RulesTable
+          GOALS_TABLE: !Ref GoalsTable
+          USER_PREFERENCES_TABLE: !Ref UserPreferencesTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RulesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GoalsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserPreferencesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules-goals
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-rules-goals/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  CreateRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-rule/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/create-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-rule/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  ToggleRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/toggle-rule/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}/toggle
+            Method: PATCH
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/toggle-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  DeleteRuleFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/delete-rule/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RulesTable
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/rules/{ruleId}
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/delete-rule/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Analytics Function (Unified for all analytics types)
+  AnalyticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/analytics/app.handler
+
+      Description: Unified analytics endpoint - supports hourly, daily-win-rate, symbol-distribution, strategy-distribution via ?type= query param
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/analytics
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/analytics/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # User Profile and Preferences Functions
+  GetUserProfileFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-user-profile/app.handler
+
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserPreferencesTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:GetUser
+            Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/profile
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-user-profile/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateUserProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-profile/app.handler
+
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminUpdateUserAttributes
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/profile
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-profile/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateUserPreferencesFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-preferences/app.handler
+
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserPreferencesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/preferences
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-preferences/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateUserNotificationsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-user-notifications/app.handler
+
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserPreferencesTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/user/notifications
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-user-notifications/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Saved Options Functions
+  GetSavedOptionsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-saved-options/app.handler
+
+      Environment:
+        Variables:
+          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SavedOptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/options
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/get-saved-options/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  UpdateSavedOptionsFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/update-saved-options/app.handler
+
+      Environment:
+        Variables:
+          SAVED_OPTIONS_TABLE: !Ref SavedOptionsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SavedOptionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/options
+            Method: PUT
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/update-saved-options/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Stripe Payment & Subscription Functions
+  GetSubscriptionPlansFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-subscription-plans/app.handler
+
+      Environment:
+        Variables:
+          STAGE_NAME: !Ref Environment
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/${Environment}/stripe/price/*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions/plans
+            Method: GET
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/get-subscription-plans/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  GetAdConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/get-ad-config/app.handler
+
+      Environment:
+        Variables:
+          AD_CONFIG_PARAM: !Ref AdConfigParamName
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdConfigParamName}"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/ad-config
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/get-ad-config/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  CreateStripeCheckoutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/create-stripe-checkout/app.handler
+
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/create-stripe-checkout/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  VerifyCheckoutSessionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/verify-checkout-session/app.handler
+
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions/verify
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/verify-checkout-session/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  ManageStripeSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/manage-stripe-subscription/app.handler
+
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        GetSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: GET
+        PauseResumeSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: PUT
+        UndoCancellation:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: PATCH
+        CancelSubscription:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/subscriptions
+            Method: DELETE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/manage-stripe-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  StripeWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/stripe-webhook/app.handler
+
+      Environment:
+        Variables:
+          STRIPE_WEBHOOK_SECRET_PARAM: !Ref StripeWebhookSecretParamName
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+          SUBSCRIPTIONS_TABLE: !If [CreateNewDataResources, !Ref SubscriptionsTable, '']
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeWebhookSecretParamName}"
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/payments/webhook
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/stripe-webhook/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  SubscriptionEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/subscription-email/app.handler
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          FROM_EMAIL: !Sub "noreply@${CustomDomainName}"
+          APP_URL: !Sub "https://${CustomDomainName}"
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ses:SendEmail
+              - ses:SendRawEmail
+            Resource: "*"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        EntryPoints:
+          - src/handlers/subscription-email/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  ReportErrorFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateNewDataResources
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/report-error/app.handler
+      Timeout: 10
+      MemorySize: 128
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !Sub "${ErrorReportsBucket.Arn}/errors/*"
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, '']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/errors/report
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/report-error/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # ========================================================================
+  # Admin Panel Functions (Authorizer + 6 Handlers)
+  # ========================================================================
+
+  AdminAuthorizerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeAdminAuthorizer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AdminAuthorizerFunction.Arn
+
+  AdminAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-authorizer/app.handler
+      Environment:
+        Variables:
+          ADMIN_JWT_SECRET_PARAM: !Ref AdminJwtSecretParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminJwtSecretParamName}"
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-authorizer/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminLoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-login/app.handler
+      Environment:
+        Variables:
+          ADMIN_SECRET_PARAM: !Ref AdminSecretParamName
+          ADMIN_JWT_SECRET_PARAM: !Ref AdminJwtSecretParamName
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminSecretParamName}"
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminJwtSecretParamName}"
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AuthRateLimitTable, !Ref ExistingAuthRateLimitTableName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-login/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminListUsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-list-users/app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-list-users/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-user/app.handler
+      Timeout: 15
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminGetUser
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref GoalsTable, !Sub 'Goals-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, !Sub 'Rules-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref UserPreferencesTable, !Sub 'UserPreferences-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminManageSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-manage-subscription/app.handler
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: "*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/subscription
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-manage-subscription/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-config/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:GetParametersByPath
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/config
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-config/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminUpdateConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-update-config/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/*"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/config
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-update-config/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminListUserTradesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-list-user-trades/app.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !If [CreateNewDataResources, !GetAtt ImagesBucket.Arn, !Sub "arn:aws:s3:::${ExistingImagesBucketName}"]
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !If [CreateNewDataResources, !Sub "${ImagesBucket.Arn}/images/*", !Sub "arn:aws:s3:::${ExistingImagesBucketName}/images/*"]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/trades
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-list-user-trades/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminGetUserStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-get-user-stats/app.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBReadPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}/stats
+            Method: GET
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-get-user-stats/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminUpdateUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-update-user/app.handler
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminUpdateUserAttributes
+            Resource: !GetAtt UserPool.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: PUT
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-update-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  AdminDeleteUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/admin-delete-user/app.handler
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - cognito-idp:AdminDeleteUser
+            Resource: !GetAtt UserPool.Arn
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref AccountsTable, !Sub 'Accounts-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref GoalsTable, !Sub 'Goals-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref RulesTable, !Sub 'Rules-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref DailyStatsTable, '']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SubscriptionsTable, !Sub 'Subscriptions-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref UserPreferencesTable, !Sub 'UserPreferences-${StageName}']
+        - DynamoDBCrudPolicy:
+            TableName: !If [CreateNewDataResources, !Ref SavedOptionsTable, '']
+        - S3CrudPolicy:
+            BucketName: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/admin/users/{userId}
+            Method: DELETE
+            Auth:
+              Authorizer: AdminAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handlers/admin-delete-user/app.ts
+        Minify: true
+        Target: es2020
+        Sourcemap: false
+        External:
+          - "@aws-sdk/*"
+
+  # Custom Domain for API Gateway
+  ApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasCustomDomain
+    Properties:
+      DomainName: !Ref CustomDomainName
+      DomainNameConfigurations:
+        - EndpointType: REGIONAL
+          CertificateArn: !Ref CertificateArn
+
+  ApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasCustomDomain
+    DependsOn:
+      - ApiDomainName
+      - HttpApiStage
+    Properties:
+      DomainName: !Ref CustomDomainName
+      ApiId: !Ref HttpApi
+      Stage: !Ref StageName
+
+  ApiDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasCustomDomain
+    DependsOn: ApiDomainName
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref CustomDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt ApiDomainName.RegionalHostedZoneId
+
+  # ========================================================================
+  # Frontend Infrastructure (S3 + CloudFront + DNS)
+  # Created only when CreateFrontendInfra = "true" (first-time setup).
+  # After creation, keep the parameter as "true" so CloudFormation manages them.
+  # ========================================================================
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateFrontendInfra
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "tradequt.com-${Environment}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "tradequt-${Environment}-oac"
+        Description: !Sub "OAC for TradeQut ${Environment} frontend"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: ShouldCreateFrontendInfra
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "TradeQut ${Environment} frontend"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: !If [IsProd, PriceClass_All, PriceClass_100]
+        Aliases: !If
+          - HasFrontendWwwDomain
+          - - !Ref FrontendDomainName
+            - !Ref FrontendWwwDomain
+          - - !Ref FrontendDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: !Sub "tradequt-${Environment}-s3"
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "tradequt-${Environment}-s3"
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: /_spa.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponsePagePath: /_spa.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  FrontendDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateFrontendDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref FrontendDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
+  FrontendWwwDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateFrontendWwwDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref FrontendWwwDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
+  # ========================================================================
+  # Admin Panel Infrastructure (S3 + CloudFront + DNS)
+  # Created only when CreateAdminInfra = "true".
+  # ========================================================================
+
+  AdminCloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "tradequt-admin-${Environment}-oac"
+        Description: !Sub "OAC for TradeQut ${Environment} admin panel"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  AdminBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateAdminInfra
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "admin.tradequt.com-${Environment}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  AdminBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      Bucket: !Ref AdminBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${AdminBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminDistribution}"
+
+  AdminDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: ShouldCreateAdminInfra
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "TradeQut ${Environment} admin panel"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Aliases:
+          - !Ref AdminDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: !Sub "tradequt-admin-${Environment}-s3"
+            DomainName: !GetAtt AdminBucket.RegionalDomainName
+            OriginAccessControlId: !Ref AdminCloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "tradequt-admin-${Environment}-s3"
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponsePagePath: /index.html
+            ResponseCode: "200"
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: Project
+          Value: TradeQut
+        - Key: Environment
+          Value: !Ref Environment
+
+  AdminDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateAdminDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref AdminDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt AdminDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID (fixed)
+
+Outputs:
+  ApiBaseUrl:
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${CustomDomainName}/${ApiVersion}"
+      - !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/${ApiVersion}"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  TradesTableName:
+    Value: !If [CreateNewDataResources, !Ref TradesTable, !Ref ExistingTradesTableName]
+  ImagesBucketName:
+    Value: !If [CreateNewDataResources, !Ref ImagesBucket, !Ref ExistingImagesBucketName]
+  FrontendDistributionId:
+    Condition: ShouldCreateFrontendInfra
+    Value: !Ref FrontendDistribution
+  FrontendDistributionDomain:
+    Condition: ShouldCreateFrontendInfra
+    Value: !GetAtt FrontendDistribution.DomainName
+  FrontendBucketName:
+    Condition: ShouldCreateFrontendInfra
+    Value: !Ref FrontendBucket
+  ErrorReportsBucketName:
+    Condition: CreateNewDataResources
+    Value: !Ref ErrorReportsBucket
+  CognitoDomain:
+    Condition: HasGoogleAuth
+    Value: !Sub "auth-${StageName}.tradequt.com"
+  ExtractTradesFunctionUrl:
+    Description: Lambda Function URL for extract-trades (bypasses API Gateway 30s timeout)
+    Value: !GetAtt ExtractTradesFunctionUrl.FunctionUrl

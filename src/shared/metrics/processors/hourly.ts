@@ -1,5 +1,6 @@
-import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext } from '../types';
+import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext, ProcessorContext } from '../types';
 import { calcPnL } from '../../utils/pnl';
+import { hourOf } from '../../timezone';
 
 type HourlyEntry = { count: number; wins: number; pnl: number };
 
@@ -11,12 +12,12 @@ export class HourlyProcessor implements MetricProcessor {
   readonly name = 'hourly';
   private hourlyMap: Record<string, HourlyEntry> = {};
 
-  processTrade(trade: TradeRecord): void {
-    const openDate = trade.openDate || '';
-    // Only process if the date has a time component
-    if (!openDate.includes('T')) return;
+  processTrade(trade: TradeRecord, context?: ProcessorContext): void {
+    // Date-only values have no hour; otherwise the hour follows the user's time zone (UTC when unset).
+    const h = hourOf(trade.openDate || '', context?.timeZone);
+    if (h === null) return;
 
-    const hour = new Date(openDate).getUTCHours().toString();
+    const hour = h.toString();
     if (!this.hourlyMap[hour]) this.hourlyMap[hour] = { count: 0, wins: 0, pnl: 0 };
     this.hourlyMap[hour].count++;
 

@@ -282,4 +282,30 @@ describe('update-user-preferences handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.preferences.carryForwardGoalsRules).toBe(true);
   });
+
+  describe('display preferences (BE-E4)', () => {
+    const sent = () => {
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      return Object.fromEntries(Object.entries(input.ExpressionAttributeNames!).filter(([, f]) => f !== 'updatedAt').map(([n, f]) => [f, input.ExpressionAttributeValues![`:${n.slice(1)}`] ?? input.ExpressionAttributeValues![`:${f}`]]));
+    };
+
+    it('stores timeZone, weekStart, pnlPalette and defaultPeriod', async () => {
+      const res = (await handler(makeEvent({ timeZone: 'Asia/Kolkata', weekStart: 'sun', pnlPalette: 'blue-orange', defaultPeriod: '30d' }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(sent()).toMatchObject({ timeZone: 'Asia/Kolkata', weekStart: 'sun', pnlPalette: 'blue-orange', defaultPeriod: '30d' });
+    });
+
+    it.each([
+      ['an unknown time zone', { timeZone: 'Mars/Olympus' }],
+      ['an empty time zone', { timeZone: '' }],
+      ['a week start other than mon/sun', { weekStart: 'fri' }],
+      ['an unknown default period', { defaultPeriod: '5y' }],
+      ['a palette with bad characters', { pnlPalette: 'Blue Orange' }],
+      ['a null body', null],
+    ])('400 for %s', async (_n, body) => {
+      const res = (await handler(makeEvent(body as any), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(400);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -7,7 +7,7 @@ import { getUserId } from '../../shared/auth';
 
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -24,7 +24,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       Key: { userId }
     }));
 
-    const options = result.Item || {
+    const options = {
       userId,
       symbols: [],
       strategies: [],
@@ -33,7 +33,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       newsEvents: [],
       mistakes: [],
       lessons: [],
-      timeframes: []
+      timeframes: [],
+      tags: [],
+      ...(result.Item ?? {}),
     };
 
     log.info('saved options retrieved');

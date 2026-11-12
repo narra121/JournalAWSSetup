@@ -1,0 +1,292 @@
+[
+ {
+  "method": "POST",
+  "path": "/v1/trades",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/trades",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/trades/sync",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/trades/{tradeId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/trades/{tradeId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/trades/bulk-delete",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/images/{imageId+}",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/stats",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/goals/progress",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/signup",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/confirm-signup",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/login",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/refresh",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/firebase-token",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/forgot-password",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/auth/confirm-forgot-password",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/trades/extract",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/enhance-text",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/accounts",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/accounts",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/accounts/{accountId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "PATCH",
+  "path": "/v1/accounts/{accountId}/status",
+  "auth": "cognito"
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/accounts/{accountId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/goals",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/goals/{goalId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/rules",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/rules-goals",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/rules",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/rules/{ruleId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "PATCH",
+  "path": "/v1/rules/{ruleId}/toggle",
+  "auth": "cognito"
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/rules/{ruleId}",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/analytics",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/user/profile",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/user/profile",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/user/preferences",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/user/notifications",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/options",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/options",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/subscriptions/plans",
+  "auth": "public"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/ad-config",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/subscriptions",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/subscriptions/verify",
+  "auth": "cognito"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/subscriptions",
+  "auth": "cognito"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/subscriptions",
+  "auth": "cognito"
+ },
+ {
+  "method": "PATCH",
+  "path": "/v1/subscriptions",
+  "auth": "cognito"
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/subscriptions",
+  "auth": "cognito"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/payments/webhook",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/errors/report",
+  "auth": "public"
+ },
+ {
+  "method": "POST",
+  "path": "/v1/admin/login",
+  "auth": "public"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/admin/users",
+  "auth": "admin"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/admin/users/{userId}",
+  "auth": "admin"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/admin/users/{userId}/subscription",
+  "auth": "admin"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/admin/config",
+  "auth": "admin"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/admin/config",
+  "auth": "admin"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/admin/users/{userId}/trades",
+  "auth": "admin"
+ },
+ {
+  "method": "GET",
+  "path": "/v1/admin/users/{userId}/stats",
+  "auth": "admin"
+ },
+ {
+  "method": "PUT",
+  "path": "/v1/admin/users/{userId}",
+  "auth": "admin"
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/admin/users/{userId}",
+  "auth": "admin"
+ }
+]

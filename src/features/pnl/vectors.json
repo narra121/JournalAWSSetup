@@ -1,0 +1,418 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "name": "long win",
+   "input": {
+    "side": "BUY",
+    "quantity": 10,
+    "entryPrice": 100,
+    "exitPrice": 110
+   },
+   "expected": {
+    "grossPnl": 100.0,
+    "fees": 0.0,
+    "netPnl": 100.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "long loss",
+   "input": {
+    "side": "BUY",
+    "quantity": 10,
+    "entryPrice": 100,
+    "exitPrice": 95
+   },
+   "expected": {
+    "grossPnl": -50.0,
+    "fees": 0.0,
+    "netPnl": -50.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "short win",
+   "input": {
+    "side": "SELL",
+    "quantity": 5,
+    "entryPrice": 200,
+    "exitPrice": 180
+   },
+   "expected": {
+    "grossPnl": 100.0,
+    "fees": 0.0,
+    "netPnl": 100.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "short loss",
+   "input": {
+    "side": "SELL",
+    "quantity": 5,
+    "entryPrice": 200,
+    "exitPrice": 210
+   },
+   "expected": {
+    "grossPnl": -50.0,
+    "fees": 0.0,
+    "netPnl": -50.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "breakeven",
+   "input": {
+    "side": "BUY",
+    "quantity": 3,
+    "entryPrice": 50,
+    "exitPrice": 50
+   },
+   "expected": {
+    "grossPnl": 0.0,
+    "fees": 0.0,
+    "netPnl": 0.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "fees turn win to loss",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 100,
+    "exitPrice": 100.5,
+    "fees": 0.75
+   },
+   "expected": {
+    "grossPnl": 0.5,
+    "fees": 0.75,
+    "netPnl": -0.25,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "fees on loss",
+   "input": {
+    "side": "SELL",
+    "quantity": 2,
+    "entryPrice": 10,
+    "exitPrice": 11,
+    "fees": 1.2
+   },
+   "expected": {
+    "grossPnl": -2.0,
+    "fees": 1.2,
+    "netPnl": -3.2,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "nifty option units multiplier 1",
+   "input": {
+    "side": "BUY",
+    "quantity": 75,
+    "entryPrice": 120.5,
+    "exitPrice": 135.25,
+    "fees": 58.47
+   },
+   "expected": {
+    "grossPnl": 1106.25,
+    "fees": 58.47,
+    "netPnl": 1047.78,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "nifty future units",
+   "input": {
+    "side": "SELL",
+    "quantity": 75,
+    "entryPrice": 24510.0,
+    "exitPrice": 24480.5,
+    "fees": 120.33
+   },
+   "expected": {
+    "grossPnl": 2212.5,
+    "fees": 120.33,
+    "netPnl": 2092.17,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "futures multiplier 50 (ES-style)",
+   "input": {
+    "side": "BUY",
+    "quantity": 2,
+    "entryPrice": 5000.25,
+    "exitPrice": 5003.5,
+    "multiplier": 50,
+    "fees": 4.5
+   },
+   "expected": {
+    "grossPnl": 325.0,
+    "fees": 4.5,
+    "netPnl": 320.5,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "fx lot multiplier 100000",
+   "input": {
+    "side": "BUY",
+    "quantity": 0.1,
+    "entryPrice": 1.08512,
+    "exitPrice": 1.08712,
+    "multiplier": 100000
+   },
+   "expected": {
+    "grossPnl": 20.0,
+    "fees": 0.0,
+    "netPnl": 20.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "fx short jpy",
+   "input": {
+    "side": "SELL",
+    "quantity": 0.5,
+    "entryPrice": 151.234,
+    "exitPrice": 150.734,
+    "multiplier": 100000
+   },
+   "expected": {
+    "grossPnl": 25000.0,
+    "fees": 0.0,
+    "netPnl": 25000.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "gold 100oz contract",
+   "input": {
+    "side": "BUY",
+    "quantity": 0.02,
+    "entryPrice": 2650.1,
+    "exitPrice": 2655.6,
+    "multiplier": 100,
+    "fees": 0.14
+   },
+   "expected": {
+    "grossPnl": 11.0,
+    "fees": 0.14,
+    "netPnl": 10.86,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "broker gross override (MT)",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 1.1,
+    "exitPrice": 1.2,
+    "grossOverride": -12.34,
+    "fees": 3.5
+   },
+   "expected": {
+    "grossPnl": -12.34,
+    "fees": 3.5,
+    "netPnl": -15.84,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "negative fees (swap credit)",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 10,
+    "exitPrice": 10,
+    "fees": -1.25
+   },
+   "expected": {
+    "grossPnl": 0.0,
+    "fees": -1.25,
+    "netPnl": 1.25,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "rounding half up .005",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 0,
+    "exitPrice": 1.005
+   },
+   "expected": {
+    "grossPnl": 1.01,
+    "fees": 0.0,
+    "netPnl": 1.01,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "rounding negative half",
+   "input": {
+    "side": "SELL",
+    "quantity": 1,
+    "entryPrice": 0,
+    "exitPrice": 1.005
+   },
+   "expected": {
+    "grossPnl": -1.01,
+    "fees": 0.0,
+    "netPnl": -1.01,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "float noise 0.1+0.2",
+   "input": {
+    "side": "BUY",
+    "quantity": 3,
+    "entryPrice": 0.1,
+    "exitPrice": 0.2
+   },
+   "expected": {
+    "grossPnl": 0.3,
+    "fees": 0.0,
+    "netPnl": 0.3,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "crypto fractional qty",
+   "input": {
+    "side": "BUY",
+    "quantity": 0.00321,
+    "entryPrice": 67000,
+    "exitPrice": 68250.5,
+    "fees": 0.42
+   },
+   "expected": {
+    "grossPnl": 4.01,
+    "fees": 0.42,
+    "netPnl": 3.59,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "r-multiple long",
+   "input": {
+    "side": "BUY",
+    "quantity": 10,
+    "entryPrice": 100,
+    "exitPrice": 110,
+    "stopLoss": 95
+   },
+   "expected": {
+    "grossPnl": 100.0,
+    "fees": 0.0,
+    "netPnl": 100.0,
+    "rMultiple": 2.0
+   }
+  },
+  {
+   "name": "r-multiple short loss",
+   "input": {
+    "side": "SELL",
+    "quantity": 4,
+    "entryPrice": 50,
+    "exitPrice": 53,
+    "stopLoss": 52,
+    "fees": 0.4
+   },
+   "expected": {
+    "grossPnl": -12.0,
+    "fees": 0.4,
+    "netPnl": -12.4,
+    "rMultiple": -1.55
+   }
+  },
+  {
+   "name": "r-multiple with multiplier",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 1.1,
+    "exitPrice": 1.103,
+    "stopLoss": 1.098,
+    "multiplier": 100000
+   },
+   "expected": {
+    "grossPnl": 300.0,
+    "fees": 0.0,
+    "netPnl": 300.0,
+    "rMultiple": 1.5
+   }
+  },
+  {
+   "name": "stop equals entry -> no R",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 10,
+    "exitPrice": 12,
+    "stopLoss": 10
+   },
+   "expected": {
+    "grossPnl": 2.0,
+    "fees": 0.0,
+    "netPnl": 2.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "stop zero -> no R",
+   "input": {
+    "side": "BUY",
+    "quantity": 1,
+    "entryPrice": 10,
+    "exitPrice": 12,
+    "stopLoss": 0
+   },
+   "expected": {
+    "grossPnl": 2.0,
+    "fees": 0.0,
+    "netPnl": 2.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "multiplier zero treated as 1",
+   "input": {
+    "side": "BUY",
+    "quantity": 2,
+    "entryPrice": 10,
+    "exitPrice": 11,
+    "multiplier": 0
+   },
+   "expected": {
+    "grossPnl": 2.0,
+    "fees": 0.0,
+    "netPnl": 2.0,
+    "rMultiple": null
+   }
+  },
+  {
+   "name": "large inr delivery",
+   "input": {
+    "side": "BUY",
+    "quantity": 1250,
+    "entryPrice": 1534.65,
+    "exitPrice": 1611.4,
+    "fees": 412.88
+   },
+   "expected": {
+    "grossPnl": 95937.5,
+    "fees": 412.88,
+    "netPnl": 95524.62,
+    "rMultiple": null
+   }
+  }
+ ]
+}

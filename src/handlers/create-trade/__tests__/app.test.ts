@@ -364,6 +364,20 @@ describe('create-trade handler', () => {
     expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
   });
 
+  it('keeps an image key under the caller prefix and drops keys of other users', async () => {
+    const trade = {
+      ...validTrade,
+      images: [
+        { id: 'own', url: 'images/user-1/t1/a.png' },
+        { id: 'foreign', url: 'images/user-2/t9/secret.png' },
+      ],
+    };
+    const res = (await handler(makeEvent(trade), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(201);
+    const images = JSON.parse(res.body).data.trade.images;
+    expect(images.map((i: any) => i.key)).toEqual(['images/user-1/t1/a.png']);
+  });
+
   it('uploads multiple images in parallel via Promise.all', async () => {
     const trade = {
       ...validTrade,
@@ -577,9 +591,50 @@ describe('create-trade handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.tradeId).toBe('existing-trade-id');
+    expect(body.data.trade.tradeId).toBe('existing-trade-id');
+    // The lookup uses the stored `<key>-<accountId>` form
+    expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues![':k']).toBe('idem-key-123--1');
     // PutCommand should NOT have been called since we returned the existing trade
     expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+  });
+
+  it('persists CONTRACT §6 fields on single create', async () => {
+    const res = (await handler(makeEvent({ ...validTrade, assetClass: 'options', fees: 12.5, grossPnl: 1012.5, contractMultiplier: 50, underlying: 'NIFTY', optionType: 'call', strike: 22000, expiry: '2026-12-31', externalId: 'T-1', importSource: 'zerodha', importBatchId: 'b1' }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(201);
+    const item = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item!;
+    expect(item).toMatchObject({ assetClass: 'options', fees: 12.5, grossPnl: 1012.5, contractMultiplier: 50, underlying: 'NIFTY', optionType: 'call', strike: 22000, expiry: '2026-12-31', externalId: 'T-1', importSource: 'zerodha', importBatchId: 'b1' });
+  });
+
+  it('bulk: skips an item whose stored idempotency key already exists and persists §6 fields on the others', async () => {
+    ddbMock.on(QueryCommand).callsFake((input) =>
+      input.ExpressionAttributeValues[':k'] === 'dup-1--1' ? { Items: [{ tradeId: 'old' }] } : { Items: [] });
+    ddbMock.on(BatchWriteCommand).resolves({});
+    const res = (await handler(makeEvent({ items: [
+      { ...validTrade, idempotencyKey: 'dup-1', externalId: 'A' },
+      { ...validTrade, idempotencyKey: 'new-2', externalId: 'B', importSource: 'dhan', fees: 3 },
+    ] }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.data.created).toBe(1);
+    expect(body.data.skipped[0]).toMatchObject({ index: 0, tradeId: 'old', reason: 'idempotent_duplicate' });
+    const written = ddbMock.commandCalls(BatchWriteCommand)[0].args[0].input.RequestItems!['test-trades'][0].PutRequest!.Item!;
+    expect(written).toMatchObject({ externalId: 'B', importSource: 'dhan', fees: 3, idempotencyKey: 'new-2--1' });
+  });
+
+  it('stores tags and rejects more than 10 or longer than 24 characters', async () => {
+    const ok = (await handler(makeEvent({ ...validTrade, tags: ['a', 'b'] }), {} as any, () => {})) as any;
+    expect(ok.statusCode).toBe(201);
+    expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.Item!.tags).toEqual(['a', 'b']);
+    const many = (await handler(makeEvent({ ...validTrade, tags: Array.from({ length: 11 }, (_, i) => `t${i}`) }), {} as any, () => {})) as any;
+    expect(many.statusCode).toBe(400);
+  });
+
+  it('attaches an uploaded key (from POST /uploads/images) under the caller prefix and allows at most 6 images', async () => {
+    const ok = (await handler(makeEvent({ ...validTrade, images: [{ key: 'images/user-1/upload/a.png' }, { key: 'images/user-2/upload/b.png' }] }), {} as any, () => {})) as any;
+    expect(ok.statusCode).toBe(201);
+    expect(JSON.parse(ok.body).data.trade.images.map((i: any) => i.key)).toEqual(['images/user-1/upload/a.png']);
+    const seven = Array.from({ length: 7 }, (_, i) => ({ key: `images/user-1/upload/${i}.png` }));
+    expect(((await handler(makeEvent({ ...validTrade, images: seven }), {} as any, () => {})) as any).statusCode).toBe(400);
   });
 
   it('returns 500 when QueryCommand fails during idempotency check', async () => {

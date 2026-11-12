@@ -150,7 +150,7 @@ describe('get-user-profile handler', () => {
   it('returns 401 when token is malformed (no sub claim)', async () => {
     const badHeader = btoa(JSON.stringify({ alg: 'RS256' }));
     const badPayload = btoa(JSON.stringify({ iss: 'bad' }));
-    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } });
+    const event = makeEvent({ headers: { authorization: `Bearer ${badHeader}.${badPayload}.sig` } } as any);
     const res = await handler(event, {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(401);
@@ -200,7 +200,7 @@ describe('get-user-profile handler', () => {
   });
 
   it('returns empty name and email when authorization header has no token (empty Bearer)', async () => {
-    const event = makeEvent({ headers: { authorization: 'Bearer ' } });
+    const event = makeEvent({ headers: { authorization: 'Bearer ' } } as any);
     // getUserId will return undefined for empty bearer => 401
     const res = await handler(event, {} as any, () => {}) as any;
 

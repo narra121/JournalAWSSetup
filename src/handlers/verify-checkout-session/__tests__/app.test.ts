@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 
@@ -494,5 +494,37 @@ describe('verify-checkout-session handler', () => {
     const input = updateCalls[0].args[0].input;
     expect(input.ExpressionAttributeValues![':periodStart']).toBe(new Date(0).toISOString());
     expect(input.ExpressionAttributeValues![':periodEnd']).toBe(new Date(0).toISOString());
+  });
+
+  // ── Replay protection (B-056) ──────────────────────────────
+
+  it('only activates when the stored checkoutSessionId matches and clears it on use', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession());
+    await handler(makeEvent({ session_id: 'cs_test_123' }));
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe('checkoutSessionId = :sid');
+    expect(input.ExpressionAttributeValues![':sid']).toBe('cs_test_123');
+    expect(input.UpdateExpression).toContain('REMOVE checkoutSessionId');
+  });
+
+  it('a replayed old session (condition fails) does not re-activate a cancelled user', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession());
+    const err = new Error('cond');
+    err.name = 'ConditionalCheckFailedException';
+    ddbMock.on(UpdateCommand).rejects(err);
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'cancelled' } });
+    const res = (await handler(makeEvent({ session_id: 'cs_test_123' }))) as any;
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.status).toBe('pending');
+  });
+
+  it('a session already applied by the webhook still reports active', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession());
+    const err = new Error('cond');
+    err.name = 'ConditionalCheckFailedException';
+    ddbMock.on(UpdateCommand).rejects(err);
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'active' } });
+    const res = (await handler(makeEvent({ session_id: 'cs_test_123' }))) as any;
+    expect(JSON.parse(res.body).data.status).toBe('active');
   });
 });

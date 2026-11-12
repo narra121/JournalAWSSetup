@@ -1,0 +1,127 @@
+import { BatchGetCommand, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import type { Context, MiddlewareHandler } from 'hono';
+import { ddb } from '../../shared/dynamo';
+import type { AppEnv } from '../types';
+import { FREE_ACCOUNT_LIMIT } from './entitlements';
+import { planRequired } from './responses';
+
+/** Trades with no account use this id and are never restricted. */
+const UNASSIGNED = '-1';
+
+export async function listAccountIds(userId: string): Promise<string[]> {
+  const ids: string[] = [];
+  let lastKey: Record<string, any> | undefined;
+  do {
+    const res = await ddb.send(
+      new QueryCommand({
+        TableName: process.env.ACCOUNTS_TABLE!,
+        KeyConditionExpression: 'userId = :u',
+        ExpressionAttributeValues: { ':u': userId },
+        ProjectionExpression: 'accountId',
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    ids.push(...(res.Items ?? []).map((i) => i.accountId as string));
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return ids;
+}
+
+/**
+ * Accounts the caller may write to. `null` means all of them: unlimited plan, or at most 2 accounts.
+ * Above the free limit only the (≤ 2) chosen accounts are writable; none until they are chosen.
+ */
+export async function writableAccounts(c: Context<AppEnv>): Promise<string[] | null> {
+  if (c.get('entitlements').features.unlimited_accounts) return null;
+  const all = await listAccountIds(c.get('userId'));
+  if (all.length <= FREE_ACCOUNT_LIMIT) return null;
+  const chosen = (c.get('subscription')?.writableAccountIds as string[] | undefined) ?? [];
+  return chosen.filter((id) => all.includes(id)).slice(0, FREE_ACCOUNT_LIMIT);
+}
+
+/** `POST /accounts`: the free plan holds at most 2 accounts (existing ones are never touched). */
+export function accountLimit(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const entitlements = c.get('entitlements');
+    if (!entitlements.features.unlimited_accounts) {
+      const count = (await listAccountIds(c.get('userId'))).length;
+      if (count >= FREE_ACCOUNT_LIMIT) return planRequired(c, 'unlimited_accounts', entitlements, { limit: FREE_ACCOUNT_LIMIT });
+    }
+    await next();
+  };
+}
+
+/**
+ * Guards writes by account. `accountsOf` returns the accounts a request touches (read from a clone of the body, so the
+ * handler still receives it). Unassigned trades and a request that names no account are allowed.
+ */
+export function writableGuard(accountsOf: (c: Context<AppEnv>, body: any) => Promise<string[]> | string[]): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const writable = await writableAccounts(c);
+    if (writable !== null) {
+      const body = await c.req.raw.clone().json().catch(() => null);
+      const touched = (await accountsOf(c, body)).filter((id) => id && id !== UNASSIGNED);
+      if (touched.some((id) => !writable.includes(id))) {
+        return planRequired(c, 'unlimited_accounts', c.get('entitlements'), { limit: FREE_ACCOUNT_LIMIT, allowedAccountIds: writable });
+      }
+    }
+    await next();
+  };
+}
+
+/** Accounts named by a create body: `accountIds`, `accountId`, or those of every bulk `items[]` entry. */
+export function accountsInCreateBody(_c: Context<AppEnv>, body: any): string[] {
+  const of = (t: any): string[] => (Array.isArray(t?.accountIds) ? t.accountIds : t?.accountId ? [t.accountId] : []);
+  return Array.isArray(body?.items) ? body.items.flatMap(of) : of(body);
+}
+
+/** Accounts a trade update ends up on: those in the body, else the stored trade's account. */
+export async function accountsInTradeUpdate(c: Context<AppEnv>, body: any): Promise<string[]> {
+  const named = accountsInCreateBody(c, body);
+  if (named.length) return named;
+  const res = await ddb.send(
+    new GetCommand({ TableName: process.env.TRADES_TABLE!, Key: { userId: c.get('userId'), tradeId: c.req.param('tradeId')! } }),
+  );
+  return res.Item?.accountId ? [res.Item.accountId] : [];
+}
+
+/** Accounts a bulk update ends on: the new `set.accountId` plus the stored account of every listed trade. */
+export async function accountsInBulkUpdate(c: Context<AppEnv>, body: any): Promise<string[]> {
+  const ids: string[] = Array.isArray(body?.tradeIds) ? body.tradeIds : [];
+  const accounts = new Set<string>();
+  if (typeof body?.set?.accountId === 'string') accounts.add(body.set.accountId);
+  for (let i = 0; i < ids.length; i += 100) {
+    const res = await ddb.send(
+      new BatchGetCommand({
+        RequestItems: { [process.env.TRADES_TABLE!]: { Keys: ids.slice(i, i + 100).map((tradeId) => ({ userId: c.get('userId'), tradeId })), ProjectionExpression: 'accountId' } },
+      }),
+    );
+    for (const it of res.Responses?.[process.env.TRADES_TABLE!] ?? []) if (it.accountId) accounts.add(it.accountId);
+  }
+  return [...accounts];
+}
+
+/** `PUT /me/writable-accounts`: choose which (≤ 2) accounts stay writable on the free plan. */
+export async function saveWritableAccounts(c: Context<AppEnv>, accountIds: unknown) {
+  const userId = c.get('userId');
+  if (!Array.isArray(accountIds) || accountIds.some((id) => typeof id !== 'string') || new Set(accountIds).size !== accountIds.length) {
+    return c.json({ success: false, message: 'accountIds must be a list of distinct account ids', errorCode: 'VALIDATION_ERROR', errorMessage: 'accountIds must be a list of distinct account ids' }, 400);
+  }
+  if (!c.get('entitlements').features.unlimited_accounts && accountIds.length > FREE_ACCOUNT_LIMIT) {
+    return planRequired(c, 'unlimited_accounts', c.get('entitlements'), { limit: FREE_ACCOUNT_LIMIT });
+  }
+  const owned = await listAccountIds(userId);
+  const unknown = (accountIds as string[]).filter((id) => !owned.includes(id));
+  if (unknown.length) {
+    return c.json({ success: false, message: `Unknown accounts: ${unknown.join(', ')}`, errorCode: 'VALIDATION_ERROR', errorMessage: `Unknown accounts: ${unknown.join(', ')}` }, 400);
+  }
+  await ddb.send(
+    new UpdateCommand({
+      TableName: process.env.SUBSCRIPTIONS_TABLE!,
+      Key: { userId },
+      UpdateExpression: 'SET writableAccountIds = :ids, updatedAt = :now',
+      ExpressionAttributeValues: { ':ids': accountIds, ':now': new Date().toISOString() },
+    }),
+  );
+  return c.json({ success: true, message: 'Success', data: { writableAccountIds: accountIds } });
+}

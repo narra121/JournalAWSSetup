@@ -33,7 +33,7 @@ const mockGoals = [
   { userId: 'user-1', goalId: 'g1', goalType: 'profit', period: 'weekly', target: 500, accountId: 'acc1' },
   { userId: 'user-1', goalId: 'g2', goalType: 'winRate', period: 'weekly', target: 65, accountId: 'acc1' },
   { userId: 'user-1', goalId: 'g3', goalType: 'maxDrawdown', period: 'weekly', target: 3, accountId: 'acc1' },
-  { userId: 'user-1', goalId: 'g4', goalType: 'tradeCount', period: 'weekly', target: 8, accountId: 'acc1' },
+  { userId: 'user-1', goalId: 'g4', goalType: 'maxTrades', period: 'weekly', target: 8, accountId: 'acc1' },
 ];
 
 const mockMonthlyGoals = [
@@ -144,7 +144,7 @@ describe('get-goals-progress handler', () => {
     const res = await handler(event as any);
 
     expect(res.statusCode).toBe(401);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
   });
 
@@ -154,7 +154,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.message).toContain('accountId');
   });
@@ -165,7 +165,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.message).toContain('startDate');
   });
@@ -176,7 +176,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.message).toContain('endDate');
   });
@@ -187,7 +187,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.message).toContain('period');
   });
@@ -198,7 +198,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.message).toContain('weekly');
   });
@@ -217,7 +217,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(true);
     expect(body.data.goalProgress).toBeDefined();
 
@@ -256,7 +256,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     // totalPnl from aggregated stats should be reflected in profit.current
     expect(body.data.goalProgress.profit.current).toBe(200);
   });
@@ -283,7 +283,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     // maxDrawdown target is 3. If current <= 3, achieved = true
     expect(body.data.goalProgress.maxDrawdown.achieved).toBe(true);
   });
@@ -302,7 +302,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     // 3 trades <= 8 target, so achieved = true
     expect(body.data.goalProgress.tradeCount.current).toBe(3);
     expect(body.data.goalProgress.tradeCount.target).toBe(8);
@@ -322,7 +322,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.data.goalProgress.profit.current).toBe(150);
     expect(body.data.goalProgress.profit.target).toBe(500);
     expect(body.data.goalProgress.profit.achieved).toBe(false);
@@ -372,7 +372,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(true);
 
     // For ALL accounts, targets should be summed (300 + 200 = 500)
@@ -400,7 +400,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(true);
 
     // With no stats, all progress should be zero
@@ -422,7 +422,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(true);
 
     // All targets should be 0 since no goals exist
@@ -444,7 +444,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.data.ruleCompliance.brokenRulesCounts).toEqual({});
   });
 
@@ -463,7 +463,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     // 2 active rules (r1, r2), r3 is inactive
@@ -486,7 +486,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     // Both r1 and r2 are active and broken, so followedCount = 0
@@ -514,7 +514,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     expect(rc.totalActiveRules).toBe(0);
@@ -534,7 +534,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     // Both rules should be followed since no brokenRulesCounts
@@ -552,7 +552,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(500);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
@@ -597,7 +597,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.success).toBe(true);
 
     // Should have aggregated both pages: tradeCount 2 + 1 = 3
@@ -628,7 +628,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
 
     // The filtered goals should only contain weekly goals
     const returnedGoals = body.data.goals;
@@ -651,7 +651,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
 
     // No weekly goals, so filteredGoals should be empty
     expect(body.data.goals).toHaveLength(0);
@@ -675,7 +675,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     // r1 is broken (count > 0), r2 is not (count = 0)
@@ -695,7 +695,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.message).toBe('Goals progress retrieved successfully');
   });
 
@@ -711,7 +711,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     expect(body.data.rules).toHaveLength(3);
     expect(body.data.rules[0].ruleId).toBe('r1');
   });
@@ -735,7 +735,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
 
     // Only acc1 goals should be returned
     expect(body.data.goals).toHaveLength(2);
@@ -765,7 +765,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     expect(rc.totalActiveRules).toBe(3);
@@ -834,7 +834,7 @@ describe('get-goals-progress handler', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    const body = JSON.parse(res.body!);
     const rc = body.data.ruleCompliance;
 
     // The base-uuid-1 broken count should be remapped to period-uuid-1 via text match

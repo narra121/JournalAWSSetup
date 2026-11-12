@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -46,9 +46,10 @@ function isLegacyRecord(sk: string): boolean {
 
 function createDefaultRules(userId: string, periodKey: string): any[] {
   const now = new Date().toISOString();
-  return DEFAULT_RULES.map(ruleText => ({
+  // Ids are derived (not random) so two concurrent first reads of a period write the same records instead of duplicates.
+  return DEFAULT_RULES.map((ruleText, index) => ({
     userId,
-    ruleId: `${periodKey}#${uuid()}`,
+    ruleId: `${periodKey}#default-${index}`,
     rule: ruleText,
     completed: false,
     isActive: true,
@@ -63,10 +64,10 @@ function createDefaultGoals(userId: string, periodKey: string): any[] {
   const targets = DEFAULT_GOAL_TARGETS[periodType];
 
   return Object.entries(targets).map(([goalType, target]) => {
-    const config = GOAL_TYPE_CONFIG[goalType];
+    const config = GOAL_TYPE_CONFIG[goalType as keyof typeof GOAL_TYPE_CONFIG];
     return {
       userId,
-      goalId: `${periodKey}#${uuid()}`,
+      goalId: `${periodKey}#default-${goalType}`,
       accountId: null,
       goalType,
       period: periodType,
@@ -184,7 +185,7 @@ async function getCarryForward(userId: string): Promise<boolean> {
   }
 }
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
 
@@ -209,21 +210,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     // ── No periodKey: backward-compatible global fetch ──
     if (!periodKey) {
-      const [rulesResult, goalsResult] = await Promise.all([
-        ddb.send(new QueryCommand({
-          TableName: RULES_TABLE,
-          KeyConditionExpression: 'userId = :userId',
-          ExpressionAttributeValues: { ':userId': userId }
-        })),
-        ddb.send(new QueryCommand({
-          TableName: GOALS_TABLE,
-          KeyConditionExpression: 'userId = :userId',
-          ExpressionAttributeValues: { ':userId': userId }
-        }))
-      ]);
-
-      let rules = rulesResult.Items || [];
-      const goals = goalsResult.Items || [];
+      let [rules, goals] = await Promise.all([queryTable(RULES_TABLE, userId), queryTable(GOALS_TABLE, userId)]);
 
       // Ensure user has default rules if none exist (legacy behavior)
       rules = await ensureDefaultRules(userId, rules);
@@ -373,12 +360,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 };
 
+/** The part of a period-scoped id after the period key (`week#2026-11-02#<tail>`), or the whole legacy id. */
+const idTail = (id: string): string => String(id).split('#').pop() as string;
+
 function cloneRules(sourceRules: any[], userId: string, periodKey: string): any[] {
   const now = new Date().toISOString();
   return sourceRules.map(rule => ({
     ...rule,
     userId,
-    ruleId: `${periodKey}#${uuid()}`,
+    ruleId: `${periodKey}#${idTail(rule.ruleId)}`,
     completed: false,
     createdAt: now,
     updatedAt: now,
@@ -390,7 +380,7 @@ function cloneGoals(sourceGoals: any[], userId: string, periodKey: string): any[
   return sourceGoals.map(goal => ({
     ...goal,
     userId,
-    goalId: `${periodKey}#${uuid()}`,
+    goalId: `${periodKey}#${idTail(goal.goalId)}`,
     createdAt: now,
     updatedAt: now,
   }));

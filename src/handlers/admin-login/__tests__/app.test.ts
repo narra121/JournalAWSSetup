@@ -136,6 +136,38 @@ describe('admin-login handler', () => {
     expect(ssmCalls).toHaveLength(2);
   });
 
+  it('rate-limits per source IP, not with one global key (an attacker cannot lock the admin out)', async () => {
+    const limiter = vi.fn().mockResolvedValue({ allowed: true });
+    vi.resetModules();
+    vi.doMock('../../auth-rate-limit-wrapper/rateLimit', () => ({ checkRateLimit: limiter }));
+    const { handler } = await import('../app');
+    setupSsm();
+    const event = makeEvent({ password: ADMIN_PASSWORD }) as any;
+    event.requestContext.http.sourceIp = '203.0.113.9';
+    await handler(event, {} as any, () => {});
+    expect(limiter.mock.calls[0][0]).toMatchObject({ key: 'admin-login:203.0.113.9', limit: 5, windowSeconds: 300 });
+  });
+
+  it('refreshes the cached secrets after 15 minutes (rotation takes effect without a restart)', async () => {
+    vi.useFakeTimers();
+    try {
+      const handler = await freshHandler();
+      setupSsm();
+      await handler(makeEvent({ password: ADMIN_PASSWORD }), {} as any, () => {});
+      vi.advanceTimersByTime(16 * 60 * 1000);
+      await handler(makeEvent({ password: ADMIN_PASSWORD }), {} as any, () => {});
+      expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('400 for a JSON null body or a non-string password', async () => {
+    const handler = await freshHandler();
+    expect(((await handler(makeEvent('null' as any), {} as any, () => {})) as any).statusCode).toBe(400);
+    expect(((await handler(makeEvent({ password: 123 }), {} as any, () => {})) as any).statusCode).toBe(400);
+  });
+
   it('calls SSM with WithDecryption: true', async () => {
     const handler = await freshHandler();
     setupSsm();

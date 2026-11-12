@@ -32,7 +32,7 @@ function makeEvent(
     requestContext: {
       accountId: '123',
       apiId: 'api',
-      authorizer: {},
+      authorizer: { jwt: { claims: { sub: 'acc1' } } },
       protocol: 'HTTP/1.1',
       httpMethod: 'GET',
       identity: {
@@ -420,5 +420,12 @@ describe('get-image handler', () => {
     expect(res.headers['X-Frame-Options']).toBe('DENY');
     expect(res.headers['Cache-Control']).toContain('private');
     expect(res.headers['Referrer-Policy']).toBe('strict-origin-when-cross-origin');
+  });
+
+  it("returns 404 (not the image) when the key belongs to another user", async () => {
+    s3Mock.on(GetObjectCommand).resolves({ Body: createReadableStream('secret') as any, ContentType: 'image/png' });
+    const res = (await handler(makeEvent('someone-else/trade1/photo.png'), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(404);
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
   });
 });

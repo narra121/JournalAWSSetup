@@ -32,6 +32,7 @@ export function computeDailyRecord(
   accountId: string,
   date: string,
   trades: any[],
+  timeZone?: string | null,
 ): DailyStatsRecord | null {
   if (trades.length === 0) return null;
 
@@ -41,7 +42,7 @@ export function computeDailyRecord(
   const sorted = [...trades].sort(byDateComparator);
 
   for (let i = 0; i < sorted.length; i++) {
-    const ctx = { date, accountId, userId, tradeIndex: i, totalTradesInDay: sorted.length };
+    const ctx = { date, accountId, userId, tradeIndex: i, totalTradesInDay: sorted.length, timeZone };
     processors.forEach(p => p.processTrade(sorted[i], ctx));
   }
 

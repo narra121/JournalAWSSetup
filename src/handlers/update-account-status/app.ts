@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
+import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
@@ -8,7 +8,7 @@ import { checkSubscription } from '../../shared/subscription';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   
@@ -40,6 +40,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     log.warn('invalid json', { error: (e as any)?.message });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
   const validStatuses = ['active', 'breached', 'passed', 'withdrawn', 'inactive'];
   if (!data.status || !validStatuses.includes(data.status)) {

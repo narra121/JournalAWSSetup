@@ -1,15 +1,12 @@
-import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
-import { ddb } from '../../shared/dynamo';
-import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { removeImagesForTrade } from '../../shared/images';
-import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import type { ApiHandler } from '../../shared/types';
+import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { checkSubscription } from '../../shared/subscription';
 import { makeLogger } from '../../shared/logger';
+import { softDeleteTrade } from '../../shared/softDelete';
 
-const TRADES_TABLE = process.env.TRADES_TABLE!;
-
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+/** Soft delete: the trade is hidden everywhere and can be restored for 30 days (POST /v1/trades/restore). */
+export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext.requestId, userId: getUserId(event) ?? undefined });
   try {
     const userId = getUserId(event);
@@ -21,24 +18,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');
 
-    const deleteResult = await ddb.send(new DeleteCommand({
-      TableName: TRADES_TABLE,
-      Key: { userId, tradeId },
-      ConditionExpression: 'attribute_exists(tradeId)',
-      ReturnValues: 'ALL_OLD',
-    }));
+    const trade = await softDeleteTrade(userId, tradeId);
+    if (!trade) return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
 
-    const trade = deleteResult.Attributes;
-    if (!trade) {
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
-    }
-
-    await removeImagesForTrade(userId, tradeId);
-    
-    // Return the deleted trade details for frontend cache optimization
-    return envelope({ statusCode: 200, data: { trade }, message: 'Deleted' });
+    return envelope({ statusCode: 200, data: { trade: { ...trade, deletedAt: new Date().toISOString() } }, message: 'Deleted' });
   } catch (e: any) {
-    if (e.name === 'ConditionalCheckFailedException') return errorResponse(404, ErrorCodes.NOT_FOUND, 'Not found');
     log.error('delete-trade failed', { error: e.message, stack: e.stack });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Internal error');
   }
