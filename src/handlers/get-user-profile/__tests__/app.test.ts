@@ -92,7 +92,7 @@ describe('get-user-profile handler', () => {
     expect(body.data.user.preferences).toBeDefined();
     expect(body.data.user.preferences.darkMode).toBe(false);
     expect(body.data.user.preferences.currency).toBe('USD');
-    expect(body.data.user.preferences.timezone).toBe('UTC');
+    expect(body.data.user.preferences.timeZone).toBe('UTC');
     expect(body.data.user.preferences.notifications.tradeReminders).toBe(true);
     expect(body.data.user.preferences.notifications.weeklyReport).toBe(true);
     expect(body.data.user.preferences.notifications.goalAlerts).toBe(true);

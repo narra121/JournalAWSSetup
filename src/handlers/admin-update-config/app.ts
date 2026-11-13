@@ -27,6 +27,13 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Only the ad configuration parameter can be changed');
     }
 
+    // get-ad-config parses this for every free user and caches the raw string for an hour: a typo here would break it all that time.
+    try {
+      JSON.parse(value);
+    } catch {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'value must be valid JSON');
+    }
+
     await ssm.send(new PutParameterCommand({ Name: name, Value: value, Type: 'String', Overwrite: true }));
 
     log.info('Config updated', { name });

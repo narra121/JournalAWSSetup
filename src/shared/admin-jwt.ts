@@ -14,7 +14,7 @@ export function signAdminToken(secret: string): string {
 
 export function verifyAdminToken(token: string, secret: string): AdminTokenPayload | null {
   try {
-    const payload = jwt.verify(token, secret) as AdminTokenPayload;
+    const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AdminTokenPayload;
     if (payload.role !== 'admin') return null;
     return payload;
   } catch {

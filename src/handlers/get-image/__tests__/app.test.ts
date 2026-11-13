@@ -107,7 +107,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Unauthorized');
+    expect(body.message).toContain('log in');
   });
 
   it('returns 401 when authorization header has no Bearer prefix', async () => {
@@ -128,7 +128,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('imageId is required');
+    expect(body.message).toContain('Choose an image');
   });
 
   it('returns 400 for invalid image extension', async () => {
@@ -140,7 +140,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Invalid image format');
+    expect(body.message).toContain('Only JPG, PNG, GIF and WebP');
   });
 
   it('returns 400 for path traversal with ..', async () => {
@@ -152,7 +152,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Invalid image ID format');
+    expect(body.message).toContain("image link isn't valid");
   });
 
   it('returns 400 for path traversal with backslash', async () => {
@@ -164,7 +164,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Invalid image ID format');
+    expect(body.message).toContain("image link isn't valid");
   });
 
   it('returns 400 when path has too few parts', async () => {
@@ -176,7 +176,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Expected: accountId/tradeId/filename');
+    expect(body.message).toContain("image link isn't valid");
   });
 
   it('returns 400 when path has too many parts', async () => {
@@ -188,7 +188,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Expected: accountId/tradeId/filename');
+    expect(body.message).toContain("image link isn't valid");
   });
 
   // ── S3 errors ───────────────────────────────────────────────
@@ -206,7 +206,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Image not found');
+    expect(body.message).toContain("image couldn't be found");
   });
 
   it('returns 500 when IMAGES_BUCKET env is missing', async () => {
@@ -225,7 +225,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Server configuration error');
+    expect(body.message).toContain('Something went wrong on our side');
   });
 
   it('returns 500 when S3 returns unexpected error', async () => {
@@ -239,7 +239,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Failed to retrieve image');
+    expect(body.message).toContain("couldn't load that image");
   });
 
   // ── Security-focused: path traversal variants ───────────────
@@ -253,7 +253,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toBeDefined();
+    expect(body.message).toBeDefined();
   });
 
   it('rejects imageId with encoded path traversal %2e%2e%2f', async () => {
@@ -310,7 +310,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('imageId is required');
+    expect(body.message).toContain('Choose an image');
   });
 
   // ── S3 error variants ──────────────────────────────────────
@@ -329,9 +329,9 @@ describe('get-image handler', () => {
     // AccessDenied is not NoSuchKey, so falls through to generic 500
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Failed to retrieve image');
+    expect(body.message).toContain("couldn't load that image");
     // Must not expose "Access Denied" raw error to client
-    expect(body.error).not.toContain('Access Denied');
+    expect(body.message).not.toContain('Access Denied');
   });
 
   it('returns 404 when S3 GetObject returns null Body', async () => {
@@ -348,7 +348,7 @@ describe('get-image handler', () => {
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.error).toContain('Image not found');
+    expect(body.message).toContain("image couldn't be found");
   });
 
   // ── Content-type inference ─────────────────────────────────

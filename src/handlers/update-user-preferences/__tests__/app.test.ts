@@ -50,7 +50,7 @@ const existingPreferences = {
   userId: 'user-1',
   darkMode: false,
   currency: 'USD',
-  timezone: 'UTC',
+  timeZone: 'UTC',
   notifications: {
     tradeReminders: true,
     weeklyReport: true,
@@ -70,7 +70,7 @@ beforeEach(() => {
     const values = input.ExpressionAttributeValues || {};
     if (values[':darkMode'] !== undefined) merged.darkMode = values[':darkMode'];
     if (values[':currency'] !== undefined) merged.currency = values[':currency'];
-    if (values[':timezone'] !== undefined) merged.timezone = values[':timezone'];
+    if (values[':timeZone'] !== undefined) merged.timeZone = values[':timeZone'];
     if (values[':carryForward'] !== undefined) merged.carryForwardGoalsRules = values[':carryForward'];
     if (values[':updatedAt'] !== undefined) (merged as any).updatedAt = values[':updatedAt'];
     return { Attributes: merged };
@@ -81,14 +81,14 @@ describe('update-user-preferences handler', () => {
   // ── Success ─────────────────────────────────────────────────
 
   it('updates preferences and returns 200', async () => {
-    const res = await handler(makeEvent({ darkMode: true, currency: 'EUR', timezone: 'America/New_York' }), {} as any, () => {}) as any;
+    const res = await handler(makeEvent({ darkMode: true, currency: 'EUR', timeZone: 'America/New_York' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.preferences.darkMode).toBe(true);
     expect(body.data.preferences.currency).toBe('EUR');
-    expect(body.data.preferences.timezone).toBe('America/New_York');
+    expect(body.data.preferences.timeZone).toBe('America/New_York');
 
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls).toHaveLength(1);
@@ -101,7 +101,7 @@ describe('update-user-preferences handler', () => {
       const merged: any = { userId: 'user-1' };
       if (values[':darkMode'] !== undefined) merged.darkMode = values[':darkMode'];
       if (values[':currency'] !== undefined) merged.currency = values[':currency'];
-      if (values[':timezone'] !== undefined) merged.timezone = values[':timezone'];
+      if (values[':timeZone'] !== undefined) merged.timeZone = values[':timeZone'];
       if (values[':carryForward'] !== undefined) merged.carryForwardGoalsRules = values[':carryForward'];
       if (values[':updatedAt'] !== undefined) merged.updatedAt = values[':updatedAt'];
       // For fields not provided, DynamoDB won't have them in the item
@@ -116,7 +116,7 @@ describe('update-user-preferences handler', () => {
     expect(body.data.preferences.darkMode).toBe(true);
     // defaults preserved for fields not in request
     expect(body.data.preferences.currency).toBe('USD');
-    expect(body.data.preferences.timezone).toBe('UTC');
+    expect(body.data.preferences.timeZone).toBe('UTC');
 
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls).toHaveLength(1);
@@ -130,7 +130,7 @@ describe('update-user-preferences handler', () => {
     expect(body.data.preferences.darkMode).toBe(true);
     // unchanged fields stay the same
     expect(body.data.preferences.currency).toBe('USD');
-    expect(body.data.preferences.timezone).toBe('UTC');
+    expect(body.data.preferences.timeZone).toBe('UTC');
   });
 
   // ── Auth errors ─────────────────────────────────────────────
@@ -238,13 +238,49 @@ describe('update-user-preferences handler', () => {
     expect(body.data.preferences.darkMode).toBe(false); // unchanged
   });
 
-  it('handles only timezone update', async () => {
-    const res = await handler(makeEvent({ timezone: 'Asia/Kolkata' }), {} as any, () => {}) as any;
+  it('handles only timeZone update', async () => {
+    const res = await handler(makeEvent({ timeZone: 'Asia/Kolkata' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.data.preferences.timezone).toBe('Asia/Kolkata');
+    expect(body.data.preferences.timeZone).toBe('Asia/Kolkata');
     expect(body.data.preferences.currency).toBe('USD'); // unchanged
+  });
+
+  describe('typed values and the legacy timezone key (BE-077)', () => {
+    it('no longer writes the legacy `timezone` key that nothing reads', async () => {
+      const res = await handler(makeEvent({ timezone: 'Asia/Kolkata', darkMode: true }), {} as any, () => {}) as any;
+
+      expect(res.statusCode).toBe(200);
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(input.UpdateExpression).not.toContain('timezone');
+      expect(Object.keys(input.ExpressionAttributeValues!)).not.toContain(':timezone');
+    });
+
+    it.each([
+      ['darkMode', 'true'],
+      ['darkMode', 1],
+      ['carryForwardGoalsRules', 'false'],
+      ['carryForwardGoalsRules', null],
+    ])('rejects %s = %j with 400 and writes nothing', async (field, value) => {
+      const res = await handler(makeEvent({ [field]: value }), {} as any, () => {}) as any;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain(`${field} must be true or false`);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it.each([[{ a: 1 }], [42], ['dollars'], [''], [null]])('rejects currency %j with 400', async (currency) => {
+      const res = await handler(makeEvent({ currency }), {} as any, () => {}) as any;
+
+      expect(res.statusCode).toBe(400);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it('stores the normalised currency code', async () => {
+      await handler(makeEvent({ currency: ' inr ' }), {} as any, () => {});
+      expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues![':currency']).toBe('INR');
+    });
   });
 
   // ── carryForwardGoalsRules ──────────────────────────────────

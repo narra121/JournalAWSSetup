@@ -3,6 +3,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import {
   CognitoIdentityProviderClient,
   AdminUpdateUserAttributesCommand,
+  ListUsersCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
@@ -56,6 +57,7 @@ function makeEvent(
 beforeEach(() => {
   cognitoMock.reset();
   cognitoMock.on(AdminUpdateUserAttributesCommand).resolves({});
+  cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_999' }] });
 });
 
 // ─── Tests ────────────────────────────────────────────────────
@@ -134,16 +136,29 @@ describe('admin-update-user handler', () => {
     expect(body.data.updated).toContain('name');
   });
 
-  it('sends correct AdminUpdateUserAttributesCommand to Cognito', async () => {
+  it('sends AdminUpdateUserAttributesCommand with the pool username found by sub, not the sub (BE-003)', async () => {
     await handler(makeEvent(TEST_USER_ID, { name: 'Updated' }), {} as any, () => {});
 
+    expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input).toMatchObject({
+      UserPoolId: 'us-east-1_TestPool',
+      Filter: `sub = "${TEST_USER_ID}"`,
+    });
     const calls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(calls).toHaveLength(1);
     expect(calls[0].args[0].input).toEqual({
       UserPoolId: 'us-east-1_TestPool',
-      Username: TEST_USER_ID,
+      Username: 'Google_999',
       UserAttributes: [{ Name: 'name', Value: 'Updated' }],
     });
+  });
+
+  it('returns 500 and updates nothing when the pool has no user with that sub', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({ Users: [] });
+
+    const res = (await handler(makeEvent(TEST_USER_ID, { name: 'Updated' }), {} as any, () => {})) as any;
+
+    expect(res.statusCode).toBe(500);
+    expect(cognitoMock.commandCalls(AdminUpdateUserAttributesCommand)).toHaveLength(0);
   });
 
   it('does not call Cognito when only unknown fields are provided', async () => {

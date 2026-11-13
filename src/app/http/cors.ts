@@ -3,7 +3,8 @@ import type { MiddlewareHandler } from 'hono';
 // Replica of the HTTP API CorsConfiguration that served the frontend until 2026-11 (measured with curl):
 // allowed origin echoed + `vary: origin` + expose headers on every response; preflight answered with 204.
 const ALLOW_METHODS = 'DELETE,GET,OPTIONS,PATCH,POST,PUT';
-const ALLOW_HEADERS = 'authorization,content-type,x-amz-date,x-api-key';
+// `idempotency-key`: the web app sends it on POST /v1/trades. Keep ApiResponseHeadersPolicy in template.yaml in step.
+const ALLOW_HEADERS = 'authorization,content-type,idempotency-key,x-amz-date,x-api-key';
 const EXPOSE_HEADERS = 'authorization,content-type';
 
 export function allowedOrigins(): string[] {

@@ -1,4 +1,4 @@
-import { DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchGetCommand, DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,13 @@ const stub = (...args: any[]) => {
 vi.mock('../../handlers/create-account/app', () => ({ handler: stub }));
 vi.mock('../../handlers/create-trade/app', () => ({ handler: stub }));
 vi.mock('../../handlers/update-trade/app', () => ({ handler: stub }));
+vi.mock('../../handlers/delete-trade/app', () => ({ handler: stub }));
+vi.mock('../../handlers/bulk-delete-trades/app', () => ({ handler: stub }));
+vi.mock('../../handlers/bulk-update-trades/app', () => ({ handler: stub }));
+vi.mock('../../handlers/restore-trades/app', () => ({ handler: stub }));
+vi.mock('../../handlers/update-account/app', () => ({ handler: stub }));
+vi.mock('../../handlers/update-account-status/app', () => ({ handler: stub }));
+vi.mock('../../handlers/delete-account/app', () => ({ handler: stub }));
 
 const ddb = mockClient(DynamoDBDocumentClient);
 const { createApp } = await import('../app');
@@ -105,6 +112,91 @@ describe('writes on a free plan with more than 2 accounts', () => {
     subscription = { userId: 'u1', status: 'cancelled' };
     accounts = ['a1', 'a2'];
     expect((await send('POST', '/v1/trades', { accountIds: ['a2'] })).status).toBe(200);
+  });
+});
+
+describe('every write to a read-only account is blocked, not only create and update (BE-062)', () => {
+  const storedAccount: Record<string, string> = { 'in-a1': 'a1', 'in-a3': 'a3' };
+
+  beforeEach(() => {
+    subscription.writableAccountIds = ['a1', 'a2'];
+    ddb.on(BatchGetCommand).callsFake((input) => ({
+      Responses: {
+        trades: input.RequestItems.trades.Keys.filter((k: any) => storedAccount[k.tradeId]).map((k: any) => ({ accountId: storedAccount[k.tradeId] })),
+      },
+    }));
+  });
+
+  it('DELETE /v1/trades/{id} of a trade in a read-only account → 402; in a writable account → 200', async () => {
+    ddb.on(GetCommand).callsFake((input) =>
+      input.TableName === 'subs' ? { Item: subscription } : { Item: { tradeId: input.Key.tradeId, accountId: storedAccount[input.Key.tradeId] } },
+    );
+    expect((await send('DELETE', '/v1/trades/in-a3')).status).toBe(402);
+    expect((await send('DELETE', '/v1/trades/in-a1')).status).toBe(200);
+    expect(reached).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['/v1/trades/bulk-delete'], ['/v1/trades/restore']])('POST %s with a trade of a read-only account → 402 and the handler is not reached', async (path) => {
+    const blocked = await send('POST', path, { tradeIds: ['in-a1', 'in-a3'] });
+    expect(blocked.status).toBe(402);
+    expect(await blocked.json()).toMatchObject({ errorCode: 'PLAN_REQUIRED', error: { feature: 'unlimited_accounts', allowedAccountIds: ['a1', 'a2'] } });
+    expect(reached).not.toHaveBeenCalled();
+    expect((await send('POST', path, { tradeIds: ['in-a1'] })).status).toBe(200);
+  });
+
+  it('PUT /v1/accounts/{id} and PATCH /v1/accounts/{id}/status change only writable accounts', async () => {
+    expect((await send('PUT', '/v1/accounts/a3', { name: 'x' })).status).toBe(402);
+    expect((await send('PATCH', '/v1/accounts/a3/status', { status: 'inactive' })).status).toBe(402);
+    expect((await send('PUT', '/v1/accounts/a1', { name: 'x' })).status).toBe(200);
+    expect((await send('PATCH', '/v1/accounts/a2/status', { status: 'inactive' })).status).toBe(200);
+  });
+
+  it('deleting an account stays open: it is the way back under the limit', async () => {
+    expect((await send('DELETE', '/v1/accounts/a3')).status).toBe(200);
+  });
+
+  it('Pro users are never restricted', async () => {
+    subscription = { userId: 'u1', status: 'active' };
+    expect((await send('POST', '/v1/trades/bulk-delete', { tradeIds: ['in-a3'] })).status).toBe(200);
+    expect((await send('PUT', '/v1/accounts/a3', {})).status).toBe(200);
+  });
+});
+
+describe('bulk update with throttled BatchGet (BE-061)', () => {
+  beforeEach(() => {
+    subscription.writableAccountIds = ['a1', 'a2'];
+  });
+
+  it('retries unprocessed keys, so a trade of a read-only account is still caught', async () => {
+    ddb
+      .on(BatchGetCommand)
+      .resolvesOnce({ Responses: { trades: [{ accountId: 'a1' }] }, UnprocessedKeys: { trades: { Keys: [{ userId: 'u1', tradeId: 't2' }] } } })
+      .resolves({ Responses: { trades: [{ accountId: 'a3' }] } });
+
+    const res = await send('POST', '/v1/trades/bulk-update', { tradeIds: ['t1', 't2'], set: { tradeNotes: 'n' } });
+
+    expect(res.status).toBe(402);
+    expect(ddb.commandCalls(BatchGetCommand)).toHaveLength(2);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (no update) when keys stay unprocessed', async () => {
+    ddb.on(BatchGetCommand).resolves({ Responses: { trades: [] }, UnprocessedKeys: { trades: { Keys: [{ userId: 'u1', tradeId: 't2' }] } } });
+
+    const res = await send('POST', '/v1/trades/bulk-update', { tradeIds: ['t1', 't2'], set: { tradeNotes: 'n' } });
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('does not send duplicate keys and leaves oversized lists to the handler', async () => {
+    ddb.on(BatchGetCommand).resolves({ Responses: { trades: [{ accountId: 'a1' }] } });
+    await send('POST', '/v1/trades/bulk-update', { tradeIds: ['t1', 't1'], set: { tradeNotes: 'n' } });
+    expect(ddb.commandCalls(BatchGetCommand)[0].args[0].input.RequestItems!.trades.Keys).toHaveLength(1);
+
+    ddb.resetHistory();
+    await send('POST', '/v1/trades/bulk-update', { tradeIds: Array.from({ length: 201 }, (_, i) => `t${i}`) });
+    expect(ddb.commandCalls(BatchGetCommand)).toHaveLength(0);
   });
 });
 

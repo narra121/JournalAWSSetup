@@ -29,6 +29,24 @@ export function memoryStore(): AiStore & { items: Map<string, AiItem> } {
     async delete(u, sks) {
       for (const sk of sks) items.delete(id(u, sk));
     },
+    async putIfFree(item, nowMs) {
+      const held = items.get(id(item.userId, item.sk));
+      if (held && !(typeof held.expiresAt === 'number' && held.expiresAt < nowMs)) return false;
+      items.set(id(item.userId, item.sk), structuredClone(item));
+      return true;
+    },
+    async patch(u, sk, set) {
+      const it = items.get(id(u, sk));
+      if (it) Object.assign(it, structuredClone(set));
+    },
+    async addToCount(u, sk, attr, by, below) {
+      const it = items.get(id(u, sk));
+      if (!it) return false;
+      const cur = typeof it[attr] === 'number' ? (it[attr] as number) : 0;
+      if (below !== undefined && it[attr] !== undefined && cur >= below) return false;
+      it[attr] = cur + by;
+      return true;
+    },
   };
 }
 
@@ -50,7 +68,7 @@ export function fakeQuota(limits: Partial<Record<QuotaFeature, number>> = {}) {
 export function tradeSource(trades: TradeRow[], imported: string[] = [], truncated = false): TradeSource {
   return {
     async loadTrades(_u, r) {
-      return { trades: trades.filter((t) => (!r.accountId || t.accountId === r.accountId) && t.openDate >= r.from && t.openDate <= `${r.to}T23:59:59.999Z`), truncated };
+      return { trades: trades.filter((t) => (!r.accountId || t.accountId === r.accountId) && t.openDate >= r.from && t.openDate <= `${r.to}T23:59:59.999Z` && (!r.filter || r.filter(t))), truncated };
     },
     async loadRuleTexts() {
       return new Map([['r1', 'No trades after 2 consecutive losses']]);

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectsCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('TRADES_TABLE', 'test-trades');
@@ -9,10 +9,6 @@ vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const s3Mock = mockClient(S3Client);
-
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
 
 const { handler } = await import('../app.ts');
 
@@ -57,21 +53,6 @@ beforeEach(() => {
 });
 
 describe('update-trade handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent('trade-1', { symbol: 'MSFT' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('updates a trade and returns 200', async () => {
@@ -140,10 +121,10 @@ describe('update-trade handler', () => {
   describe('partial updates leave omitted fields unchanged (BE-R10)', () => {
     const stored = { ...existingTrade, pnl: 123.45, netPnl: 120, riskRewardRatio: 2.5, riskAmount: 0, images: [] };
 
-    it('a notes-only edit keeps accountId, pnl, netPnl and riskRewardRatio', async () => {
+    it('a notes-only edit writes only the notes and updatedAt, so accountId, pnl, netPnl and riskRewardRatio stay as stored (BE-032)', async () => {
       ddbMock.on(GetCommand).resolves({ Item: { ...stored } });
       await handler(makeEvent('trade-1', { tradeNotes: 'new note' }), {} as any, () => {});
-      expect(written()).toMatchObject({ accountId: 'acc-1', pnl: 123.45, netPnl: 120, riskRewardRatio: 2.5, tradeNotes: 'new note' });
+      expect(Object.keys(written()).sort()).toEqual(['tradeNotes', 'updatedAt']);
     });
 
     it('recomputes pnl only when an input of the formula changes', async () => {
@@ -194,7 +175,7 @@ describe('update-trade handler', () => {
 
     it("drops a key under another user's prefix instead of attaching it", async () => {
       await handler(makeEvent('trade-1', { images: [{ id: 'x', url: 'images/user-2/t/secret.png' }] }), {} as any, () => {});
-      expect(written().images).toEqual([]);
+      expect(written().images).toBeUndefined();
     });
 
     it('attaches an uploaded key under the caller prefix, drops foreign keys, and caps images at 6', async () => {
@@ -332,18 +313,13 @@ describe('update-trade handler', () => {
 
   // ── Partial close validation ──────────────────────────────────
 
-  it('handles partial close with negative quantity', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, partialCloses: [] } });
-    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingTrade } });
-
+  it('rejects a partial close with a negative quantity', async () => {
     const res = await handler(makeEvent('trade-1', {
       partialCloses: [{ quantity: -1, exitPrice: 1.1, time: '2024-06-16T00:00:00Z' }],
     }), {} as any, () => {}) as any;
 
-    // Handler does not reject negative quantity; it passes through
-    expect(res.statusCode).toBe(200);
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    expect(res.statusCode).toBe(400);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
   it('skips partial close entries missing required exitPrice', async () => {
@@ -378,19 +354,11 @@ describe('update-trade handler', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('accepts empty string for symbol', async () => {
-    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingTrade, symbol: '' } });
-
+  it('rejects an empty symbol', async () => {
     const res = await handler(makeEvent('trade-1', { symbol: '' }), {} as any, () => {}) as any;
 
-    // Handler does not validate symbol value — it stores whatever is provided
-    expect(res.statusCode).toBe(200);
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    const updateInput = updateCalls[0].args[0].input as any;
-    const symbolValue = Object.entries(updateInput.ExpressionAttributeValues || {})
-      .find(([k]) => k === ':symbol');
-    expect(symbolValue).toBeDefined();
-    expect(symbolValue![1]).toBe('');
+    expect(res.statusCode).toBe(400);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
   it('returns 404 when trade is deleted between GET and UPDATE (race condition)', async () => {
@@ -450,5 +418,153 @@ describe('update-trade handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
+  });
+
+  // ── Validation (BE-005) ──────────────────────────────────────
+
+  describe('body validation (BE-005)', () => {
+    const rejected = async (body: any) => {
+      ddbMock.resetHistory();
+      const res = (await handler(makeEvent('trade-1', body), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).errorCode).toBe('VALIDATION_ERROR');
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    };
+
+    it.each([
+      ['a month of 13', { openDate: '2026-13-01' }],
+      ['garbage text as a date', { openDate: 'garbage' }],
+      ['day 32', { closeDate: '2026-01-32T10:00:00Z' }],
+      ['hour 25', { openDate: '2026-01-10T25:00:00Z' }],
+      ['a text quantity', { quantity: 'abc' }],
+      ['zero quantity', { quantity: 0 }],
+      ['an unknown side', { side: 'HOLD' }],
+      ['an unknown outcome', { outcome: 'WIN' }],
+      ['mistakes that are not text', { mistakes: [{}] }],
+      ['a text price', { entryPrice: 'x' }],
+    ])('400 before reading the item for %s', async (_name, body) => {
+      await rejected(body);
+    });
+
+    it('accepts date-only, UTC and offset instants', async () => {
+      for (const openDate of ['2026-04-10', '2026-04-10T09:30:00Z', '2026-04-10T09:30:00.000Z', '2026-04-10T15:00:00+05:30']) {
+        const res = (await handler(makeEvent('trade-1', { openDate }), {} as any, () => {})) as any;
+        expect(res.statusCode).toBe(200);
+      }
+    });
+  });
+
+  // ── CONTRACT §6 fields (X-002) ───────────────────────────────
+
+  describe('contract fields (X-002)', () => {
+    it('stores edited assetClass, contractMultiplier, fees, grossPnl and option fields', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, fees: 5, assetClass: 'stock' } });
+      await handler(makeEvent('trade-1', {
+        assetClass: 'options', contractMultiplier: 50, fees: 12, grossPnl: 480, optionType: 'call', strike: 150.5, expiry: '2026-12-31', underlying: 'AAPL',
+      }), {} as any, () => {});
+      expect(written()).toMatchObject({
+        assetClass: 'options', contractMultiplier: 50, fees: 12, grossPnl: 480, optionType: 'call', strike: 150.5, expiry: '2026-12-31', underlying: 'AAPL',
+      });
+    });
+
+    it('an explicit null removes the stored field; an absent field is left alone', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, fees: 5, assetClass: 'options', strike: 100 } });
+      await handler(makeEvent('trade-1', { fees: null, assetClass: null, tradeNotes: 'x' }), {} as any, () => {});
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(input.UpdateExpression).toMatch(/REMOVE #fees, #assetClass$/);
+      expect(Object.values(input.ExpressionAttributeNames as Record<string, string>)).not.toContain('strike');
+      expect(written().fees).toBeUndefined();
+    });
+
+    it('rejects an unknown assetClass and a text fee', async () => {
+      for (const body of [{ assetClass: 'bond' }, { fees: 'free' }, { optionType: 'straddle' }]) {
+        expect(((await handler(makeEvent('trade-1', body), {} as any, () => {})) as any).statusCode).toBe(400);
+      }
+    });
+
+    it('P&L fallback applies the contract multiplier', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, pnl: null, quantity: 2, entryPrice: 100, exitPrice: 110 } });
+      await handler(makeEvent('trade-1', { contractMultiplier: 50 }), {} as any, () => {});
+      expect(written().pnl).toBe(1000);
+    });
+  });
+
+  // ── Concurrency (BE-032) ─────────────────────────────────────
+
+  describe('concurrent change (BE-032)', () => {
+    const conflict = (item?: any) => Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', Item: item });
+
+    it('conditions the write on a live trade with the updatedAt that was read', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, updatedAt: '2024-06-15T00:00:00Z' } });
+      await handler(makeEvent('trade-1', { tradeNotes: 'x' }), {} as any, () => {});
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(input.ConditionExpression).toContain('attribute_not_exists(deletedAt)');
+      expect(input.ConditionExpression).toContain('updatedAt = :prevUpdatedAt');
+      expect((input.ExpressionAttributeValues as any)[':prevUpdatedAt']).toBe('2024-06-15T00:00:00Z');
+    });
+
+    it('a trade without updatedAt is conditioned on the attribute still being absent', async () => {
+      await handler(makeEvent('trade-1', { tradeNotes: 'x' }), {} as any, () => {});
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(input.ConditionExpression).toContain('attribute_not_exists(updatedAt)');
+      expect(Object.keys(input.ExpressionAttributeValues as object)).not.toContain(':prevUpdatedAt');
+    });
+
+    it('409 when a live trade was changed by another request, 404 when it was soft-deleted meanwhile', async () => {
+      ddbMock.on(UpdateCommand).rejects(conflict({ tradeId: { S: 'trade-1' } }));
+      expect(((await handler(makeEvent('trade-1', { tradeNotes: 'x' }), {} as any, () => {})) as any).statusCode).toBe(409);
+      ddbMock.on(UpdateCommand).rejects(conflict({ tradeId: { S: 'trade-1' }, deletedAt: { S: '2024-06-16T00:00:00Z' } }));
+      expect(((await handler(makeEvent('trade-1', { tradeNotes: 'x' }), {} as any, () => {})) as any).statusCode).toBe(404);
+    });
+  });
+
+  // ── Copies for extra accounts (BE-031) ───────────────────────
+
+  describe('copies for extra accounts (BE-031)', () => {
+    it('copies get their own screenshot objects and no idempotencyKey', async () => {
+      const key = 'images/user-1/trade-1/a.png';
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, idempotencyKey: 'k-acc-1', images: [{ id: 'img-a', key }] } });
+      s3Mock.on(CopyObjectCommand).resolves({});
+      const res = (await handler(makeEvent('trade-1', { accountIds: ['acc-1', 'acc-2'] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      const copy = (ddbMock.commandCalls(PutCommand)[0].args[0].input as any).Item;
+      expect(copy.idempotencyKey).toBeUndefined();
+      expect(copy.images[0].key).toBe(`images/user-1/${copy.tradeId}/a.png`);
+      const copied = s3Mock.commandCalls(CopyObjectCommand)[0].args[0].input;
+      expect(copied.CopySource).toBe(`test-bucket/${key}`);
+      expect(copied.Key).toBe(copy.images[0].key);
+    });
+
+    it('removing an image only deletes objects under this trade or the upload prefix', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, images: [
+        { id: 'own', key: 'images/user-1/trade-1/own.png' },
+        { id: 'upl', key: 'images/user-1/upload/u.png' },
+        { id: 'other', key: 'images/user-1/trade-9/shared.png' },
+      ] } });
+      await handler(makeEvent('trade-1', { images: [] }), {} as any, () => {});
+      const keys = (s3Mock.commandCalls(DeleteObjectsCommand)[0].args[0].input.Delete!.Objects as any[]).map((o) => o.Key);
+      expect(keys).toEqual(['images/user-1/trade-1/own.png', 'images/user-1/upload/u.png']);
+    });
+  });
+
+  // ── partialCloses (BE-097) ───────────────────────────────────
+
+  describe('partialCloses (BE-097)', () => {
+    it('replaces the stored list, so a retried PUT does not record a close twice', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, partialCloses: [{ quantity: 50, exitPrice: 170, time: 't' }] } });
+      const body = { partialCloses: [{ quantity: 50, exitPrice: 170, time: 't' }] };
+      await handler(makeEvent('trade-1', body), {} as any, () => {});
+      await handler(makeEvent('trade-1', body), {} as any, () => {});
+      for (const call of ddbMock.commandCalls(UpdateCommand)) {
+        const values = call.args[0].input.ExpressionAttributeValues as any;
+        expect(values[':partialCloses']).toBeUndefined();
+      }
+    });
+
+    it('more than 50 entries are rejected', async () => {
+      const many = Array.from({ length: 51 }, () => ({ quantity: 1, exitPrice: 1 }));
+      expect(((await handler(makeEvent('trade-1', { partialCloses: many }), {} as any, () => {})) as any).statusCode).toBe(400);
+    });
   });
 });

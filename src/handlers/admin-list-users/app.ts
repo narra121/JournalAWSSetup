@@ -5,12 +5,11 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
-import { envelope, errorFromException } from '../../shared/validation';
+import { envelope, errorFromException, errorResponse, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 
 const cognito = new CognitoIdentityProviderClient({});
 const USER_POOL_ID = process.env.USER_POOL_ID!;
-const TRADES_TABLE = process.env.TRADES_TABLE!;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 
@@ -26,8 +25,9 @@ export const handler: ApiHandler = async (event) => {
   try {
     log.info('admin-list-users invoked');
 
+    // Pass the previous response's `nextToken` back to get the next 60 users.
     const result = await cognito.send(
-      new ListUsersCommand({ UserPoolId: USER_POOL_ID, Limit: 60 }),
+      new ListUsersCommand({ UserPoolId: USER_POOL_ID, Limit: 60, PaginationToken: event.queryStringParameters?.nextToken || undefined }),
     );
 
     const cognitoUsers = result.Users ?? [];
@@ -39,15 +39,7 @@ export const handler: ApiHandler = async (event) => {
         const identities = getAttr(u.Attributes, 'identities') ?? '';
         const hasGoogle = identities.includes('Google');
 
-        const [tradesResult, accountsResult, subResult] = await Promise.all([
-          ddb.send(
-            new QueryCommand({
-              TableName: TRADES_TABLE,
-              KeyConditionExpression: 'userId = :u',
-              ExpressionAttributeValues: { ':u': userId },
-              Select: 'COUNT',
-            }),
-          ),
+        const [accountsResult, subResult] = await Promise.all([
           ddb.send(
             new QueryCommand({
               TableName: ACCOUNTS_TABLE,
@@ -74,13 +66,13 @@ export const handler: ApiHandler = async (event) => {
           createdAt: u.UserCreateDate?.toISOString(),
           enabled: u.Enabled,
           hasGoogle,
-          tradeCount: tradesResult.Count ?? 0,
           accountCount: accountsResult.Count ?? 0,
           subscription: sub
             ? {
                 status: sub.status,
                 tier: sub.tier,
-                periodEnd: sub.periodEnd,
+                // Stripe-paid rows carry `currentEnd`; admin grants carry `periodEnd`.
+                periodEnd: sub.currentEnd ?? sub.periodEnd,
                 source: sub.source,
               }
             : null,
@@ -89,8 +81,11 @@ export const handler: ApiHandler = async (event) => {
     );
 
     log.info('Users retrieved', { count: users.length });
-    return envelope({ statusCode: 200, data: { users }, message: 'Users retrieved' });
+    return envelope({ statusCode: 200, data: { users, nextToken: result.PaginationToken ?? null }, message: 'Users retrieved' });
   } catch (err: any) {
+    if (err.name === 'InvalidParameterException') {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid nextToken');
+    }
     log.error('admin-list-users failed', { error: err.message });
     return errorFromException(err, true);
   }

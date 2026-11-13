@@ -1,7 +1,6 @@
 import type { ApiHandler } from '../../shared/types';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 import { makeLogger } from '../../shared/logger';
 import { softDeleteTrade } from '../../shared/softDelete';
 
@@ -11,9 +10,6 @@ export const handler: ApiHandler = async (event) => {
   try {
     const userId = getUserId(event);
     if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
-
-    const subError = await checkSubscription(userId);
-    if (subError) return subError;
 
     const tradeId = event.pathParameters?.tradeId;
     if (!tradeId) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing tradeId');

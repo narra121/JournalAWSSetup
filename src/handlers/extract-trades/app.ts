@@ -1,13 +1,7 @@
 import type { ApiHandler } from '../../shared/types';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { envelope, errorFromException, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
-
-const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const RETRYABLE_STATUS_CODES = [429, 503];
-
+import { generateText, geminiTimeoutMs, type GeminiPart } from '../../shared/gemini';
 
 const buildGeminiPrompt = () => {
   const now = new Date();
@@ -134,10 +128,7 @@ STRICT OUTPUT RULES:
 };
 
 // Configurable upstream request timeout (ms) for Gemini fetch; default 90000 (90s)
-const REQUEST_TIMEOUT_MS = (() => {
-  const v = parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '90000', 10);
-  return Number.isFinite(v) && v > 0 ? v : 90000;
-})();
+const REQUEST_TIMEOUT_MS = geminiTimeoutMs(90000);
 // Hard cap on accepted base64 payload bytes (after stripping data URI) to prevent very large images (default ~3MB)
 const MAX_IMAGE_BASE64_LENGTH = (() => {
   const v = parseInt(process.env.MAX_IMAGE_BASE64_LENGTH || '1333334', 10);
@@ -167,64 +158,19 @@ function getTextPrompt(): string {
   return cachedTextPrompt.text;
 }
 
-// --- API key caching with TTL ---
-let cachedApiKey: string | undefined;
-let apiKeyExpiry = 0;
-const API_KEY_CACHE_TTL = 3600000; // 1 hour
-
-const ssm = new SSMClient({});
-async function getApiKey(): Promise<string> {
-  if (cachedApiKey && Date.now() < apiKeyExpiry) return cachedApiKey;
-  const paramName = process.env.GEMINI_API_KEY_PARAM;
-  if (!paramName) throw new Error('Missing GEMINI_API_KEY_PARAM');
-  const res = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
-  const v = res.Parameter?.Value;
-  if (!v) throw new Error('Gemini API key parameter empty');
-  cachedApiKey = v;
-  apiKeyExpiry = Date.now() + API_KEY_CACHE_TTL;
-  return v;
+/** One Gemini call (with fallback to the second model on 429/503); returns the reply text. */
+async function callGemini(parts: GeminiPart[]): Promise<string> {
+  const { text } = await generateText({ parts, maxOutputTokens: 4096, temperature: 0, timeoutMs: REQUEST_TIMEOUT_MS });
+  return text;
 }
 
-/** Call Gemini API with automatic fallback to secondary model on 429/503. */
-async function callGemini(
-  apiKey: string,
-  parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
-  signal: AbortSignal
-): Promise<string> {
-  for (let i = 0; i < MODELS.length; i++) {
-    const model = MODELS[i];
-    const isLast = i === MODELS.length - 1;
-    const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
+const NOTHING_TO_EXTRACT = 'Add a screenshot or paste some text to extract trades from.';
 
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
-      }),
-      signal,
-    });
-
-    if (!resp.ok) {
-      const errorText = await resp.text();
-      if (!isLast && RETRYABLE_STATUS_CODES.includes(resp.status)) {
-        console.warn(`Gemini ${model} returned ${resp.status}, falling back to ${MODELS[i + 1]}`);
-        continue;
-      }
-      console.error('ExtractTrades Gemini HTTP error', { model, status: resp.status, error: errorText.slice(0, 300) });
-      throw new Error(`Gemini API error: ${resp.status} ${resp.statusText} - ${errorText}`);
-    }
-
-    const data = await resp.json();
-    const responseParts = data.candidates?.[0]?.content?.parts || [];
-    const text = responseParts.filter((p: any) => p.text).pop()?.text;
-    if (!text) throw new Error('Gemini returned empty response');
-    if (i > 0) console.log(`Used fallback model ${model} successfully`);
-    return text.trim();
-  }
-
-  throw new Error('All Gemini models failed');
+/** The AI step failed. The cause is logged where it happens, never sent. */
+function extractionFailed(isAbort: boolean) {
+  return isAbort
+    ? errorResponse(500, ErrorCodes.GEMINI_TIMEOUT, 'The extraction took too long. Try again with less data.')
+    : errorResponse(500, ErrorCodes.GEMINI_ERROR, "We couldn't read that right now. Please try again in a moment.");
 }
 
 export const handler: ApiHandler = async (event) => {
@@ -232,10 +178,7 @@ export const handler: ApiHandler = async (event) => {
     const userId = getUserId(event);
     if (!userId) return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
 
-    const subError = await checkSubscription(userId);
-    if (subError) return subError;
-
-    if (!event.body) return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Missing body' }, meta: { requestTimeoutMs: REQUEST_TIMEOUT_MS }, message: 'Missing body' });
+    if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, NOTHING_TO_EXTRACT);
     
     let images: string[] = [];
     let textContent: string | null = null;
@@ -247,42 +190,34 @@ export const handler: ApiHandler = async (event) => {
       } else if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
         images = [parsed.imageBase64];
       } else if (parsed.images && Array.isArray(parsed.images)) {
+        if (!parsed.images.every((img: unknown) => typeof img === 'string')) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Each image must be sent as base64 text.');
+        }
         images = parsed.images;
       }
     } catch {
-      return envelope({ statusCode: 400, error: { code: 'BadJSON', message: 'Body must be JSON' }, message: 'Body must be JSON' });
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'The request body must be valid JSON.');
     }
 
     if (!textContent && images.length === 0) {
-      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'imageBase64, images array, or textContent required' }, message: 'imageBase64, images array, or textContent required' });
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, NOTHING_TO_EXTRACT);
     }
     
     // --- Text content extraction path ---
     if (textContent) {
       const MAX_TEXT_LENGTH = 10_000;
       if (textContent.length > MAX_TEXT_LENGTH) {
-        return envelope({ statusCode: 400, error: { code: 'BadRequest', message: `Text content exceeds ${MAX_TEXT_LENGTH} character limit` }, message: 'Text content too large' });
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `That text is too long. The limit is ${MAX_TEXT_LENGTH.toLocaleString('en-US')} characters.`);
       }
 
       const started = Date.now();
-      let apiKey: string;
-      try { apiKey = await getApiKey(); } catch (e: any) {
-        return envelope({ statusCode: 500, error: { code: 'ConfigError', message: e.message }, message: e.message });
-      }
 
       console.log('ExtractTrades processing text content', { chars: textContent.length });
 
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
         const text = await callGemini(
-          apiKey,
           [{ text: getTextPrompt() + '\n\nHere is the CSV/tabular trade data to parse:\n\n' + textContent }],
-          controller.signal
         );
-
-        clearTimeout(timeoutId);
 
         // Try CSV first, fall back to JSON
         const csvResult = parseCSVResponse(text);
@@ -337,30 +272,16 @@ export const handler: ApiHandler = async (event) => {
         const elapsed = Date.now() - started;
         const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
         console.error('ExtractTrades Gemini error', { error: err?.message, isAbort, elapsed });
-        return envelope({
-          statusCode: 500,
-          error: {
-            code: isAbort ? 'GeminiTimeout' : 'GeminiError',
-            message: isAbort ? `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Try with less data.` : (err?.message || 'AI processing failed')
-          },
-          meta: { elapsedMs: elapsed },
-          message: 'Extraction failed'
-        });
+        return extractionFailed(isAbort);
       }
     }
     // --- End text content path ---
 
     if (images.length > 3) {
-      return envelope({ statusCode: 400, error: { code: 'BadRequest', message: 'Maximum 3 images allowed' }, meta: { maxImages: 3 }, message: 'Maximum 3 images allowed' });
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'You can extract trades from up to 3 images at a time.', { maxImages: 3 });
     }
 
     const started = Date.now();
-    let apiKey: string;
-    try {
-      apiKey = await getApiKey();
-    } catch (e: any) {
-      return envelope({ statusCode: 500, error: { code: 'ConfigError', message: e.message }, message: e.message });
-    }
 
     // Process all images concurrently via Gemini direct API
     const allItems: any[] = [];
@@ -384,22 +305,13 @@ export const handler: ApiHandler = async (event) => {
 
       console.log(`ExtractTrades processing image ${i + 1}/${images.length}`, { sizeChars: cleaned.length });
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
       let text: string;
       try {
-        text = await callGemini(
-          apiKey,
-          [
-            { text: prompt },
-            { inlineData: { mimeType: detectedMime, data: cleaned } }
-          ],
-          controller.signal
-        );
-        clearTimeout(timeoutId);
+        text = await callGemini([
+          { text: prompt },
+          { inlineData: { mimeType: detectedMime, data: cleaned } }
+        ]);
       } catch (err: any) {
-        clearTimeout(timeoutId);
         const isAbort = err?.name === 'AbortError' || /aborted/i.test(err?.message || '');
         console.error(`Gemini API call failed for image ${i}`, { isAbort, error: err?.message });
 
@@ -462,17 +374,8 @@ export const handler: ApiHandler = async (event) => {
     // Handle single-image failure thrown from inside Promise.allSettled
     for (const result of imageResults) {
       if (result.status === 'rejected' && result.reason?._singleImageError) {
-        const { isAbort, err } = result.reason;
-        const imageElapsed = Date.now() - started;
-        return envelope({
-          statusCode: 500,
-          error: {
-            code: isAbort ? 'GeminiTimeout' : 'GeminiError',
-            message: isAbort ? `Request timeout after ${REQUEST_TIMEOUT_MS}ms` : (err?.message || 'Gemini API call failed')
-          },
-          meta: { elapsedMs: imageElapsed },
-          message: 'Extraction failed'
-        });
+        const { isAbort } = result.reason;
+        return extractionFailed(isAbort);
       }
     }
 
@@ -482,16 +385,7 @@ export const handler: ApiHandler = async (event) => {
     // If all images failed to process, return error
     const allFailed = finalDetails.every(d => d.skipped === true);
     if (allFailed && finalDetails.length > 0) {
-      return envelope({
-        statusCode: 500,
-        error: {
-          code: 'ExtractionFailed',
-          message: 'All images failed to process',
-          details: finalDetails
-        },
-        meta: { elapsedMs: elapsed, totalImages: images.length },
-        message: 'All images failed to process'
-      });
+      return errorResponse(500, ErrorCodes.EXTRACTION_FAILED, "We couldn't read any of those images. Try again with clearer screenshots.");
     }
 
     return envelope({
@@ -507,7 +401,7 @@ export const handler: ApiHandler = async (event) => {
     });
   } catch (e: any) {
     console.error('ExtractTrades error', e);
-    return envelope({ statusCode: 500, error: { code: 'InternalError', message: e?.message || 'Unexpected error' }, message: 'Internal error' });
+    return errorFromException(e);
   }
 };
 

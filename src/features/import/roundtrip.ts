@@ -111,6 +111,13 @@ export function buildEpisodes(fills: Fill[], asOf?: string): RoundTripResult {
   for (const f of sorted) {
     const key = positionKey(f);
     let qty = f.quantity;
+    // An equity sell from flat that was not covered on its own IST day was a sale of holdings bought before the file:
+    // it is dropped now, so a later buy of the same stock opens a position instead of "closing" that sale.
+    const stale = open.get(key);
+    if (stale && f.assetClass === 'stock' && stale.side === 'SELL' && istDate(stale.openTime) < istDate(f.time)) {
+      unmatchedFills += stale.fillIds.size;
+      open.delete(key);
+    }
     const cur = open.get(key);
 
     if (cur && cur.side !== f.side) {

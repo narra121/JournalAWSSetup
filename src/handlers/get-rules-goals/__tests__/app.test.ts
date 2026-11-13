@@ -80,6 +80,20 @@ beforeEach(() => {
 });
 
 describe('get-rules-goals handler', () => {
+  // ── periodKey validation (BE-044) ───────────────────────────
+
+  it.each(['x1', 'week#2026-13-40', 'week#2026-04-07x', 'month#2026-13', 'month#2026-00', 'week#2026-02-30', 'quarter#2026-Q1'])(
+    'a GET with periodKey %s is a 400 and writes nothing',
+    async (periodKey) => {
+      const res = await handler(makeEvent({ queryStringParameters: { periodKey, currentPeriod: 'true' } } as any), {} as any, () => {}) as any;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).errorCode).toBe('VALIDATION_ERROR');
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+      expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    },
+  );
+
   // ── Backward-compatible (no periodKey) ──────────────────────
 
   it('returns existing rules and goals with meta counts', async () => {

@@ -224,7 +224,8 @@ describe('auth-signup handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.message).toContain('Password');
+    expect(body.message).toContain('stronger password');
+    expect(body.message).not.toContain('conform to policy');
   });
 
   it('returns 400 when Cognito throws InvalidParameterException for invalid email', async () => {

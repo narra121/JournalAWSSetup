@@ -4,7 +4,6 @@ import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { DEFAULT_USER_PREFERENCES } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
@@ -32,6 +31,12 @@ export const handler: ApiHandler = async (event) => {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON');
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
+  // lifecycle-emails tests `weeklyReport === false`, so a string such as "false" would leave the mail on.
+  for (const field of ['tradeReminders', 'weeklyReport', 'goalAlerts'] as const) {
+    if (data[field] !== undefined && typeof data[field] !== 'boolean') {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${field} must be true or false`);
+    }
+  }
 
   try {
     const setExpressions: string[] = [];

@@ -70,7 +70,7 @@ const sample = (ts: TradeRow[], worst: boolean) =>
 function groupMany(trades: TradeRow[], keysOf: (t: TradeRow) => (string | null)[]): Group[] {
   const m = new Map<string, TradeRow[]>();
   for (const t of trades) {
-    for (const k of new Set(keysOf(t))) if (k) m.set(k, [...(m.get(k) ?? []), t]);
+    for (const k of new Set(keysOf(t))) if (k) (m.get(k) ?? m.set(k, []).get(k)!).push(t);
   }
   return [...m].map(([key, ts]) => ({ key, trades: ts }));
 }
@@ -102,8 +102,8 @@ const median = (xs: number[]) => {
 
 const safeText = (s: string) => s.replace(/\s+/g, ' ').slice(0, 80);
 
-/** Deterministic metrics and rule-based candidate findings. Pure: same trades → same output (hashable for caching). */
-export function computeInsightInputs(all: TradeRow[], ruleTexts: Map<string, string> = new Map()): Computed {
+/** The base metrics (everything the chat prompt needs) and the trade lists the findings are built from. */
+function baseMetrics(all: TradeRow[]) {
   const trades = all.filter((t) => Number.isFinite(t.pnl) && t.openDate && Number.isFinite(Date.parse(t.openDate)));
   const byClose = [...trades].sort((a, b) => (closeKey(a) < closeKey(b) ? -1 : closeKey(a) > closeKey(b) ? 1 : 0));
   const byOpen = [...trades].sort((a, b) => (a.openDate < b.openDate ? -1 : a.openDate > b.openDate ? 1 : 0));
@@ -141,6 +141,18 @@ export function computeInsightInputs(all: TradeRow[], ruleTexts: Map<string, str
     maxLossStreak: metric('Longest losing streak', maxStreak(byClose, false), 'streak'),
   };
   const baseMetricIds = Object.keys(m);
+  return { trades, byOpen, wins, losses, netPnl, fees, grossPnl, m, baseMetricIds };
+}
+
+/** Base metrics only, for the chat: no breakdowns or candidate findings, which the chat prompt never uses. */
+export function computeChatMetrics(all: TradeRow[]): Pick<Computed, 'metrics' | 'baseMetricIds' | 'tradeIds'> {
+  const { trades, m, baseMetricIds } = baseMetrics(all);
+  return { metrics: m, baseMetricIds, tradeIds: new Set(trades.map((t) => t.id)) };
+}
+
+/** Deterministic metrics and rule-based candidate findings. Pure: same trades → same output (hashable for caching). */
+export function computeInsightInputs(all: TradeRow[], ruleTexts: Map<string, string> = new Map()): Computed {
+  const { trades, byOpen, losses, fees, grossPnl, m, baseMetricIds } = baseMetrics(all);
 
   const candidates: Finding[] = [];
   let seq = 0;

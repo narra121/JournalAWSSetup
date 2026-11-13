@@ -1,4 +1,4 @@
-import { AdminDeleteUserCommand, CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import { AdminDeleteUserCommand, CognitoIdentityProviderClient, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
@@ -22,7 +22,8 @@ for (const [k, v] of Object.entries({
 
 const order: string[] = [];
 const subscriptionsCancel = vi.fn();
-vi.mock('../stripe-config', () => ({ getStripe: async () => ({ subscriptions: { cancel: subscriptionsCancel } }) }));
+const customersDel = vi.fn();
+vi.mock('../stripe-config', () => ({ getStripe: async () => ({ subscriptions: { cancel: subscriptionsCancel }, customers: { del: customersDel } }) }));
 vi.mock('../batchWrite', () => ({
   batchWriteDeleteAll: vi.fn(async ({ tableName, keys }: any) => {
     order.push(`ddb:${tableName}:${keys.length}`);
@@ -34,29 +35,34 @@ const s3 = mockClient(S3Client);
 const cognito = mockClient(CognitoIdentityProviderClient);
 const { exportUserData, purgeUser } = await import('../account-data');
 
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+
 beforeEach(() => {
   order.length = 0;
   ddb.reset();
   s3.reset();
   cognito.reset();
   subscriptionsCancel.mockReset().mockResolvedValue({});
+  customersDel.mockReset().mockResolvedValue({ deleted: true });
   ddb.on(GetCommand).resolves({ Item: { userId: 'u1', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1', status: 'active' } });
   ddb.on(QueryCommand).callsFake((input) => ({ Items: [{ userId: 'u1', k: input.TableName }] }));
   ddb.on(DeleteCommand).callsFake((input) => {
     order.push(`del:${input.TableName}`);
     return {};
   });
-  s3.on(ListObjectsV2Command).callsFake((input) =>
-    input.Bucket === 'images-bucket'
-      ? { Contents: [{ Key: 'images/u1/t1/a.png' }] }
-      : { Contents: [{ Key: 'errors/2026-11-01/u1/x.json' }, { Key: 'errors/2026-11-01/other/y.json' }] },
-  );
+  s3.on(ListObjectsV2Command).callsFake((input) => {
+    if (input.Bucket === 'images-bucket') return { Contents: [{ Key: 'images/u1/t1/a.png' }] };
+    if (input.Prefix === 'errors/u1/') return { Contents: [{ Key: 'errors/u1/2026-11-01/x.json' }] };
+    if (input.Prefix === `errors/${daysAgo(3)}/u1/`) return { Contents: [{ Key: `errors/${daysAgo(3)}/u1/old.json` }] };
+    return {};
+  });
   s3.on(DeleteObjectsCommand).callsFake((input) => {
     order.push(`s3:${input.Bucket}:${input.Delete.Objects.map((o: any) => o.Key).join(',')}`);
     return {};
   });
-  cognito.on(AdminDeleteUserCommand).callsFake(() => {
-    order.push('cognito');
+  cognito.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_111' }] });
+  cognito.on(AdminDeleteUserCommand).callsFake((input) => {
+    order.push(`cognito:${input.Username}`);
     return {};
   });
 });
@@ -65,14 +71,74 @@ describe('purgeUser', () => {
   it('cancels Stripe, deletes every table, the user\'s screenshots and error reports, and Cognito LAST', async () => {
     const result = await purgeUser('u1');
     expect(subscriptionsCancel).toHaveBeenCalledWith('sub_1');
+    expect(customersDel).toHaveBeenCalledWith('cus_1');
     expect(order.filter((o) => o.startsWith('ddb:')).map((o) => o.split(':')[1])).toEqual(['trades', 'accounts', 'goals', 'rules', 'stats', 'ai', 'usage']);
     expect(order.filter((o) => o.startsWith('del:')).map((o) => o.split(':')[1])).toEqual(['subs', 'prefs', 'opts']);
     expect(order).toContain('s3:images-bucket:images/u1/t1/a.png');
-    expect(order).toContain('s3:errors-bucket:errors/2026-11-01/u1/x.json');
-    expect(order.some((o) => o.includes('other/y.json'))).toBe(false);
-    expect(order[order.length - 1]).toBe('cognito');
-    expect(result).toMatchObject({ images: 1, errorReports: 1, stripeSubscriptionCancelled: true });
+    expect(order.some((o) => o.startsWith('s3:errors-bucket:') && o.includes('errors/u1/2026-11-01/x.json'))).toBe(true);
+    expect(order.some((o) => o.startsWith('s3:errors-bucket:') && o.includes(`errors/${daysAgo(3)}/u1/old.json`))).toBe(true);
+    expect(order[order.length - 1]).toBe('cognito:Google_111');
+    expect(result).toMatchObject({ images: 1, errorReports: 2, stripeSubscriptionCancelled: true });
     expect(result.deleted.trades).toBe(1);
+  });
+
+  it('lists error reports by the user prefix instead of scanning every report (BE-073)', async () => {
+    await purgeUser('u1');
+    const prefixes = s3.commandCalls(ListObjectsV2Command).filter((c) => c.args[0].input.Bucket === 'errors-bucket').map((c) => c.args[0].input.Prefix);
+    expect(prefixes).toContain('errors/u1/');
+    expect(prefixes).not.toContain('errors/');
+    expect(prefixes.every((p) => p === 'errors/u1/' || /^errors\/\d{4}-\d{2}-\d{2}\/u1\/$/.test(p!))).toBe(true);
+  });
+
+  it('deletes the Stripe customer so no email or card stays at Stripe (BE-024)', async () => {
+    const result = await purgeUser('u1');
+    expect(customersDel).toHaveBeenCalledTimes(1);
+    expect(subscriptionsCancel.mock.invocationCallOrder[0]).toBeLessThan(customersDel.mock.invocationCallOrder[0]);
+    expect(result.stripeSubscriptionCancelled).toBe(true);
+  });
+
+  it('treats an already-deleted Stripe customer as done', async () => {
+    customersDel.mockRejectedValue(Object.assign(new Error('No such customer: cus_1'), { code: 'resource_missing' }));
+    await purgeUser('u1');
+    expect(order[order.length - 1]).toBe('cognito:Google_111');
+  });
+
+  it('does not touch data when the Stripe customer deletion fails', async () => {
+    customersDel.mockRejectedValue(Object.assign(new Error('network'), { code: 'api_connection_error' }));
+    await expect(purgeUser('u1')).rejects.toThrow('network');
+    expect(order).toEqual([]);
+  });
+
+  describe('Cognito username (BE-003)', () => {
+    it('deletes the user by the pool username found with a sub filter, not by the sub', async () => {
+      await purgeUser('u1');
+      expect(cognito.commandCalls(ListUsersCommand)[0].args[0].input).toMatchObject({ UserPoolId: 'pool', Filter: 'sub = "u1"' });
+      expect(cognito.commandCalls(AdminDeleteUserCommand)[0].args[0].input).toEqual({ UserPoolId: 'pool', Username: 'Google_111' });
+    });
+
+    it('uses the signed-in token claim and skips the lookup', async () => {
+      await purgeUser('u1', undefined, { sub: 'u1', 'cognito:username': 'Google_222' });
+      expect(cognito.commandCalls(ListUsersCommand)).toHaveLength(0);
+      expect(cognito.commandCalls(AdminDeleteUserCommand)[0].args[0].input.Username).toBe('Google_222');
+    });
+
+    it('ignores claims that belong to another user (an admin purging someone else)', async () => {
+      await purgeUser('u1', undefined, { sub: 'admin', 'cognito:username': 'Google_ADMIN' });
+      expect(cognito.commandCalls(AdminDeleteUserCommand)[0].args[0].input.Username).toBe('Google_111');
+    });
+
+    it('still purges the data of a user that is already gone from the pool, without a Cognito delete', async () => {
+      cognito.on(ListUsersCommand).resolves({ Users: [] });
+      const result = await purgeUser('u1');
+      expect(result.deleted.trades).toBe(1);
+      expect(cognito.commandCalls(AdminDeleteUserCommand)).toHaveLength(0);
+    });
+
+    it('stops before any data is removed when the lookup itself fails', async () => {
+      cognito.on(ListUsersCommand).rejects(new Error('throttled'));
+      await expect(purgeUser('u1')).rejects.toThrow('throttled');
+      expect(order).toEqual([]);
+    });
   });
 
   it('does not touch data or Cognito when the Stripe cancellation fails', async () => {
@@ -85,13 +151,14 @@ describe('purgeUser', () => {
     subscriptionsCancel.mockRejectedValue(Object.assign(new Error('No such subscription: sub_1'), { code: 'resource_missing' }));
     const result = await purgeUser('u1');
     expect(result.stripeSubscriptionCancelled).toBe(false);
-    expect(order[order.length - 1]).toBe('cognito');
+    expect(order[order.length - 1]).toBe('cognito:Google_111');
   });
 
   it('skips Stripe when the user never subscribed', async () => {
     ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'trial' } });
     await purgeUser('u1');
     expect(subscriptionsCancel).not.toHaveBeenCalled();
+    expect(customersDel).not.toHaveBeenCalled();
   });
 });
 

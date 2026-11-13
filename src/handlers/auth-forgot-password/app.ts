@@ -2,6 +2,7 @@ import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, ForgotPasswordCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { cognitoFailure } from '../../shared/cognitoErrors';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
@@ -21,5 +22,5 @@ export const handler: ApiHandler = async (event) => {
       console.error('ForgotPassword Cognito error', { error: err.message });
     }
     return envelope({ statusCode: 200, data: { message: 'If an account exists with this email, a reset code has been sent.' }, message: 'If an account exists with this email, a reset code has been sent.' });
-  } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.INTERNAL_ERROR, e.message || 'Forgot password failed'); }
+  } catch (e: any) { console.error(e); return cognitoFailure(e, 'forgot-password'); }
 };

@@ -42,22 +42,26 @@
     "hono": "^4.13.18",
     "jsonwebtoken": "^9.0.3",
     "stripe": "^17.7.0",
-    "uuid": "^9.0.1"
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.164",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.19.2",
-    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/coverage-v8": "^4.1.11",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-jest": "^4.1.0",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.25.12",
     "eslint": "^8.57.1",
+    "js-yaml": "^4.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "fast-uri": "^3.1.6",
+    "qs": "^6.15.4"
   }
 }

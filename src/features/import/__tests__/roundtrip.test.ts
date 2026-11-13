@@ -101,4 +101,35 @@ describe('buildEpisodes', () => {
     expect(r.episodes).toHaveLength(1);
     expect(r.episodes[0].grossPoints).toBe(20);
   });
+
+  it('holdings sold on day 1 and bought and sold again on days 3 and 4: the day 3-4 trade is found (BE-053)', () => {
+    const r = buildEpisodes([
+      fill({ side: 'SELL', quantity: 10, price: 100, time: '2026-04-01T05:00:00.000Z' }), // sale of holdings
+      fill({ side: 'BUY', quantity: 10, price: 90, time: '2026-04-03T04:00:00.000Z' }),
+      fill({ side: 'SELL', quantity: 10, price: 95, time: '2026-04-04T05:00:00.000Z' }),
+    ]);
+    expect(r.episodes).toHaveLength(1);
+    expect(r.episodes[0]).toMatchObject({ side: 'BUY', quantity: 10, entryPrice: 90, exitPrice: 95, grossPoints: 50 });
+    expect(r.unmatchedFills).toBe(1);
+  });
+
+  it('an equity sell covered the same IST day is still an intraday short', () => {
+    const r = buildEpisodes([
+      fill({ side: 'SELL', quantity: 10, price: 100, time: '2026-04-01T04:00:00.000Z' }),
+      fill({ side: 'BUY', quantity: 10, price: 95, time: '2026-04-01T05:00:00.000Z' }),
+    ]);
+    expect(r.episodes).toHaveLength(1);
+    expect(r.episodes[0]).toMatchObject({ side: 'SELL', grossPoints: 50 });
+    expect(r.unmatchedFills).toBe(0);
+  });
+
+  it('futures shorts held overnight are unaffected', () => {
+    const r = buildEpisodes([
+      fill({ assetClass: 'futures', symbol: 'NIFTYFUT', side: 'SELL', quantity: 50, price: 24000, time: '2026-04-01T05:00:00.000Z' }),
+      fill({ assetClass: 'futures', symbol: 'NIFTYFUT', side: 'BUY', quantity: 50, price: 23900, time: '2026-04-03T05:00:00.000Z' }),
+    ]);
+    expect(r.episodes).toHaveLength(1);
+    expect(r.unmatchedFills).toBe(0);
+  });
 });
+

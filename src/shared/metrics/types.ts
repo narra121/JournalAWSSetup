@@ -123,7 +123,8 @@ export interface AggregatedStats {
 
   consecutiveWins: number;
   consecutiveLosses: number;
-  maxDrawdown: number;
+  /** % of the starting capital; null when no `totalCapital` was given */
+  maxDrawdown: number | null;
   sharpeRatio: number;
 
   durationBuckets: Array<{ range: string; wins: number; losses: number; total: number }>;

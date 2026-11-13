@@ -2,6 +2,7 @@ import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, ConfirmForgotPasswordCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { cognitoFailure } from '../../shared/cognitoErrors';
 import { validatePassword } from '../../shared/passwordValidation';
 
 const client = new CognitoIdentityProviderClient({});
@@ -19,5 +20,5 @@ export const handler: ApiHandler = async (event) => {
     const cmd = new ConfirmForgotPasswordCommand({ ClientId: CLIENT_ID, Username: email, ConfirmationCode: code, Password: newPassword });
     await client.send(cmd);
     return envelope({ statusCode: 200, data: { message: 'Password reset confirmed' }, message: 'Password reset successfully' });
-  } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.INTERNAL_ERROR, e.message || 'Confirm forgot password failed'); }
+  } catch (e: any) { console.error(e); return cognitoFailure(e, 'confirm-forgot-password'); }
 };

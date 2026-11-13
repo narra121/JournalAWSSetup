@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, BatchGetCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 
 // Stub env before importing handler
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
@@ -161,7 +161,8 @@ describe('sync-trades handler', () => {
     expect(body.data.serverHashes['2026-04-06']).toBe('hash-1');
     expect(body.data.serverHashes['2026-04-07']).toBe('hash-2');
     expect(body.data.staleDays).toEqual(['2026-04-06', '2026-04-07']);
-    expect(body.data.trades.length).toBeGreaterThanOrEqual(1);
+    expect(Object.keys(body.data.tradesByDay)).toEqual(['2026-04-06', '2026-04-07']);
+    expect(body.data.tradesByDay['2026-04-06'].map((t: any) => t.tradeId)).toEqual(['t1']);
   });
 
   // 6. All hashes match -> empty staleDays + empty trades
@@ -182,7 +183,7 @@ describe('sync-trades handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.staleDays).toEqual([]);
-    expect(body.data.trades).toEqual([]);
+    expect(body.data.tradesByDay).toEqual({});
   });
 
   // 7. Partial mismatch -> only stale trades returned
@@ -211,8 +212,8 @@ describe('sync-trades handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.staleDays).toEqual(['2026-04-07']);
-    expect(body.data.trades).toHaveLength(1);
-    expect(body.data.trades[0].tradeId).toBe('t2');
+    expect(body.data.tradesByDay['2026-04-07']).toHaveLength(1);
+    expect(body.data.tradesByDay['2026-04-07'][0].tradeId).toBe('t2');
   });
 
   // 8. Day in server not in client -> stale
@@ -264,8 +265,8 @@ describe('sync-trades handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.staleDays).toContain('2026-04-06');
-    // No trades returned since server has nothing
-    expect(body.data.trades).toEqual([]);
+    // The day is stale but holds no trades: it is returned as an empty day so the client clears its cache
+    expect(body.data.tradesByDay).toEqual({ '2026-04-06': [] });
   });
 
   // 10. accountId='ALL' combines hashes per day (SHA-256 of sorted accountId:hash pairs)
@@ -293,7 +294,7 @@ describe('sync-trades handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.serverHashes['2026-04-06']).toBe(expectedHash);
     expect(body.data.staleDays).toEqual([]);
-    expect(body.data.trades).toEqual([]);
+    expect(body.data.tradesByDay).toEqual({});
   });
 
   // 11. Specific accountId returns only that account's hash (not combined)
@@ -425,8 +426,8 @@ describe('sync-trades handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     // Only acc-1 trades should be returned
-    expect(body.data.trades).toHaveLength(1);
-    expect(body.data.trades[0].accountId).toBe('acc-1');
+    expect(body.data.tradesByDay['2026-04-06']).toHaveLength(1);
+    expect(body.data.tradesByDay['2026-04-06'][0].accountId).toBe('acc-1');
   });
 
   // 15. No filter when accountId='ALL'
@@ -459,8 +460,123 @@ describe('sync-trades handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     // Both accounts' trades should be returned (no filtering)
-    expect(body.data.trades).toHaveLength(2);
-    const accountIds = body.data.trades.map((t: any) => t.accountId).sort();
+    expect(body.data.tradesByDay['2026-04-06']).toHaveLength(2);
+    const accountIds = body.data.tradesByDay['2026-04-06'].map((t: any) => t.accountId).sort();
     expect(accountIds).toEqual(['acc-1', 'acc-2']);
+  });
+
+  // ── Local days (BE-006 / X-001) ──────────────────────────────
+
+  describe("trades are grouped by the user's local day", () => {
+    it('a trade at 20:00Z on 04-10 (04-11 in Kolkata) is returned under 04-11, found by the exact UTC range of that local day', async () => {
+      vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'Asia/Kolkata' } });
+      const record = makeDailyRecord({ date: '2026-04-11', sk: 'acc-1#2026-04-11', tradeHash: 'h-0411' });
+      const late = makeTrade({ tradeId: 'late', openDate: '2026-04-10T20:00:00.000Z' });
+      ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [record] });
+      ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: [{ userId: 'test-user-id', tradeId: 'late' }] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [late] } });
+
+      const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: {} }), {} as any, () => {}) as any;
+      const body = JSON.parse(res.body);
+
+      expect(body.data.staleDays).toEqual(['2026-04-11']);
+      expect(body.data.tradesByDay).toEqual({ '2026-04-11': [late] });
+      const gsi = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.IndexName === 'trades-by-date-gsi')!.args[0].input;
+      expect(gsi.ExpressionAttributeValues).toMatchObject({ ':start': '2026-04-10T18:30:00.000Z', ':end': '2026-04-11T18:29:59.999Z' });
+    });
+
+    it('drops neighbouring-day trades that the index range also returns (date-only values west of UTC)', async () => {
+      vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'America/New_York' } });
+      const record = makeDailyRecord({ date: '2026-04-10', sk: 'acc-1#2026-04-10', tradeHash: 'h' });
+      const earlyUtc = makeTrade({ tradeId: 'prev-day', openDate: '2026-04-10T02:00:00.000Z' }); // 04-09 22:00 in New York
+      const dateOnly = makeTrade({ tradeId: 'date-only', openDate: '2026-04-10' });
+      const inDay = makeTrade({ tradeId: 'in-day', openDate: '2026-04-10T15:00:00.000Z' });
+      ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [record] });
+      ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: [earlyUtc, dateOnly, inDay].map((x) => ({ userId: 'test-user-id', tradeId: x.tradeId })) });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [earlyUtc, dateOnly, inDay] } });
+
+      const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: {} }), {} as any, () => {}) as any;
+      const ids = JSON.parse(res.body).data.tradesByDay['2026-04-10'].map((t: any) => t.tradeId).sort();
+
+      expect(ids).toEqual(['date-only', 'in-day']);
+      const gsi = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.IndexName === 'trades-by-date-gsi')!.args[0].input;
+      expect(gsi.ExpressionAttributeValues).toMatchObject({ ':start': '2026-04-10' });
+    });
+  });
+
+  // ── Incomplete days (BE-040) ─────────────────────────────────
+
+  describe('days that could not be loaded completely', () => {
+    it('retries unprocessed keys and returns the trade', async () => {
+      const record = makeDailyRecord({ date: '2026-04-06', tradeHash: 'h' });
+      ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [record] });
+      ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: [{ userId: 'test-user-id', tradeId: 't1' }, { userId: 'test-user-id', tradeId: 't2' }] });
+      ddbMock.on(BatchGetCommand)
+        .resolvesOnce({ Responses: { 'test-trades': [makeTrade({ tradeId: 't1' })] }, UnprocessedKeys: { 'test-trades': { Keys: [{ userId: 'test-user-id', tradeId: 't2' }] } } })
+        .resolvesOnce({ Responses: { 'test-trades': [makeTrade({ tradeId: 't2' })] } });
+
+      const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: {} }), {} as any, () => {}) as any;
+      const body = JSON.parse(res.body);
+
+      expect(body.data.tradesByDay['2026-04-06'].map((t: any) => t.tradeId).sort()).toEqual(['t1', 't2']);
+      expect(body.data.serverHashes['2026-04-06']).toBe('h');
+    });
+
+    it('a day whose keys stay unprocessed is left out of tradesByDay and its server hash is withheld', async () => {
+      const ok = makeDailyRecord({ date: '2026-04-06', sk: 'acc-1#2026-04-06', tradeHash: 'h6' });
+      const bad = makeDailyRecord({ date: '2026-04-07', sk: 'acc-1#2026-04-07', tradeHash: 'h7' });
+      ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [ok, bad] });
+      ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).callsFake((input: any) => ({
+        Items: [{ userId: 'test-user-id', tradeId: input.ExpressionAttributeValues[':start'] === '2026-04-06' ? 't6' : 't7' }],
+      }));
+      ddbMock.on(BatchGetCommand).callsFake((input: any) => {
+        const keys = input.RequestItems['test-trades'].Keys;
+        return keys[0].tradeId === 't6'
+          ? { Responses: { 'test-trades': [makeTrade({ tradeId: 't6', openDate: '2026-04-06' })] } }
+          : { Responses: { 'test-trades': [] }, UnprocessedKeys: { 'test-trades': { Keys: keys } } };
+      });
+      vi.useFakeTimers();
+      const pending = handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: {} }), {} as any, () => {}) as Promise<any>;
+      await vi.runAllTimersAsync();
+      const res = await pending;
+      vi.useRealTimers();
+      const body = JSON.parse(res.body);
+
+      expect(res.statusCode).toBe(200);
+      expect(body.data.staleDays).toEqual(['2026-04-06', '2026-04-07']);
+      expect(Object.keys(body.data.tradesByDay)).toEqual(['2026-04-06']);
+      expect(body.data.serverHashes).toEqual({ '2026-04-06': 'h6' });
+    });
+
+    it('queries at most 4 stale days at a time', async () => {
+      const days = Array.from({ length: 10 }, (_, i) => `2026-04-${String(i + 1).padStart(2, '0')}`);
+      ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: days.map((d) => makeDailyRecord({ date: d, sk: `acc-1#${d}`, tradeHash: d })) });
+      let running = 0; let peak = 0;
+      ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).callsFake(async () => {
+        running++; peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 5));
+        running--;
+        return { Items: [] };
+      });
+      const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: {} }), {} as any, () => {}) as any;
+      expect(JSON.parse(res.body).data.staleDays).toHaveLength(10);
+      expect(peak).toBeLessThanOrEqual(4);
+    });
+  });
+
+  it('400 for a start or end date that is not a real day', async () => {
+    for (const range of [{ startDate: 'x', endDate: '2026-04-30' }, { startDate: '2026-04-01', endDate: '2026-13-30' }]) {
+      const res = await handler(makeEvent({ accountId: 'acc-1', ...range, clientHashes: {} }), {} as any, () => {}) as any;
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('ignores client hash keys that are not calendar days', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    const res = await handler(makeEvent({ accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30', clientHashes: { '2026-04-05x': 'a', '2026-04-31': 'b' } }), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.staleDays).toEqual([]);
   });
 });

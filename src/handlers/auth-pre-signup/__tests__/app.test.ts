@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
 const TEST_POOL_ID = 'us-east-1_TestPool';
@@ -11,6 +11,7 @@ beforeEach(() => {
   cognitoMock.reset();
   cognitoMock.on(ListUsersCommand).resolves({ Users: [] });
   cognitoMock.on(AdminLinkProviderForUserCommand).resolves({});
+  cognitoMock.on(AdminDeleteUserCommand).resolves({});
 });
 
 describe('auth-pre-signup handler', () => {
@@ -62,6 +63,59 @@ describe('auth-pre-signup handler', () => {
         ProviderAttributeValue: '789012',
       },
     });
+  });
+
+  it('does not link to an unconfirmed native sign-up: it removes it and lets the Google user be created alone', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'pending-uuid', UserStatus: 'UNCONFIRMED', Attributes: [{ Name: 'email', Value: 'victim@example.com' }] }],
+    });
+
+    const result = await handler({
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_ExternalProvider',
+      userName: 'Google_555',
+      request: { userAttributes: { email: 'victim@example.com', email_verified: 'true' } },
+      response: {},
+    });
+
+    expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)).toHaveLength(0);
+    const deletes = cognitoMock.commandCalls(AdminDeleteUserCommand);
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].args[0].input).toEqual({ UserPoolId: TEST_POOL_ID, Username: 'pending-uuid' });
+    expect(result.response.autoConfirmUser).toBe(true);
+  });
+
+  it('links to the confirmed native user and removes an unconfirmed duplicate of the same email', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        { Username: 'pending-uuid', UserStatus: 'UNCONFIRMED', Attributes: [] },
+        { Username: 'confirmed-uuid', UserStatus: 'CONFIRMED', Attributes: [] },
+      ],
+    });
+    await handler({
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_ExternalProvider',
+      userName: 'Google_556',
+      request: { userAttributes: { email: 'both@example.com', email_verified: 'true' } },
+      response: {},
+    });
+    expect(cognitoMock.commandCalls(AdminDeleteUserCommand)).toHaveLength(1);
+    expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)[0].args[0].input.DestinationUser).toEqual({ ProviderName: 'Cognito', ProviderAttributeValue: 'confirmed-uuid' });
+  });
+
+  it('neither links nor deletes a native user in any other state (reset required, force change password)', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'u1', UserStatus: 'RESET_REQUIRED', Attributes: [] }, { Username: 'u2', UserStatus: 'FORCE_CHANGE_PASSWORD', Attributes: [] }],
+    });
+    await handler({
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_ExternalProvider',
+      userName: 'Google_557',
+      request: { userAttributes: { email: 'odd@example.com', email_verified: 'true' } },
+      response: {},
+    });
+    expect(cognitoMock.commandCalls(AdminDeleteUserCommand)).toHaveLength(0);
+    expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)).toHaveLength(0);
   });
 
   it('does not link when no native user exists for Google sign-in', async () => {
@@ -141,7 +195,7 @@ describe('auth-pre-signup handler', () => {
     expect(result.response.autoVerifyEmail).toBeUndefined();
   });
 
-  it('does NOT auto-confirm an email signup when a Google account has the same email (no ownership proof)', async () => {
+  it('refuses an email signup when a Google account has the same email (USER_EXISTS)', async () => {
     cognitoMock.on(ListUsersCommand).resolves({
       Users: [
         { Username: 'Google_444444', UserStatus: 'EXTERNAL_PROVIDER', Attributes: [{ Name: 'email', Value: 'both@example.com' }] },
@@ -156,11 +210,37 @@ describe('auth-pre-signup handler', () => {
       response: {},
     };
 
-    const result = await handler(event);
+    await expect(handler(event)).rejects.toThrow('USER_EXISTS');
+    expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)).toHaveLength(0);
+  });
 
+  it('refuses an email signup when a confirmed native account has the same email (USER_EXISTS)', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'native-uuid', UserStatus: 'CONFIRMED', Attributes: [{ Name: 'email', Value: 'taken@example.com' }] }],
+    });
+    const event = {
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_SignUp',
+      userName: 'email-user',
+      request: { userAttributes: { email: 'taken@example.com' } },
+      response: {},
+    };
+    await expect(handler(event)).rejects.toThrow('USER_EXISTS');
+  });
+
+  it('lets an email signup through when the only account with that email is unconfirmed', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [{ Username: 'pending-uuid', UserStatus: 'UNCONFIRMED', Attributes: [{ Name: 'email', Value: 'pending@example.com' }] }],
+    });
+    const event = {
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_SignUp',
+      userName: 'email-user',
+      request: { userAttributes: { email: 'pending@example.com' } },
+      response: {},
+    };
+    const result = await handler(event);
     expect(result.response.autoConfirmUser).toBeUndefined();
-    expect(result.response.autoVerifyEmail).toBeUndefined();
-    expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(0);
   });
 
   it('does not link a Google identity whose email the provider did not verify', async () => {
@@ -176,7 +256,7 @@ describe('auth-pre-signup handler', () => {
     expect(cognitoMock.commandCalls(AdminLinkProviderForUserCommand)).toHaveLength(0);
   });
 
-  it('does not auto-confirm email signup if ListUsers fails', async () => {
+  it('fails the email signup (never auto-confirms) if ListUsers fails', async () => {
     cognitoMock.on(ListUsersCommand).rejects(new Error('Service unavailable'));
 
     const event = {
@@ -187,10 +267,7 @@ describe('auth-pre-signup handler', () => {
       response: {},
     };
 
-    const result = await handler(event);
-
-    // Should not auto-confirm — fall through to normal Cognito flow
-    expect(result.response.autoConfirmUser).toBeUndefined();
+    await expect(handler(event)).rejects.toThrow('Service unavailable');
   });
 
   // --- Other trigger sources ---

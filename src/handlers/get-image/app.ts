@@ -2,8 +2,11 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
 import { getUserId } from '../../shared/auth';
+import { defaultsFor } from '../../shared/apiError';
+import { errorResponse, ErrorCodes } from '../../shared/validation';
 
 const s3Client = new S3Client({});
+const IMAGE_NOT_FOUND = "That image couldn't be found. It may have been removed.";
 
 interface PathParameters {
   imageId?: string;
@@ -19,94 +22,42 @@ export const handler = async (event: APIGatewayProxyEvent, _context?: unknown, _
     // Verify that the request has proper authorization
     const authHeader = event.headers.authorization || event.headers.Authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return {
-        statusCode: 401,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Unauthorized - Bearer token required',
-        }),
-      };
+      return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Please log in to view this image.');
     }
 
     const pathParameters = event.pathParameters as PathParameters;
     const imageId = pathParameters?.imageId;
 
     if (!imageId) {
-      return {
-        statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'imageId is required',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Choose an image to open.');
     }
 
     // Validate image ID format and extension for security
     const allowedExtensions = /\.(jpg|jpeg|png|gif|webp)$/i;
     if (!allowedExtensions.test(imageId)) {
-      return {
-        statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Invalid image format. Only jpg, jpeg, png, gif, and webp are allowed.',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Only JPG, PNG, GIF and WebP images can be shown.');
     }
 
     // Prevent path traversal attacks (but allow forward slashes for the path structure)
     if (imageId.includes('..') || imageId.includes('\\')) {
-      return {
-        statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Invalid image ID format',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, "That image link isn't valid.");
     }
 
     // Validate the path structure: should be accountId/tradeId/filename
     const pathParts = imageId.split('/');
     if (pathParts.length !== 3) {
-      return {
-        statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Invalid image ID format. Expected: accountId/tradeId/filename',
-        }),
-      };
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, "That image link isn't valid.");
     }
 
     // Keys are images/<userId>/<tradeId>/<file>: only the owner may read them (other users get the same 404 as a missing image).
     if (!getUserId(event) || pathParts[0] !== getUserId(event)) {
-      return {
-        statusCode: 404,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Image not found' }),
-      };
+      return errorResponse(404, ErrorCodes.NOT_FOUND, IMAGE_NOT_FOUND);
     }
 
     const bucketName = process.env.IMAGES_BUCKET;
     if (!bucketName) {
       console.error('IMAGES_BUCKET environment variable not set');
-      return {
-        statusCode: 500,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Server configuration error',
-        }),
-      };
+      return errorResponse(500, ErrorCodes.INTERNAL_ERROR, defaultsFor(500).message);
     }
 
     // Construct the S3 key - images are stored in the /images/ prefix
@@ -122,15 +73,7 @@ export const handler = async (event: APIGatewayProxyEvent, _context?: unknown, _
       const response = await s3Client.send(getObjectCommand);
 
       if (!response.Body) {
-        return {
-          statusCode: 404,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            error: 'Image not found',
-          }),
-        };
+        return errorResponse(404, ErrorCodes.NOT_FOUND, IMAGE_NOT_FOUND);
       }
 
       // Convert the stream to buffer
@@ -190,39 +133,15 @@ export const handler = async (event: APIGatewayProxyEvent, _context?: unknown, _
       console.error('S3 Error:', s3Error);
       
       if (s3Error.name === 'NoSuchKey') {
-        return {
-          statusCode: 404,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            error: 'Image not found',
-          }),
-        };
+        return errorResponse(404, ErrorCodes.NOT_FOUND, IMAGE_NOT_FOUND);
       }
 
       // For any other S3 error
-      return {
-        statusCode: 500,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          error: 'Failed to retrieve image',
-        }),
-      };
+      return errorResponse(500, ErrorCodes.INTERNAL_ERROR, "We couldn't load that image. Please try again.");
     }
 
   } catch (error) {
     console.error('Handler Error:', error);
-    return {
-      statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        error: 'Internal server error',
-      }),
-    };
+    return errorResponse(500, ErrorCodes.INTERNAL_ERROR, defaultsFor(500).message);
   }
 };

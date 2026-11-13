@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { batchWritePutAll } from '../../shared/batchWrite';
 import { getUserId } from '../../shared/auth';
 import { GOAL_TYPE_CONFIG, DEFAULT_GOAL_TARGETS } from '../../shared/goalDefaults';
+import { isCalendarDay } from '../../shared/timezone';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -20,6 +21,13 @@ const DEFAULT_RULES = [
   'Review trades weekly',
   'Stick to my trading plan'
 ];
+
+/** `week#YYYY-MM-DD` or `month#YYYY-MM`, with a real date. */
+function isValidPeriodKey(periodKey: string): boolean {
+  if (!/^(week#\d{4}-\d{2}-\d{2}|month#\d{4}-\d{2})$/.test(periodKey)) return false;
+  const [kind, value] = periodKey.split('#');
+  return kind === 'week' ? isCalendarDay(value) : /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+}
 
 function getPreviousPeriodKey(periodKey: string): string {
   if (periodKey.startsWith('week#')) {
@@ -140,33 +148,9 @@ async function queryTable(tableName: string, userId: string, skPrefix?: string):
 
 /** Fetch legacy records (SK that doesn't start with week# or month#). */
 async function queryLegacyRecords(tableName: string, userId: string): Promise<any[]> {
-  // DynamoDB does not allow FilterExpression on primary key attributes (ruleId/goalId
-  // are sort keys). Query all records and filter client-side instead.
-  const items: any[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
+  // The sort keys (ruleId/goalId) cannot be filtered by DynamoDB, so read them all and filter here.
   const skAttr = tableName === RULES_TABLE ? 'ruleId' : 'goalId';
-
-  do {
-    const result = await ddb.send(new QueryCommand({
-      TableName: tableName,
-      KeyConditionExpression: 'userId = :userId',
-      ExpressionAttributeValues: {
-        ':userId': userId,
-      },
-      ExclusiveStartKey: exclusiveStartKey,
-    }));
-
-    if (result.Items) {
-      items.push(...result.Items);
-    }
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  // Filter client-side: legacy records have sort keys that don't start with 'week#' or 'month#'
-  return items.filter((item) => {
-    const sk = item[skAttr] as string;
-    return !sk.startsWith('week#') && !sk.startsWith('month#');
-  });
+  return (await queryTable(tableName, userId)).filter((item) => isLegacyRecord(item[skAttr] as string));
 }
 
 /** Check if user has carry-forward enabled (default = true). */
@@ -205,6 +189,11 @@ export const handler: ApiHandler = async (event) => {
   }
 
   const periodKey = event.queryStringParameters?.periodKey || null;
+  // The same shape create-rule and create-goal accept. Anything else would write junk period records on a GET.
+  if (periodKey !== null && !isValidPeriodKey(periodKey)) {
+    log.warn('invalid periodKey', { periodKey });
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid periodKey format');
+  }
   const isCurrentPeriod = event.queryStringParameters?.currentPeriod === 'true';
 
   try {

@@ -45,8 +45,8 @@ describe('computeEntitlements', () => {
   });
 
   it('free limits are 5/1/10/3 and trial/pro 200/30/500/200', () => {
-    expect(computeEntitlements(undefined).limits).toEqual({ ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3 });
-    expect(computeEntitlements({ status: 'active' }).limits).toEqual({ ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200 });
+    expect(computeEntitlements(undefined).limits).toEqual({ ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3, ai_enhance: 20 });
+    expect(computeEntitlements({ status: 'active' }).limits).toEqual({ ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 });
   });
 });
 
@@ -225,7 +225,7 @@ describe('cors (replica of the API Gateway configuration)', () => {
     const res = await app.request('/x', { method: 'OPTIONS', headers: { origin: 'https://dev.tradequt.com' } });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-methods')).toBe('DELETE,GET,OPTIONS,PATCH,POST,PUT');
-    expect(res.headers.get('access-control-allow-headers')).toBe('authorization,content-type,x-amz-date,x-api-key');
+    expect(res.headers.get('access-control-allow-headers')).toBe('authorization,content-type,idempotency-key,x-amz-date,x-api-key');
     expect(res.headers.get('access-control-max-age')).toBe('3600');
   });
 

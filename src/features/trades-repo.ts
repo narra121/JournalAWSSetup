@@ -1,5 +1,6 @@
-import { BatchGetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../shared/dynamo';
+import { loadFullRecords } from '../shared/tradeRecords';
 
 /** The Trades attributes the AI features read. Notes, lessons, images and account names are never loaded into prompts. */
 export interface TradeRow {
@@ -26,15 +27,17 @@ export interface TradeRow {
 }
 
 export interface TradeRange {
-  /** ISO date or instant; inclusive */
+  /** ISO instant, or a date (YYYY-MM-DD) meaning that whole IST day; inclusive */
   from: string;
   to: string;
   accountId?: string | null;
+  /** Applied before the MAX_LOADED_TRADES cap counts a trade (for callers that only want some of the range). */
+  filter?: (trade: TradeRow) => boolean;
 }
 
 export interface LoadedTrades {
   trades: TradeRow[];
-  /** true when the range holds more than MAX_LOADED_TRADES trades: `trades` is the oldest MAX_LOADED_TRADES, so anything computed from it is partial */
+  /** true when the range holds more than MAX_LOADED_TRADES matching trades (or more than MAX_SCANNED_KEYS index rows): `trades` is the oldest ones found, so anything computed from it is partial */
   truncated: boolean;
 }
 
@@ -48,6 +51,10 @@ export interface TradeSource {
 }
 
 export const MAX_LOADED_TRADES = 5000;
+/** Index rows read per request. The index holds every account and soft-deleted trade, so this bounds the work, not the result. */
+export const MAX_SCANNED_KEYS = 50_000;
+const IST_OFFSET = '+05:30';
+const DAY_MS = 86_400_000;
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
@@ -81,39 +88,60 @@ const env = (n: string) => {
   return v;
 };
 
+/** A date bound is an IST calendar day (the day every metric and report uses); an instant is used as it is. */
+function istBound(value: string, edge: 'start' | 'end'): string {
+  if (value.length !== 10) return value;
+  const start = Date.parse(`${value}T00:00:00${IST_OFFSET}`);
+  return new Date(edge === 'start' ? start : start + DAY_MS - 1).toISOString();
+}
+
 export const dynamoTradeSource: TradeSource = {
+  /**
+   * Walks the date index (keys only) in date order and loads the records in chunks. Only live trades of the requested
+   * account count toward MAX_LOADED_TRADES; other accounts' and soft-deleted rows are read and dropped.
+   */
   async loadTrades(userId, range) {
     const TRADES = env('TRADES_TABLE');
-    const end = range.to.length === 10 ? `${range.to}T23:59:59.999Z` : range.to;
-    const keys: { userId: string; tradeId: string }[] = [];
+    const from = istBound(range.from, 'start');
+    const to = istBound(range.to, 'end');
+    const wanted = range.accountId && range.accountId !== 'ALL' ? range.accountId : null;
+    const rows: TradeRow[] = [];
+    let scanned = 0;
+    let truncated = false;
     let startKey: Record<string, unknown> | undefined;
-    do {
+    scan: do {
       const r = await ddb.send(
         new QueryCommand({
           TableName: TRADES,
           IndexName: 'trades-by-date-gsi',
           KeyConditionExpression: 'userId = :u AND #od BETWEEN :a AND :b',
           ExpressionAttributeNames: { '#od': 'openDate' },
-          ExpressionAttributeValues: { ':u': userId, ':a': range.from, ':b': end },
+          ExpressionAttributeValues: { ':u': userId, ':a': from, ':b': to },
           ExclusiveStartKey: startKey,
         }),
       );
-      for (const it of r.Items ?? []) keys.push({ userId: it.userId, tradeId: it.tradeId });
-      startKey = r.LastEvaluatedKey;
-    } while (startKey && keys.length < MAX_LOADED_TRADES);
-    const truncated = keys.length > MAX_LOADED_TRADES || (keys.length === MAX_LOADED_TRADES && startKey !== undefined);
-
-    const rows: TradeRow[] = [];
-    for (let i = 0; i < Math.min(keys.length, MAX_LOADED_TRADES); i += 100) {
-      let pending: any[] = keys.slice(i, i + 100);
-      for (let attempt = 0; pending.length && attempt < 4; attempt++) {
-        const r = await ddb.send(new BatchGetCommand({ RequestItems: { [TRADES]: { Keys: pending } } }));
-        for (const it of r.Responses?.[TRADES] ?? []) if (!it.deletedAt) rows.push(toTradeRow(it));
-        pending = r.UnprocessedKeys?.[TRADES]?.Keys ?? [];
+      const keyRows = r.Items ?? [];
+      scanned += keyRows.length;
+      for (let i = 0; i < keyRows.length; i += 100) {
+        const chunk = keyRows.slice(i, i + 100);
+        const full = await loadFullRecords(userId, chunk);
+        for (const k of chunk) {
+          const it = full.get(k.tradeId);
+          if (!it || it.deletedAt) continue;
+          const row = toTradeRow(it);
+          if (wanted && row.accountId !== wanted) continue;
+          if (range.filter && !range.filter(row)) continue;
+          if (rows.length >= MAX_LOADED_TRADES) {
+            truncated = true;
+            break scan;
+          }
+          rows.push(row);
+        }
       }
-    }
-    const wanted = range.accountId && range.accountId !== 'ALL' ? range.accountId : null;
-    return { trades: rows.filter((t) => !wanted || t.accountId === wanted).sort((a, b) => (a.openDate < b.openDate ? -1 : 1)), truncated };
+      startKey = r.LastEvaluatedKey;
+      if (startKey && scanned >= MAX_SCANNED_KEYS) truncated = true;
+    } while (startKey && !truncated);
+    return { trades: rows.sort((a, b) => (a.openDate < b.openDate ? -1 : 1)), truncated };
   },
 
   async loadRuleTexts(userId) {

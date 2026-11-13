@@ -304,12 +304,8 @@ describe('aggregateDailyRecords', () => {
     expect(stats.maxDrawdown).toBeCloseTo(1.4, 5);
   });
 
-  it('computes maxDrawdown without totalCapital (equity curve method)', () => {
-    // Trades: +100, -50, -80, +20
-    // runningPnl after each: 100, 50, -30, -10
-    // minRunningPnl = -30 → startingEquity = 30 + 1 = 31
-    // equity: 31 → 131 (peak) → 81 → 1 → 21
-    // drawdown from peak 131: (131 - 1) / 131 * 100 ≈ 99.24%
+  it('maxDrawdown is null without totalCapital, so an early loss never reads as ~100% (BE-036)', () => {
+    // Trades: +100, -50, -80, +20 would have read 99.24% against a synthetic starting equity of 31.
     const day1 = computeDailyRecord('user1', 'acc1', '2026-04-07', [
       makeTrade({ tradeId: 't1', pnl: 100, closeDate: '2026-04-07T10:00:00Z' }),
       makeTrade({ tradeId: 't2', pnl: -50, closeDate: '2026-04-07T11:00:00Z' }),
@@ -319,9 +315,8 @@ describe('aggregateDailyRecords', () => {
 
     const stats = aggregateDailyRecords([day1]);
 
-    // startingEquity = 31, peak = 131, trough = 1
-    // dd = (131 - 1) / 131 * 100 ≈ 99.236...
-    expect(stats.maxDrawdown).toBeCloseTo((130 / 131) * 100, 5);
+    expect(stats.maxDrawdown).toBeNull();
+    expect(aggregateDailyRecords([day1], { totalCapital: 1000 }).maxDrawdown).toBeCloseTo(13, 5); // (1000+100 -> peak 1100, trough 970) / 1000
   });
 
   it('includes equityCurve when includeEquityCurve=true', () => {

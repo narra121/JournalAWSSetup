@@ -1,6 +1,7 @@
 import { AggregationContext, AggregationProcessor, MetricProcessor, ProcessorContext, TradeRecord } from '../types';
 import { calcPnL } from '../../utils/pnl';
 import { hourOf, weekdayOf } from '../../timezone';
+import { dict } from '../dict';
 
 /** Per-key tallies; `rSum` / `rCount` carry realized R multiples for the trades that have a stop loss. */
 interface Tally {
@@ -20,7 +21,7 @@ export const R_BUCKETS = ['<=-2', '-2..-1', '-1..0', '0..1', '1..2', '2..3', '>3
 
 const emptyTally = (): Tally => ({ trades: 0, wins: 0, net: 0, rSum: 0, rCount: 0 });
 const emptySegments = (): Segments => ({
-  symbol: {}, strategy: {}, session: {}, direction: {}, assetClass: {}, weekday: {}, hour: {}, weekdayHour: {},
+  symbol: dict(), strategy: dict(), session: dict(), direction: dict(), assetClass: dict(), weekday: dict(), hour: dict(), weekdayHour: dict(),
 });
 
 /**
@@ -64,7 +65,7 @@ function add(map: TallyMap, key: string, pnl: number, r: number | null): void {
 export class SegmentsProcessor implements MetricProcessor {
   readonly name = 'segments';
   private seg: Segments = emptySegments();
-  private rBuckets: Record<string, number> = {};
+  private rBuckets: Record<string, number> = dict();
   private noStop = 0;
 
   processTrade(trade: TradeRecord, context?: ProcessorContext): void {
@@ -82,8 +83,9 @@ export class SegmentsProcessor implements MetricProcessor {
     add(this.seg.session, trade.tradingSession || 'Unknown', pnl, r);
     add(this.seg.direction, trade.side === 'SELL' ? 'SELL' : 'BUY', pnl, r);
     add(this.seg.assetClass, (trade.assetClass as string) || 'Unknown', pnl, r);
+    // A date-only openDate has a weekday but no hour: it still counts for the weekday, like in dailyWinRate.
+    if (weekday !== null) add(this.seg.weekday, weekday, pnl, r);
     if (weekday !== null && hour !== null) {
-      add(this.seg.weekday, weekday, pnl, r);
       add(this.seg.hour, hour, pnl, r);
       add(this.seg.weekdayHour, `${weekday}-${hour}`, pnl, r);
     }
@@ -97,7 +99,7 @@ export class SegmentsProcessor implements MetricProcessor {
 
   reset(): void {
     this.seg = emptySegments();
-    this.rBuckets = {};
+    this.rBuckets = dict();
     this.noStop = 0;
   }
 }
@@ -105,7 +107,7 @@ export class SegmentsProcessor implements MetricProcessor {
 export class SegmentsAggregator implements AggregationProcessor {
   readonly name = 'segments';
   private seg: Segments = emptySegments();
-  private rBuckets: Record<string, number> = {};
+  private rBuckets: Record<string, number> = dict();
   private noStop = 0;
 
   merge(record: Record<string, any>): void {
@@ -152,7 +154,7 @@ export class SegmentsAggregator implements AggregationProcessor {
 
   reset(): void {
     this.seg = emptySegments();
-    this.rBuckets = {};
+    this.rBuckets = dict();
     this.noStop = 0;
   }
 }

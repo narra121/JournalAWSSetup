@@ -1,5 +1,9 @@
+import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { mockClient } from 'aws-sdk-client-mock';
 import { describe, expect, it, vi } from 'vitest';
 import fixture from './routes.fixture.json';
+
+const ssmMock = mockClient(SSMClient);
 
 vi.stubEnv('USER_POOL_ID', 'us-east-1_test');
 vi.stubEnv('USER_POOL_CLIENT_ID', 'client');
@@ -60,7 +64,12 @@ describe('authentication groups', () => {
     const res = await app.request(path, { method });
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toBe('Bearer');
-    expect(await res.json()).toEqual({ message: 'Unauthorized' });
+    expect(await res.json()).toEqual({
+      success: false,
+      message: 'Your session has ended. Please log in again.',
+      errorCode: 'UNAUTHORIZED',
+      errorMessage: 'Your session has ended. Please log in again.',
+    });
   });
 
   it('cognito route with an unverifiable token → 401', async () => {
@@ -71,13 +80,24 @@ describe('authentication groups', () => {
   it.each(admin.map((r) => [r.method, r.path.replace(/\{[^}]+\}/g, 'x')]))('%s %s without a header → 401', async (method, path) => {
     const res = await app.request(path, { method });
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ message: 'Unauthorized' });
+    expect(await res.json()).toEqual({
+      success: false,
+      message: 'Your session has ended. Please log in again.',
+      errorCode: 'UNAUTHORIZED',
+      errorMessage: 'Your session has ended. Please log in again.',
+    });
   });
 
   it('admin route with a rejected token → 403', async () => {
-    vi.stubEnv('ADMIN_JWT_SECRET_PARAM', '');
+    vi.stubEnv('ADMIN_JWT_SECRET_PARAM', '/tradequt/adminJwtSecret');
+    ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: 'test-admin-secret' } });
     const res = await app.request('/v1/admin/users', { headers: { authorization: 'Bearer junk' } });
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ message: 'Forbidden' });
+    expect(await res.json()).toEqual({
+      success: false,
+      message: "You don't have permission to do that.",
+      errorCode: 'FORBIDDEN',
+      errorMessage: "You don't have permission to do that.",
+    });
   });
 });

@@ -15,4 +15,3 @@ export const featureRoutes: { basePath: string; app: Hono<AppEnv> }[] = [
 
 export { generateInsight } from './insights/service';
 export { defaultInsightDeps } from './insights/routes';
-export type { SyncProvider, SyncConnection } from './import/types';

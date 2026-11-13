@@ -95,16 +95,6 @@ describe('admin-list-users handler', () => {
       ],
     });
 
-    // Trades COUNT query
-    ddbMock
-      .on(QueryCommand, {
-        TableName: 'test-trades',
-        KeyConditionExpression: 'userId = :u',
-        ExpressionAttributeValues: { ':u': 'user-1' },
-        Select: 'COUNT',
-      })
-      .resolves({ Count: 42 });
-
     // Accounts COUNT query
     ddbMock
       .on(QueryCommand, {
@@ -145,8 +135,11 @@ describe('admin-list-users handler', () => {
     expect(user.status).toBe('CONFIRMED');
     expect(user.enabled).toBe(true);
     expect(user.hasGoogle).toBe(true);
-    expect(user.tradeCount).toBe(42);
+    expect(user.tradeCount).toBeUndefined();
     expect(user.accountCount).toBe(3);
+    // 2 DynamoDB calls per user: no per-user read of the whole trades partition
+    expect(ddbMock.commandCalls(QueryCommand).map((c) => c.args[0].input.TableName)).toEqual(['test-accounts']);
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(1);
     expect(user.subscription).toEqual({
       status: 'active',
       tier: 'pro',
@@ -183,8 +176,54 @@ describe('admin-list-users handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.users[0].subscription).toBeNull();
-    expect(body.data.users[0].tradeCount).toBe(0);
     expect(body.data.users[0].accountCount).toBe(0);
+  });
+
+  describe('paging (BE-022)', () => {
+    it('passes nextToken from the query string to Cognito and returns the next one', async () => {
+      const { handler } = await import('../app');
+      cognitoMock.on(ListUsersCommand).resolves({ Users: [makeCognitoUser({ sub: 'user-61' })], PaginationToken: 'page-3' });
+      ddbMock.on(QueryCommand).resolves({ Count: 0 });
+      ddbMock.on(GetCommand).resolves({ Item: undefined });
+
+      const event = { ...makeEvent(), queryStringParameters: { nextToken: 'page-2' } } as any;
+      const res = (await handler(event, {} as any, () => {})) as any;
+
+      expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input).toMatchObject({ Limit: 60, PaginationToken: 'page-2' });
+      expect(JSON.parse(res.body).data.nextToken).toBe('page-3');
+    });
+
+    it('returns a null nextToken on the last page and sends no token for the first', async () => {
+      const { handler } = await import('../app');
+      cognitoMock.on(ListUsersCommand).resolves({ Users: [] });
+
+      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+
+      expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input.PaginationToken).toBeUndefined();
+      expect(JSON.parse(res.body).data.nextToken).toBeNull();
+    });
+
+    it('answers 400 for a token Cognito rejects', async () => {
+      const { handler } = await import('../app');
+      cognitoMock.on(ListUsersCommand).rejects(Object.assign(new Error('bad token'), { name: 'InvalidParameterException' }));
+
+      const event = { ...makeEvent(), queryStringParameters: { nextToken: 'garbage' } } as any;
+      const res = (await handler(event, {} as any, () => {})) as any;
+
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  it('shows the Stripe period end (currentEnd) for paying users, the grant end otherwise', async () => {
+    const { handler } = await import('../app');
+    cognitoMock.on(ListUsersCommand).resolves({ Users: [makeCognitoUser({ sub: 'u-paid' }), makeCognitoUser({ sub: 'u-grant' })] });
+    ddbMock.on(QueryCommand).resolves({ Count: 0 });
+    ddbMock.on(GetCommand, { Key: { userId: 'u-paid' } }).resolves({ Item: { status: 'active', currentEnd: '2026-12-01T00:00:00.000Z' } });
+    ddbMock.on(GetCommand, { Key: { userId: 'u-grant' } }).resolves({ Item: { status: 'active', source: 'admin_grant', periodEnd: '2027-01-01T00:00:00.000Z' } });
+
+    const body = JSON.parse(((await handler(makeEvent(), {} as any, () => {})) as any).body);
+
+    expect(body.data.users.map((u: any) => u.subscription.periodEnd)).toEqual(['2026-12-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z']);
   });
 
   it('sets hasGoogle false when no identities attribute', async () => {

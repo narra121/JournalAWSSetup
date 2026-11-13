@@ -190,6 +190,6 @@ describe('auth-forgot-password handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('INTERNAL_ERROR');
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
   });
 });

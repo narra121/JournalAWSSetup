@@ -17,13 +17,15 @@ const mockSessionsRetrieve = vi.fn();
 
 vi.mock('stripe', () => {
   return {
-    default: vi.fn().mockImplementation(() => ({
-      checkout: {
-        sessions: {
-          retrieve: mockSessionsRetrieve,
+    default: vi.fn().mockImplementation(function () {
+      return {
+        checkout: {
+          sessions: {
+            retrieve: mockSessionsRetrieve,
+          },
         },
-      },
-    })),
+      };
+    }),
   };
 });
 
@@ -124,7 +126,7 @@ describe('verify-checkout-session handler', () => {
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('UNAUTHORIZED');
-    expect(body.message).toContain('Unauthorized');
+    expect(body.message).toBe('Your session has ended. Please log in again.');
   });
 
   it('returns 401 when auth header has invalid JWT', async () => {

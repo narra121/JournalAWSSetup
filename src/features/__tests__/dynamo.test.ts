@@ -3,7 +3,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ddb } from '../../shared/dynamo';
 import { decodeCursor, dynamoAiStore, encodeCursor } from '../store';
-import { dynamoTradeSource, MAX_LOADED_TRADES, toTradeRow } from '../trades-repo';
+import { dynamoTradeSource, MAX_LOADED_TRADES, MAX_SCANNED_KEYS, toTradeRow } from '../trades-repo';
 import { timeId } from '../ids';
 
 const m = mockClient(ddb);
@@ -73,8 +73,8 @@ describe('Trades repository', () => {
     expect(rows.map((r) => r.id)).toEqual(['a', 'c']);
     const q = m.commandCalls(QueryCommand);
     expect(q).toHaveLength(2);
-    expect(q[0].args[0].input).toMatchObject({ IndexName: 'trades-by-date-gsi', ExpressionAttributeValues: { ':u': 'u1', ':a': '2026-10-01', ':b': '2026-10-31T23:59:59.999Z' } });
-    expect(m.commandCalls(BatchGetCommand)[0].args[0].input.RequestItems!['Trades-test'].Keys).toHaveLength(3);
+    expect(q[0].args[0].input).toMatchObject({ IndexName: 'trades-by-date-gsi', ExpressionAttributeValues: { ':u': 'u1', ':a': '2026-09-30T18:30:00.000Z', ':b': '2026-10-31T18:29:59.999Z' } });
+    expect(m.commandCalls(BatchGetCommand).flatMap((c) => c.args[0].input.RequestItems!['Trades-test'].Keys as unknown[])).toHaveLength(3);
   });
 
   it('never returns soft-deleted trades (deletedAt set, e.g. an undone import)', async () => {
@@ -113,6 +113,65 @@ describe('Trades repository', () => {
       expect(r.trades).toHaveLength(MAX_LOADED_TRADES);
       expect(r.truncated).toBe(false);
     });
+  });
+
+  describe('the cap counts live trades of the requested account only (BE-011)', () => {
+    const idx = (ids: string[]) => ids.map((tradeId) => ({ userId: 'u1', tradeId }));
+    const echo = (make: (tradeId: string) => Record<string, any>) =>
+      m.on(BatchGetCommand).callsFake((input) => ({ Responses: { 'Trades-test': input.RequestItems['Trades-test'].Keys.map((k: any) => make(k.tradeId)) } }));
+
+    it('other accounts do not use up the cap: 6,000 rows of which 1,000 are the requested account is complete', async () => {
+      const ids = Array.from({ length: 6000 }, (_, i) => `t${i}`);
+      m.on(QueryCommand).resolves({ Items: idx(ids) });
+      echo((id) => ({ tradeId: id, accountId: Number(id.slice(1)) < 1000 ? 'mine' : 'other', openDate: '2026-10-01T00:00:00Z' }));
+      const r = await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', accountId: 'mine' });
+      expect(r.trades).toHaveLength(1000);
+      expect(r.truncated).toBe(false);
+    });
+
+    it('soft-deleted trades do not use up the cap either', async () => {
+      const ids = Array.from({ length: MAX_LOADED_TRADES + 200 }, (_, i) => `t${i}`);
+      m.on(QueryCommand).resolves({ Items: idx(ids) });
+      echo((id) => ({ tradeId: id, accountId: 'a', openDate: '2026-10-01T00:00:00Z', ...(Number(id.slice(1)) < 200 ? { deletedAt: 'x' } : {}) }));
+      const r = await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31' });
+      expect(r.trades).toHaveLength(MAX_LOADED_TRADES);
+      expect(r.truncated).toBe(false);
+    });
+
+    it('is truncated once more than MAX_LOADED_TRADES matching trades exist', async () => {
+      m.on(QueryCommand).resolves({ Items: idx(Array.from({ length: MAX_LOADED_TRADES + 1 }, (_, i) => `t${i}`)) });
+      echo((id) => ({ tradeId: id, accountId: 'mine', openDate: '2026-10-01T00:00:00Z' }));
+      const r = await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', accountId: 'mine' });
+      expect(r.trades).toHaveLength(MAX_LOADED_TRADES);
+      expect(r.truncated).toBe(true);
+    });
+
+    it('stops reading index rows at MAX_SCANNED_KEYS and says the result is partial', async () => {
+      m.on(QueryCommand).resolves({ Items: idx(Array.from({ length: 10_000 }, (_, i) => `t${i}`)), LastEvaluatedKey: { userId: 'u1', tradeId: 'more' } });
+      echo((id) => ({ tradeId: id, accountId: 'other', openDate: '2026-10-01T00:00:00Z' }));
+      const r = await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', accountId: 'mine' });
+      expect(m.commandCalls(QueryCommand)).toHaveLength(MAX_SCANNED_KEYS / 10_000);
+      expect(r.trades).toHaveLength(0);
+      expect(r.truncated).toBe(true);
+    });
+  });
+
+  it('date bounds are whole IST days; instants are used as given (BE-111)', async () => {
+    m.on(QueryCommand).resolves({ Items: [] });
+    await dynamoTradeSource.loadTrades('u1', { from: '2026-04-01', to: '2026-04-30' });
+    await dynamoTradeSource.loadTrades('u1', { from: '2026-04-01T00:00:00.000Z', to: '2026-04-30T12:00:00.000Z' });
+    const [days, instants] = m.commandCalls(QueryCommand).map((c) => c.args[0].input.ExpressionAttributeValues);
+    // 2026-04-01 02:00 IST (forex) = 2026-03-31T20:30Z belongs to April
+    expect(days).toMatchObject({ ':a': '2026-03-31T18:30:00.000Z', ':b': '2026-04-30T18:29:59.999Z' });
+    expect('2026-03-31T20:30:00.000Z' >= (days as any)[':a']).toBe(true);
+    expect(instants).toMatchObject({ ':a': '2026-04-01T00:00:00.000Z', ':b': '2026-04-30T12:00:00.000Z' });
+  });
+
+  it('keys that stay unprocessed after the backoff attempts are an error, not a silent gap (BE-054)', async () => {
+    m.on(QueryCommand).resolves({ Items: [{ userId: 'u1', tradeId: 'a' }] });
+    m.on(BatchGetCommand).resolves({ Responses: { 'Trades-test': [] }, UnprocessedKeys: { 'Trades-test': { Keys: [{ userId: 'u1', tradeId: 'a' }] } } });
+    await expect(dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31' })).rejects.toThrow(/Could not load all trade records/);
+    expect(m.commandCalls(BatchGetCommand)).toHaveLength(4);
   });
 
   it('re-requests unprocessed keys', async () => {

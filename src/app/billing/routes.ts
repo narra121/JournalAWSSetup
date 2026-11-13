@@ -1,19 +1,15 @@
 import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { ddb } from '../../shared/dynamo';
+import { fail } from '../../features/http';
 import type { AppEnv } from '../types';
 import { saveWritableAccounts } from './accounts';
 import { computeEntitlements } from './entitlements';
 import { periodResetsAt, readUsage } from './quota';
-import { allProPriceIds, checkoutOrigin, getStripe, portalConfigId, proPriceId, type Currency, type Interval } from './stripe';
+import { allProPriceIds, billingCurrencyFor, checkoutOrigin, getStripe, portalConfigId, proPriceId, type Currency, type Interval } from './stripe';
 
 export const meRoutes = new Hono<AppEnv>();
 export const billingRoutes = new Hono<AppEnv>();
-
-/** INR for viewers CloudFront geolocates to India, USD otherwise. */
-export function billingCurrencyFor(country: string | undefined): Currency {
-  return country?.toUpperCase() === 'IN' ? 'INR' : 'USD';
-}
 
 /** A customer already billed in a currency keeps it (Stripe fixes the currency per customer). */
 function currencyFor(c: { req: { header(n: string): string | undefined }; get(k: 'subscription'): Record<string, any> | undefined }): Currency {
@@ -22,8 +18,16 @@ function currencyFor(c: { req: { header(n: string): string | undefined }; get(k:
   return billingCurrencyFor(c.req.header('cloudfront-viewer-country'));
 }
 
-const fail = (c: any, status: number, code: string, message: string) =>
-  c.json({ success: false, message, errorCode: code, errorMessage: message }, status);
+async function portalUrl(c: Context<AppEnv>, customer: string): Promise<string> {
+  const stripe = await getStripe();
+  const configuration = await portalConfigId();
+  const session = await stripe.billingPortal.sessions.create({
+    customer,
+    return_url: `${checkoutOrigin(c.req.header('origin'))}/app/billing`,
+    ...(configuration ? { configuration } : {}),
+  });
+  return session.url;
+}
 
 meRoutes.get('/me/entitlements', async (c) => {
   const usage = await readUsage(c.get('userId'));
@@ -57,16 +61,20 @@ billingRoutes.post('/billing/checkout', async (c) => {
   }
   const interval = body?.interval as Interval;
   if (interval !== 'month' && interval !== 'year') {
-    return fail(c, 400, 'VALIDATION_ERROR', "interval must be 'month' or 'year'");
+    return fail(c, 400, 'VALIDATION_ERROR', 'Choose monthly or yearly billing.');
   }
 
   const sub = c.get('subscription');
-  if (c.get('entitlements').plan === 'pro' && sub?.status !== 'cancellation_requested') {
+  if (c.get('entitlements').plan === 'pro') {
+    // A second Checkout would start a parallel subscription; a cancelling subscriber renews it in the portal instead.
+    if (sub?.status === 'cancellation_requested' && sub.stripeCustomerId) {
+      return c.json({ success: true, message: 'Success', data: { url: await portalUrl(c, sub.stripeCustomerId) } });
+    }
     return fail(c, 409, 'ALREADY_SUBSCRIBED', 'You already have an active Pro subscription.');
   }
 
   const priceId = await proPriceId(interval, currencyFor(c));
-  if (!priceId) return fail(c, 503, 'PRICE_NOT_CONFIGURED', 'Pro pricing is not configured.');
+  if (!priceId) return fail(c, 503, 'PRICE_NOT_CONFIGURED', 'Pro checkout is not available right now. Please try again later.');
 
   const userId = c.get('userId');
   const origin = checkoutOrigin(c.req.header('origin'));
@@ -98,13 +106,5 @@ billingRoutes.post('/billing/checkout', async (c) => {
 billingRoutes.post('/billing/portal', async (c) => {
   const customer = c.get('subscription')?.stripeCustomerId;
   if (!customer) return fail(c, 400, 'NO_BILLING_ACCOUNT', 'No billing account yet. Subscribe first.');
-
-  const stripe = await getStripe();
-  const configuration = await portalConfigId();
-  const session = await stripe.billingPortal.sessions.create({
-    customer,
-    return_url: `${checkoutOrigin(c.req.header('origin'))}/app/billing`,
-    ...(configuration ? { configuration } : {}),
-  });
-  return c.json({ success: true, message: 'Success', data: { url: session.url } });
+  return c.json({ success: true, message: 'Success', data: { url: await portalUrl(c, customer) } });
 });

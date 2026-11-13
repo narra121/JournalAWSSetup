@@ -21,6 +21,19 @@ describe('csv', () => {
     const rows = parseCsv('﻿a,b,c\r\n"x, y","he said ""hi""","multi\nline"\r\n\r\n1,2,3');
     expect(rows).toEqual([['a', 'b', 'c'], ['x, y', 'he said "hi"', 'multi\nline'], ['1', '2', '3']]);
   });
+  it('a quote that never closes does not swallow the rest of the file (BE-107)', () => {
+    const rows = parseCsv('a,b,c\n1,"stray note,3\n4,5,6\n7,8,9', ',');
+    expect(rows).toEqual([['a', 'b', 'c'], ['1', '"stray note', '3'], ['4', '5', '6'], ['7', '8', '9']]);
+  });
+  it('quotes that do close are untouched even when a later one does not', () => {
+    const rows = parseCsv('a,b\n"x,y",2\n3,"open\n4,5', ',');
+    expect(rows).toEqual([['a', 'b'], ['x,y', '2'], ['3', '"open'], ['4', '5']]);
+  });
+  it('a hostile file of many stray quotes is read in linear time', () => {
+    const t0 = performance.now();
+    parseCsv('x,"'.repeat(200_000), ',');
+    expect(performance.now() - t0).toBeLessThan(1500);
+  });
   it('sniffs ; and tab delimiters', () => {
     expect(sniffDelimiter('a;b;c\n1;2,5;3')).toBe(';');
     expect(sniffDelimiter('a\tb\n1\t2')).toBe('\t');

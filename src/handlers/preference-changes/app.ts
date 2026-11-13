@@ -23,7 +23,7 @@ export async function handlePreferenceChanges(event: { Records: PreferenceRecord
     if (!userId || seen.has(`${userId}:${next.timeZone}`)) continue;
     seen.add(`${userId}:${next.timeZone}`);
     try {
-      await rebuildForUser(userId);
+      await rebuildForUser(userId, { force: true });
       console.log(JSON.stringify({ msg: 'timezone_rebuild_done', userId, timeZone: next.timeZone ?? null }));
     } catch (err: any) {
       console.error(JSON.stringify({ msg: 'timezone_rebuild_failed', userId, error: err.message }));

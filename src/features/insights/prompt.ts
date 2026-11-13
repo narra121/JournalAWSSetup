@@ -1,5 +1,6 @@
 import type { GeminiRequest } from '../ai/gemini';
 import type { Computed } from './metrics';
+import { geminiTimeoutMs } from '../../shared/gemini';
 
 export const INSIGHT_SYSTEM = [
   "You are a performance analyst for a trader's journal. You analyse the user's own past trades from the metrics and findings provided.",
@@ -37,7 +38,8 @@ export function buildInsightRequest(c: Computed, input: PromptInput): GeminiRequ
     temperature: 0.2,
     maxOutputTokens: 2048,
     responseSchema: insightSchema(ids, c.candidates.map((f) => f.id)),
-    timeoutMs: 60_000,
+    // CloudFront gives up on the origin after 60 s: one deadline for both models, below that.
+    timeoutMs: Math.min(geminiTimeoutMs(50_000), 50_000),
   };
 }
 

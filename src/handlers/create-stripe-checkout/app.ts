@@ -1,40 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { makeLogger } from '../../shared/logger';
-import { allProPriceIds, checkoutOrigin, isAllowedUrl } from '../../shared/stripe-config';
+import { billingCurrencyFor, checkoutOrigin, getStripe, isAllowedUrl, proPriceIdsFor } from '../../shared/stripe-config';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
-
-// Cache Stripe secret key and instance across warm starts
-let cachedStripeKey: string | null = null;
-let stripe: Stripe | null = null;
-const ssmClient = new SSMClient({});
-
-async function getStripeInstance(): Promise<Stripe> {
-  if (stripe && cachedStripeKey) return stripe;
-
-  const param = await ssmClient.send(
-    new GetParameterCommand({
-      Name: STRIPE_SECRET_KEY_PARAM,
-      WithDecryption: true,
-    })
-  );
-
-  const secretKey = param.Parameter?.Value;
-  if (!secretKey) {
-    throw new Error('Stripe secret key not found in SSM');
-  }
-
-  cachedStripeKey = secretKey;
-  stripe = new Stripe(cachedStripeKey);
-  return stripe;
-}
 
 /**
  * Create a Stripe Checkout Session for subscription payments.
@@ -77,21 +49,23 @@ export const handler = async (
   }
 
   try {
-    if (!(await allProPriceIds()).includes(planId)) {
-      log.warn('plan not allowed', { planId });
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Unknown planId');
-    }
-    if ((successUrl && !isAllowedUrl(successUrl)) || (cancelUrl && !isAllowedUrl(cancelUrl))) {
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'successUrl and cancelUrl must point to an allowed origin');
-    }
-
-    // Check for existing active subscription
     const existing = await ddb.send(
       new GetCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Key: { userId },
       })
     );
+
+    // Only the prices of the caller's billing currency (stored, else CloudFront-Viewer-Country) may be bought, as in /v1/billing/checkout.
+    const storedCurrency = existing.Item?.currency;
+    const currency = storedCurrency === 'INR' || storedCurrency === 'USD' ? storedCurrency : billingCurrencyFor(event.headers?.['cloudfront-viewer-country']);
+    if (!(await proPriceIdsFor(currency)).includes(planId)) {
+      log.warn('plan not allowed', { planId, currency });
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Unknown planId');
+    }
+    if ((successUrl && !isAllowedUrl(successUrl)) || (cancelUrl && !isAllowedUrl(cancelUrl))) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'successUrl and cancelUrl must point to an allowed origin');
+    }
 
     if (existing.Item) {
       const status = existing.Item.status;
@@ -128,8 +102,7 @@ export const handler = async (
       }
     }
 
-    // Initialize Stripe
-    const stripeClient = await getStripeInstance();
+    const stripeClient = await getStripe();
 
     const origin = checkoutOrigin(event.headers?.origin);
 
@@ -142,6 +115,8 @@ export const handler = async (
           quantity: 1,
         },
       ],
+      // Reuse the Stripe customer: a new one per checkout splits the billing history and the portal.
+      ...(existing.Item?.stripeCustomerId ? { customer: existing.Item.stripeCustomerId } : {}),
       success_url: successUrl || `${origin}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl || `${origin}/payment/cancel`,
       client_reference_id: userId,

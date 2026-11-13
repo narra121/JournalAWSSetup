@@ -109,6 +109,34 @@ describe('runWeeklyReports', () => {
     expect(sendEmail.mock.calls[0][0].text).toContain('/app/settings#notifications');
   });
 
+  it('generates for several users at once but never more than 8 in flight, so a large run fits the timeout (BE-023)', async () => {
+    ddb.on(ScanCommand).resolves({ Items: Array.from({ length: 30 }, (_, i) => ({ userId: `u${i}`, status: 'active' })) });
+    ddb.on(GetCommand).resolves({});
+    let inFlight = 0;
+    let peak = 0;
+    generate.mockImplementation(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return { ok: true, cached: false, summary: 's' };
+    });
+
+    const result = await runWeeklyReports({ generate }, NOW);
+
+    expect(result).toEqual({ generated: 30, skipped: 0, failed: 0 });
+    expect(generate).toHaveBeenCalledTimes(30);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it('one failing user does not stop the others', async () => {
+    generate.mockRejectedValueOnce(new Error('Gemini down')).mockResolvedValue({ ok: true, cached: false, summary: 's' });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await runWeeklyReports({ generate }, NOW);
+    expect(result).toEqual({ generated: 1, skipped: 1, failed: 1 });
+    spy.mockRestore();
+  });
+
   it('sends nothing when the insight was cached or could not be generated', async () => {
     generate.mockResolvedValueOnce({ ok: true, cached: true }).mockResolvedValueOnce({ ok: false });
     const result = await runWeeklyReports({ generate }, NOW);

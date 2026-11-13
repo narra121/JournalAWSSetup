@@ -50,7 +50,7 @@ const existingPreferences = {
   userId: 'user-1',
   darkMode: false,
   currency: 'USD',
-  timezone: 'UTC',
+  timeZone: 'UTC',
   notifications: {
     tradeReminders: true,
     weeklyReport: true,
@@ -97,6 +97,19 @@ describe('update-user-notifications handler', () => {
     expect(updateCalls).toHaveLength(2);
     expect(updateCalls[0].args[0].input.UpdateExpression).toContain('if_not_exists');
     expect(updateCalls[1].args[0].input.UpdateExpression).toContain('#notifications.#tradeReminders');
+  });
+
+  it.each([
+    ['weeklyReport', 'false'],
+    ['weeklyReport', 0],
+    ['tradeReminders', 'no'],
+    ['goalAlerts', null],
+  ])('rejects %s = %j with 400, so a string never leaves the weekly mail on (BE-077)', async (field, value) => {
+    const res = await handler(makeEvent({ [field]: value }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).message).toContain(`${field} must be true or false`);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
   it('handles partial update with only tradeReminders', async () => {

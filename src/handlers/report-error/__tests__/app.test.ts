@@ -91,7 +91,7 @@ describe('report-error handler', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].args[0].input.Bucket).toBe('test-error-bucket');
     expect(calls[0].args[0].input.ContentType).toBe('application/json');
-    expect(calls[0].args[0].input.Key).toMatch(/^errors\/\d{4}-\d{2}-\d{2}\/anonymous\//);
+    expect(calls[0].args[0].input.Key).toMatch(/^errors\/anonymous\/\d{4}-\d{2}-\d{2}\//);
   });
 
   // ── 2. Missing body ──────────────────────────────────────────
@@ -132,6 +132,7 @@ describe('report-error handler', () => {
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('VALIDATION_ERROR');
     expect(body.message).toContain('Payload too large');
+    expect(body.message).toContain('1 MB');
   });
 
   // ── 5. Rate limited ──────────────────────────────────────────
@@ -171,7 +172,7 @@ describe('report-error handler', () => {
 
     const calls = s3Mock.commandCalls(PutObjectCommand);
     expect(calls).toHaveLength(1);
-    expect(calls[0].args[0].input.Key).toContain(`/${userId}/`);
+    expect(calls[0].args[0].input.Key).toMatch(new RegExp(`^errors/${userId}/\\d{4}-\\d{2}-\\d{2}/`));
   });
 
   // ── 8. Anonymous user ────────────────────────────────────────
@@ -183,7 +184,25 @@ describe('report-error handler', () => {
 
     const calls = s3Mock.commandCalls(PutObjectCommand);
     expect(calls).toHaveLength(1);
-    expect(calls[0].args[0].input.Key).toContain('/anonymous/');
+    expect(calls[0].args[0].input.Key).toContain('errors/anonymous/');
+  });
+
+  it('ignores a userId in the body: an anonymous caller cannot file under another user\'s prefix (BE-094)', async () => {
+    const res = await handler(makeEvent({ ...validPayload(), userId: 'victim-user-id' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(202);
+    const key = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.Key!;
+    expect(key).toMatch(/^errors\/anonymous\//);
+    expect(key).not.toContain('victim-user-id');
+  });
+
+  it('a signed-in caller\'s prefix comes from the token, not from a different body userId', async () => {
+    const res = await handler(makeAuthEvent({ ...validPayload(), userId: 'victim-user-id' }, 'user-abc-123'), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(202);
+    const key = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.Key!;
+    expect(key).toMatch(/^errors\/user-abc-123\//);
+    expect(key).not.toContain('victim-user-id');
   });
 
   // ── 9. S3 key pattern ────────────────────────────────────────
@@ -196,8 +215,8 @@ describe('report-error handler', () => {
     const calls = s3Mock.commandCalls(PutObjectCommand);
     expect(calls).toHaveLength(1);
     const key = calls[0].args[0].input.Key!;
-    // Pattern: errors/{date}/{userId}/{timestamp}-{hash}.json
-    expect(key).toMatch(/^errors\/\d{4}-\d{2}-\d{2}\/[^/]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{8}\.json$/);
+    // Pattern: errors/{userId}/{date}/{timestamp}-{hash}.json
+    expect(key).toMatch(/^errors\/[^/]+\/\d{4}-\d{2}-\d{2}\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{8}\.json$/);
   });
 
   // ── 10. Schema validation ─────────────────────────────────────
@@ -208,6 +227,7 @@ describe('report-error handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('VALIDATION_ERROR');
-    expect(body.message).toContain('Invalid error report');
+    expect(body.message).toMatch(/is required/);
+    expect(body.error.fields.length).toBeGreaterThan(0);
   });
 });

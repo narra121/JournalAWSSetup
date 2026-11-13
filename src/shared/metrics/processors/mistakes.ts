@@ -1,5 +1,6 @@
 import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext } from '../types';
 import { calcPnL } from '../../utils/pnl';
+import { dict } from '../dict';
 
 type MistakeEntry = { count: number; totalPnl: number };
 type MistakeMap = Record<string, MistakeEntry>;
@@ -19,14 +20,14 @@ function mergeMistakes(target: MistakeMap, source: MistakeMap): void {
  */
 export class MistakesProcessor implements MetricProcessor {
   readonly name = 'mistakes';
-  private distribution: MistakeMap = {};
+  private distribution: MistakeMap = dict();
 
   processTrade(trade: TradeRecord): void {
     const mistakes = trade.mistakes;
     if (!Array.isArray(mistakes)) return;
     const pnl = calcPnL(trade) ?? 0;
     for (const mistake of mistakes) {
-      if (!mistake) continue;
+      if (!mistake || typeof mistake !== 'string') continue;
       if (!this.distribution[mistake]) this.distribution[mistake] = { count: 0, totalPnl: 0 };
       this.distribution[mistake].count++;
       this.distribution[mistake].totalPnl += pnl;
@@ -38,13 +39,13 @@ export class MistakesProcessor implements MetricProcessor {
   }
 
   reset(): void {
-    this.distribution = {};
+    this.distribution = dict();
   }
 }
 
 export class MistakesAggregator implements AggregationProcessor {
   readonly name = 'mistakes';
-  private distribution: MistakeMap = {};
+  private distribution: MistakeMap = dict();
 
   merge(record: Record<string, any>): void {
     mergeMistakes(this.distribution, record.mistakesDistribution || {});
@@ -55,6 +56,6 @@ export class MistakesAggregator implements AggregationProcessor {
   }
 
   reset(): void {
-    this.distribution = {};
+    this.distribution = dict();
   }
 }

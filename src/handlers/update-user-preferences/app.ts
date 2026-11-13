@@ -4,7 +4,8 @@ import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { DEFAULT_PERIODS, DEFAULT_USER_PREFERENCES, WEEK_STARTS, isValidTimeZone } from '../../shared/defaults';
+import { normalizeCurrency } from '../../shared/currency';
+import { DEFAULT_PERIODS, WEEK_STARTS, isValidTimeZone } from '../../shared/defaults';
 
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
@@ -47,6 +48,15 @@ export const handler: ApiHandler = async (event) => {
   if (data.pnlPalette !== undefined && !(typeof data.pnlPalette === 'string' && /^[a-z0-9-]{1,24}$/.test(data.pnlPalette))) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'pnlPalette must be 1-24 lowercase letters, digits or dashes');
   }
+  for (const field of ['darkMode', 'carryForwardGoalsRules'] as const) {
+    if (data[field] !== undefined && typeof data[field] !== 'boolean') {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${field} must be true or false`);
+    }
+  }
+  const currency = data.currency === undefined ? undefined : normalizeCurrency(data.currency);
+  if (data.currency !== undefined && !currency) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'currency must be a supported ISO currency code such as USD');
+  }
 
   try {
     const setExpressions: string[] = [];
@@ -69,12 +79,7 @@ export const handler: ApiHandler = async (event) => {
     if (data.currency !== undefined) {
       setExpressions.push('#currency = :currency');
       expressionAttributeNames['#currency'] = 'currency';
-      expressionAttributeValues[':currency'] = data.currency;
-    }
-    if (data.timezone !== undefined) {
-      setExpressions.push('#timezone = :timezone');
-      expressionAttributeNames['#timezone'] = 'timezone';
-      expressionAttributeValues[':timezone'] = data.timezone;
+      expressionAttributeValues[':currency'] = currency;
     }
     if (data.carryForwardGoalsRules !== undefined) {
       setExpressions.push('#carryForward = :carryForward');

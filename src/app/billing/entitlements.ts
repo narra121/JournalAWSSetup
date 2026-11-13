@@ -15,10 +15,10 @@ export interface SubscriptionLike {
   periodEnd?: string;
 }
 
-export const QUOTA_FEATURES: QuotaFeature[] = ['ai_extract', 'ai_insight', 'ai_chat', 'broker_import'];
+export const QUOTA_FEATURES: QuotaFeature[] = ['ai_extract', 'ai_insight', 'ai_chat', 'broker_import', 'ai_enhance'];
 
-export const FREE_LIMITS: Record<QuotaFeature, number> = { ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3 };
-export const PRO_LIMITS: Record<QuotaFeature, number> = { ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200 };
+export const FREE_LIMITS: Record<QuotaFeature, number> = { ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3, ai_enhance: 20 };
+export const PRO_LIMITS: Record<QuotaFeature, number> = { ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 };
 export const FREE_ACCOUNT_LIMIT = 2;
 
 const allFeatures = (value: boolean): Record<GatedFeature, boolean> => ({

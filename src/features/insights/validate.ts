@@ -90,5 +90,12 @@ export function validateInsight(raw: unknown, c: Computed): { summary: string; s
 
   const m = c.metrics;
   const summary = clamp(obj.summary, 400) || `${m.trades.display} trades, net ${m.netPnl.display}, win rate ${m.winRate.display}.`;
-  return { summary, sections: sections.slice(0, MAX_SECTIONS) };
+  // Over the cap, drop from the end the sections that are not the only strength, leak or action (so the fill-ins above survive).
+  const needed = (s: InsightSection, i: number) => (s.kind === 'strength' || s.kind === 'leak' || s.kind === 'action') && !sections.some((o, j) => j !== i && o.kind === s.kind);
+  while (sections.length > MAX_SECTIONS) {
+    let drop = sections.length - 1;
+    while (drop > 0 && needed(sections[drop], drop)) drop--;
+    sections.splice(drop, 1);
+  }
+  return { summary, sections };
 }

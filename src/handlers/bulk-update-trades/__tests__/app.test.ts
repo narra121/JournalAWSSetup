@@ -40,7 +40,7 @@ describe('bulk-update-trades', () => {
 
   it('every update is scoped to the caller and conditional on the trade existing', async () => {
     await call(event({ tradeIds: ['t1'], set: { tradeNotes: 'x' } }));
-    expect(input(0)).toMatchObject({ Key: { userId: 'u1', tradeId: 't1' }, ConditionExpression: 'attribute_exists(tradeId)' });
+    expect(input(0)).toMatchObject({ Key: { userId: 'u1', tradeId: 't1' }, ConditionExpression: 'attribute_exists(tradeId) AND attribute_not_exists(deletedAt)' });
     expect(ddb.commandCalls(BatchGetCommand)[0].args[0].input.RequestItems!.trades.Keys).toEqual([{ userId: 'u1', tradeId: 't1' }]);
   });
 
@@ -76,4 +76,53 @@ describe('bulk-update-trades', () => {
     expect((await call(event({ tradeIds: ['t1'], set: { outcome: 'TP' } }, {}))).statusCode).toBe(401);
     expect((await call(event('{oops'))).statusCode).toBe(400);
   });
+
+  describe('values are checked like a single-trade update (BE-045)', () => {
+    const rejected = async (body: any) => {
+      ddb.resetHistory();
+      const res = await call(event({ tradeIds: ['t1'], ...body }));
+      expect(res.statusCode).toBe(400);
+      expect(ddb.commandCalls(BatchGetCommand)).toHaveLength(0);
+      expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    };
+
+    it.each([
+      ['an outcome outside TP/SL/PARTIAL/BREAKEVEN', { set: { outcome: 'WIN' } }],
+      ['a note over 4000 characters', { set: { tradeNotes: 'x'.repeat(4001) } }],
+      ['a setupType over 64 characters', { set: { setupType: 'x'.repeat(65) } }],
+      ['a tradingSession over 32 characters', { set: { tradingSession: 'x'.repeat(33) } }],
+      ['accountId null (it would drop 200 trades out of every account)', { set: { accountId: null } }],
+      ['an empty accountId', { set: { accountId: '' } }],
+      ['a mistake over 64 characters', { add: { mistakes: ['x'.repeat(65)] } }],
+      ['more than 50 mistakes at once', { add: { mistakes: Array.from({ length: 51 }, (_, i) => `m${i}`) } }],
+    ])('400 for %s, before anything is read or written', async (_name, body) => {
+      await rejected(body);
+    });
+
+    it('accepts values at the limits, and a null for the optional text fields', async () => {
+      const res = await call(event({ tradeIds: ['t1'], set: { tradeNotes: 'x'.repeat(4000), outcome: 'BREAKEVEN', setupType: null, accountId: 'acc-9' } }));
+      expect(res.statusCode).toBe(200);
+      expect(written(0)).toMatchObject({ outcome: 'BREAKEVEN', setupType: null, accountId: 'acc-9' });
+    });
+
+    it('a merged list that would pass 50 entries fails that trade only', async () => {
+      ddb.on(BatchGetCommand).resolves({ Responses: { trades: [
+        { userId: 'u1', tradeId: 't1', mistakes: Array.from({ length: 50 }, (_, i) => `old${i}`) },
+        { userId: 'u1', tradeId: 't2', mistakes: [] },
+      ] } });
+      const res = await call(event({ tradeIds: ['t1', 't2'], add: { mistakes: ['one-more'] } }));
+      const data = JSON.parse(res.body).data;
+      expect(data.updated).toBe(1);
+      expect(data.failed).toHaveLength(1);
+      expect(data.failed[0].tradeId).toBe('t1');
+    });
+
+    it('a trade soft-deleted between the read and the write is not modified', async () => {
+      ddb.on(UpdateCommand).rejects(Object.assign(new Error('x'), { name: 'ConditionalCheckFailedException' }));
+      const res = await call(event({ tradeIds: ['t1'], set: { tradeNotes: 'x' } }));
+      expect(JSON.parse(res.body).data).toMatchObject({ updated: 0, notFound: ['t1'] });
+      expect(input(0).ConditionExpression).toContain('attribute_not_exists(deletedAt)');
+    });
+  });
 });
+

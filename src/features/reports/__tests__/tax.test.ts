@@ -80,7 +80,7 @@ function app(features: Partial<Entitlements['features']>, source = tradeSource(f
   a.use('*', async (c, next) => {
     c.set('userId', 'u1');
     c.set('quota', fakeQuota().quota);
-    c.set('entitlements', { plan: features.tax_report ? 'pro' : 'free', status: 'active', limits: { ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3 }, features: { advanced_analytics: false, tax_report: false, unlimited_accounts: false, auto_sync: false, ...features } });
+    c.set('entitlements', { plan: features.tax_report ? 'pro' : 'free', status: 'active', limits: { ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3, ai_enhance: 20 }, features: { advanced_analytics: false, tax_report: false, unlimited_accounts: false, auto_sync: false, ...features } });
     await next();
   });
   a.route('/', reportsApp({ trades: source }));
@@ -100,6 +100,26 @@ describe('GET /reports/tax', () => {
     const { data } = (await res.json()) as any;
     expect(data.report.delivery.longTerm.trades).toBe(1);
     expect(data.report.fno.turnover).toBe(15750);
+  });
+
+  it('a delivery position opened years before the lookback and closed in the FY is included (BE-046)', async () => {
+    const old = { ...fixture[0], id: 'old-holding', accountId: 'a1', symbol: 'INFY', side: 'BUY' as const, quantity: 10, entryPrice: 1000, exitPrice: 1600, pnl: 6000, fees: 0, assetClass: 'stock', openDate: '2024-01-10T04:30:00.000Z', closeDate: '2026-06-01T05:00:00.000Z' };
+    const source = tradeSource([...fixture, old]);
+    const res = await app({ tax_report: true }, source).request('/tax?fy=2026-27');
+    const longTerm = ((await res.json()) as any).data.report.delivery.longTerm;
+    expect(longTerm.trades).toBe(2);
+    expect(longTerm.netPnl).toBeGreaterThanOrEqual(6000);
+  });
+
+  it('the older-trades query keeps only trades that closed in the FY, before the cap counts them', async () => {
+    const seen: any[] = [];
+    const source = { ...tradeSource(fixture), async loadTrades(_u: string, r: any) { seen.push(r); return { trades: [], truncated: false }; } };
+    await app({ tax_report: true }, source as any).request('/tax?fy=2026-27');
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toMatchObject({ from: '1970-01-01', to: '2025-02-24' });
+    expect(seen[1].filter({ closeDate: '2026-06-01T05:00:00.000Z' })).toBe(true);
+    expect(seen[1].filter({ closeDate: '2025-06-01T05:00:00.000Z' })).toBe(false);
+    expect(seen[1].filter({ closeDate: null })).toBe(false);
   });
 
   it('truncated trade data → 422 DATA_TRUNCATED with the reason, no report', async () => {

@@ -100,6 +100,38 @@ describe('POST /v1/billing/checkout', () => {
     setTokenVerifier({ verify: async () => Promise.reject(new Error('bad')) });
     expect((await post('/v1/billing/checkout', { interval: 'month' })).status).toBe(401);
   });
+
+  describe('a Pro subscriber who cancelled (BE-001)', () => {
+    const cancelling = (currentEnd: string) => ({
+      userId: 'u1',
+      status: 'cancellation_requested',
+      stripeCustomerId: 'cus_1',
+      stripeSubscriptionId: 'sub_1',
+      currentEnd,
+    });
+
+    it('is sent to the billing portal and no second Checkout session is created', async () => {
+      ddb.on(GetCommand).resolves({ Item: cancelling(new Date(Date.now() + 86400000).toISOString()) });
+      const res = await post('/v1/billing/checkout', { interval: 'month' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.url).toBe('https://billing.stripe.com/p/session/x');
+      expect(sessionsCreate).not.toHaveBeenCalled();
+      expect(portalCreate.mock.calls[0][0]).toEqual({
+        customer: 'cus_1',
+        return_url: 'https://dev.tradequt.com/app/billing',
+        configuration: 'bpc_1',
+      });
+      expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it('may open Checkout once the paid period has ended', async () => {
+      ddb.on(GetCommand).resolves({ Item: cancelling(new Date(Date.now() - 86400000).toISOString()) });
+      const res = await post('/v1/billing/checkout', { interval: 'month' });
+      expect(res.status).toBe(200);
+      expect(sessionsCreate).toHaveBeenCalledTimes(1);
+      expect(sessionsCreate.mock.calls[0][0].customer).toBe('cus_1');
+    });
+  });
 });
 
 describe('POST /v1/billing/portal', () => {

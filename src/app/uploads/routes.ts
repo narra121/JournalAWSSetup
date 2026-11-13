@@ -1,7 +1,8 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import { fail } from '../../features/http';
 import type { AppEnv } from '../types';
 
 export const uploadRoutes = new Hono<AppEnv>();
@@ -10,9 +11,27 @@ const s3 = new S3Client({});
 
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 export const UPLOAD_URL_SECONDS = 300;
+/** Screenshots one user may add per rolling 24 h (a trade holds at most 6). */
+export const MAX_UPLOADS_PER_DAY = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_LIST_PAGES = 10;
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 
-const fail = (c: any, message: string) => c.json({ success: false, message, errorCode: 'VALIDATION_ERROR', errorMessage: message }, 400);
+const invalid = (c: any, message: string) => fail(c, 400, 'VALIDATION_ERROR', message);
+
+/** Objects the user put under `images/<userId>/upload/` in the last 24 h; counting stops once the daily limit is reached. */
+async function uploadsToday(userId: string): Promise<number> {
+  const since = Date.now() - DAY_MS;
+  let count = 0;
+  let token: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+    const res = await s3.send(new ListObjectsV2Command({ Bucket: process.env.IMAGES_BUCKET!, Prefix: `images/${userId}/upload/`, ContinuationToken: token }));
+    count += (res.Contents ?? []).filter((o) => (o.LastModified?.getTime() ?? 0) > since).length;
+    if (count >= MAX_UPLOADS_PER_DAY || !res.IsTruncated) break;
+    token = res.NextContinuationToken;
+  }
+  return count;
+}
 
 /**
  * POST /v1/uploads/images { contentType, size } → presigned S3 PUT for one screenshot (png/jpeg/webp, at most 2 MiB).
@@ -23,8 +42,12 @@ uploadRoutes.post('/images', async (c) => {
   const body: any = await c.req.json().catch(() => null);
   const contentType = body?.contentType;
   const size = body?.size;
-  if (typeof contentType !== 'string' || !(contentType in EXTENSIONS)) return fail(c, 'contentType must be image/png, image/jpeg or image/webp');
-  if (!Number.isInteger(size) || size < 1 || size > MAX_UPLOAD_BYTES) return fail(c, `size must be between 1 and ${MAX_UPLOAD_BYTES} bytes (2 MiB)`);
+  if (typeof contentType !== 'string' || !(contentType in EXTENSIONS)) return invalid(c, 'Screenshots must be PNG, JPEG or WebP images.');
+  if (!Number.isInteger(size) || size < 1 || size > MAX_UPLOAD_BYTES) return invalid(c, `Screenshots can be at most ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
+
+  if ((await uploadsToday(c.get('userId'))) >= MAX_UPLOADS_PER_DAY) {
+    return fail(c, 429, 'RATE_LIMITED', 'You have uploaded a lot of screenshots today. Please try again tomorrow.', { retryAfter: 3600 });
+  }
 
   const key = `images/${c.get('userId')}/upload/${randomUUID()}.${EXTENSIONS[contentType]}`;
   const url = await getSignedUrl(

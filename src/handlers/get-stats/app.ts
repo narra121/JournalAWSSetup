@@ -1,14 +1,14 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { buildAdvancedStats } from '../../shared/advanced-stats';
+import { wantsAdvancedSection } from '../../shared/statsSections';
 import { getUserTimeZone } from '../../shared/timezone';
 import { ddb } from '../../shared/dynamo';
+import { queryDailyStats } from '../../shared/dailyStats';
 import { getUserId } from '../../shared/auth';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { aggregateDailyRecords } from '../../shared/stats-aggregator';
 import { DailyStatsRecord } from '../../shared/metrics/types';
-
-const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const userId = getUserId(event);
@@ -22,16 +22,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const endDate = query.endDate;
   const includeEquityCurve = query.includeEquityCurve === 'true';
   const parsedCapital = query.totalCapital ? parseFloat(query.totalCapital) : undefined;
-  const totalCapital = parsedCapital !== undefined && Number.isFinite(parsedCapital) ? parsedCapital : undefined;
+  let totalCapital = parsedCapital !== undefined && Number.isFinite(parsedCapital) ? parsedCapital : undefined;
 
   if (!accountId || !startDate || !endDate) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId, startDate, and endDate are required');
   }
 
   try {
-    const records = accountId === 'ALL'
-      ? await queryAllAccounts(userId, startDate, endDate)
-      : await querySingleAccount(userId, accountId, startDate, endDate);
+    // Drawdown is a percentage of the starting capital: one account's own initial balance when the caller sent none.
+    if (totalCapital === undefined && accountId !== 'ALL') totalCapital = await accountInitialBalance(userId, accountId);
+
+    const records = await queryDailyStats(userId, accountId, startDate, endDate);
 
     const dailyTradeHashes: Record<string, string> = {};
     for (const record of records) {
@@ -47,17 +48,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (accountId === 'ALL') {
       const currencies = await accountCurrencies(userId);
       const groups = new Map<string, DailyStatsRecord[]>();
-      const unassigned: DailyStatsRecord[] = [];
       for (const record of records) {
-        if (record.accountId === '-1') unassigned.push(record);
-        else {
-          const currency = currencies.get(record.accountId) ?? 'UNKNOWN';
-          groups.set(currency, [...(groups.get(currency) ?? []), record]);
-        }
+        const currency = currencies.get(record.accountId) ?? 'UNKNOWN';
+        groups.set(currency, [...(groups.get(currency) ?? []), record]);
       }
       perCurrency = {
         byCurrency: Object.fromEntries([...groups].map(([currency, rows]) => [currency, aggregateDailyRecords(rows, { totalCapital, includeEquityCurve })])),
-        unassigned: unassigned.length ? aggregateDailyRecords(unassigned, { totalCapital, includeEquityCurve }) : null,
         currencies: [...groups.keys()].sort(),
       };
     }
@@ -65,8 +61,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Day buckets, hours and weekdays follow the zone stored in the user's preferences (UTC when none is set).
     const timeZone = (await getUserTimeZone(userId).catch(() => null)) ?? 'UTC';
 
-    const sections = (query.sections || '').split(',');
-    const advanced = sections.includes('advanced') ? { advanced: buildAdvancedStats(stats, totalCapital) } : {};
+    const advanced = wantsAdvancedSection(query.sections) ? { advanced: buildAdvancedStats(stats, totalCapital) } : {};
 
     return envelope({
       statusCode: 200,
@@ -78,6 +73,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve stats');
   }
 };
+
+async function accountInitialBalance(userId: string, accountId: string): Promise<number | undefined> {
+  try {
+    const res = await ddb.send(new GetCommand({
+      TableName: process.env.ACCOUNTS_TABLE!,
+      Key: { userId, accountId },
+      ProjectionExpression: 'initialBalance',
+    }));
+    const v = res?.Item?.initialBalance;
+    return typeof v === 'number' && v > 0 ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** accountId → currency for the user's accounts. */
 async function accountCurrencies(userId: string): Promise<Map<string, string>> {
@@ -97,79 +106,3 @@ async function accountCurrencies(userId: string): Promise<Map<string, string>> {
   return map;
 }
 
-/**
- * Query all accounts using the GSI (stats-by-date-gsi).
- * PK = userId, SK = date BETWEEN startDate AND endDate.
- * Handles pagination via LastEvaluatedKey.
- */
-async function queryAllAccounts(
-  userId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: DAILY_STATS_TABLE,
-        IndexName: 'stats-by-date-gsi',
-        KeyConditionExpression: 'userId = :userId AND #date BETWEEN :startDate AND :endDate',
-        ExpressionAttributeNames: { '#date': 'date' },
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':startDate': startDate,
-          ':endDate': endDate,
-        },
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-
-    if (result.Items) {
-      records.push(...(result.Items as DailyStatsRecord[]));
-    }
-
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return records;
-}
-
-/**
- * Query a single account using the main table.
- * PK = userId, SK BETWEEN "accountId#startDate" AND "accountId#endDate".
- * Handles pagination via LastEvaluatedKey.
- */
-async function querySingleAccount(
-  userId: string,
-  accountId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-
-  do {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: DAILY_STATS_TABLE,
-        KeyConditionExpression: 'userId = :userId AND sk BETWEEN :skStart AND :skEnd',
-        ExpressionAttributeValues: {
-          ':userId': userId,
-          ':skStart': `${accountId}#${startDate}`,
-          ':skEnd': `${accountId}#${endDate}`,
-        },
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-
-    if (result.Items) {
-      records.push(...(result.Items as DailyStatsRecord[]));
-    }
-
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return records;
-}

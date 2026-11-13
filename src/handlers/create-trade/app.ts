@@ -2,14 +2,17 @@ import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
 import { PutCommand, BatchWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { normalizePotentialKey } from '../../shared/s3';
+import { presentTrade } from '../../shared/presentTrade';
 import { tradeCreateSchema } from '../../schemas';
 import { getValidator, formatErrors, envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 import { tagsError } from '../../shared/tags';
+import { contractFields } from '../../shared/tradeFields';
+import { calcPnL } from '../../shared/utils/pnl';
+import { copyImagesToTrade } from '../../shared/images';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -17,16 +20,6 @@ const s3 = new S3Client({});
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_IMAGES_PER_TRADE = 6;
-
-/** CONTRACT §6 optional fields (plus importBatchId); only fields present in the request are stored. */
-function contractFields(t: any): Record<string, any> {
-  const out: Record<string, any> = {};
-  const numeric = ['fees', 'grossPnl', 'contractMultiplier', 'strike'];
-  const text = ['assetClass', 'underlying', 'optionType', 'expiry', 'externalId', 'importSource', 'importBatchId'];
-  for (const f of numeric) if (t[f] !== undefined && t[f] !== null && t[f] !== '') out[f] = Number(t[f]);
-  for (const f of text) if (typeof t[f] === 'string' && t[f] !== '') out[f] = t[f];
-  return out;
-}
 
 /** Shared risk/reward calculation for both bulk and single paths */
 function calculateRiskReward(t: { riskRewardRatio?: any; entryPrice?: any; exitPrice?: any; stopLoss?: any }): number | null {
@@ -47,15 +40,71 @@ function calculateRiskReward(t: { riskRewardRatio?: any; entryPrice?: any; exitP
   return null;
 }
 
+const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+/** The stored item of one account. P&L is the client's value, else the shared formula (undefined side or prices leave it null). */
+function buildItem(userId: string, t: any, o: { tradeId: string; accountId: string; images: any[]; now: string; idempotencyKey?: string }): any {
+  const entryPrice = num(t.entryPrice);
+  const exitPrice = num(t.exitPrice);
+  const quantity = Number(t.quantity);
+  const pnl = num(t.pnl) ?? (Number.isNaN(quantity) ? undefined : calcPnL({ side: t.side, entryPrice, exitPrice, quantity, contractMultiplier: t.contractMultiplier })) ?? null;
+  const item: any = {
+    userId,
+    tradeId: o.tradeId,
+    accountId: o.accountId || '-1',
+    symbol: t.symbol,
+    side: t.side,
+    quantity,
+    openDate: t.openDate,
+    closeDate: t.closeDate || null,
+    entryPrice,
+    exitPrice,
+    stopLoss: num(t.stopLoss),
+    takeProfit: num(t.takeProfit),
+    pnl,
+    riskRewardRatio: calculateRiskReward(t),
+    setupType: t.setupType || null,
+    marketCondition: t.marketCondition || null,
+    tradingSession: t.tradingSession || null,
+    tradeNotes: t.tradeNotes || null,
+    mistakes: Array.isArray(t.mistakes) ? t.mistakes : [],
+    lessons: Array.isArray(t.lessons) ? t.lessons : [],
+    newsEvents: Array.isArray(t.newsEvents) ? t.newsEvents : [],
+    outcome: t.outcome,
+    tags: Array.isArray(t.tags) ? t.tags : [],
+    brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
+    ...contractFields(t),
+    images: o.images,
+    createdAt: o.now,
+    updatedAt: o.now,
+  };
+  if (o.idempotencyKey) item.idempotencyKey = `${o.idempotencyKey}-${item.accountId}`;
+  return item;
+}
+
+/** `accountIds`, else the singular `accountId`, else unassigned; each account once. */
+function requestedAccounts(t: any): string[] {
+  const ids: string[] = Array.isArray(t.accountIds) && t.accountIds.length > 0 ? t.accountIds : t.accountId ? [t.accountId] : ['-1'];
+  return [...new Set(ids)];
+}
+
+/** Looks up the trade stored under `<key>-<accountId>`; a failed lookup throws, so a retry never creates a duplicate. */
+async function findByIdempotencyKey(userId: string, key: string, accountId: string): Promise<any | undefined> {
+  const res = await ddb.send(new QueryCommand({
+    TableName: TRADES_TABLE,
+    IndexName: 'user-idempotency-gsi',
+    KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
+    ExpressionAttributeValues: { ':u': userId, ':k': `${key}-${accountId || '-1'}` },
+  }));
+  return res.Items?.[0];
+}
+
 export const handler: ApiHandler = async (event) => {
   try {
   const userId = getUserId(event);
   const log = makeLogger({ requestId: event.requestContext.requestId, userId });
   log.info('create-trade invoked', { hasAuth: !!userId, isBulk: false });
   if (!userId) { log.warn('unauthorized request'); return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized'); }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!event.body) { log.warn('missing body'); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body'); }
   let data: any;
@@ -65,6 +114,7 @@ export const handler: ApiHandler = async (event) => {
 
     // Validate single create payload (bulk handled separately below)
   if (!Array.isArray(data.items)) {
+      if (Array.isArray(data.images) && data.images.length > MAX_IMAGES_PER_TRADE) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `A trade can have at most ${MAX_IMAGES_PER_TRADE} images`);
       const validate = getValidator(tradeCreateSchema, 'tradeCreate');
       const valid = validate(data);
       if (!valid) {
@@ -84,29 +134,23 @@ export const handler: ApiHandler = async (event) => {
 
       const created: any[] = []; const skipped: any[] = []; const errors: any[] = [];
       // Helper to process single trade definition
-  const processOne = async (t: any, index: number) => {
+  const processOne = async (raw: any, index: number) => {
         try {
-          const requiredFields = ['symbol','side','quantity','openDate'];
-      for (const f of requiredFields) if (t[f] === undefined || t[f] === null || t[f] === '') { log.debug('bulk item missing field', { index, field: f }); throw new Error(`Missing field ${f}`); }
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Each item must be an object');
+          // The idempotency key is not part of the trade schema; validate the rest like the single path does.
+          const { idempotencyKey, idemKey, ...t } = raw;
+          const validateItem = getValidator(tradeCreateSchema, 'tradeCreate');
+          if (!validateItem(t)) throw new Error(formatErrors(validateItem.errors)[0]?.message ?? 'Invalid item');
           if (t.tags !== undefined) { const tagProblem = tagsError(t.tags); if (tagProblem) throw new Error(tagProblem); }
           const tradeIdLocal = uuid();
-            const idemKeyItem = t.idempotencyKey || t.idemKey || null;
-            const requestedAccounts: string[] = Array.isArray(t.accountIds) && t.accountIds.length > 0 ? t.accountIds : ['-1'];
-            let accountsToCreate = requestedAccounts;
+            const idemKeyItem = idempotencyKey || idemKey || null;
+            const requestedIds = requestedAccounts(t);
+            let accountsToCreate = requestedIds;
             if (idemKeyItem) {
               // Stored form is `<key>-<accountId>`; skip the accounts that already hold this trade.
               const missing: string[] = [];
-              for (const accountId of requestedAccounts) {
-                let existingItem: any;
-                try {
-                  const existing = await ddb.send(new QueryCommand({
-                    TableName: TRADES_TABLE,
-                    IndexName: 'user-idempotency-gsi',
-                    KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
-                    ExpressionAttributeValues: { ':u': userId, ':k': `${idemKeyItem}-${accountId || '-1'}` },
-                  }));
-                  existingItem = existing.Items?.[0];
-                } catch (e) { log.warn('bulk idempotency lookup failed', { index, error: (e as any)?.message }); }
+              for (const accountId of requestedIds) {
+                const existingItem = await findByIdempotencyKey(userId, idemKeyItem, accountId);
                 if (existingItem) skipped.push({ index, tradeId: existingItem.tradeId, accountId, reason: 'idempotent_duplicate' });
                 else missing.push(accountId);
               }
@@ -155,62 +199,15 @@ export const handler: ApiHandler = async (event) => {
               images.push({ id: task.imgId, key: task.key, timeframe: task.timeframe, description: task.description });
             }
           }
-          const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
-          const entryPrice = num(t.entryPrice);
-          const exitPrice = num(t.exitPrice);
-          const quantity = Number(t.quantity);
-          
-          // Use PnL from frontend if provided (already calculated in UI)
-          let pnl = num(t.pnl);
-          if (pnl == null && entryPrice != null && exitPrice != null && !Number.isNaN(quantity)) {
-            if (t.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; 
-            else if (t.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
-          }
-          
-          // Use riskRewardRatio from frontend if provided, otherwise calculate from SL
-          const riskRewardRatio = calculateRiskReward(t);
-          const outcome = t.outcome;
           const nowLocal = new Date().toISOString();
-          
-          const accountIds = accountsToCreate;
-          
-          const itemsToCreate = accountIds.map((accountId: string) => {
-            const tradeId = accountIds.length > 1 ? uuid() : tradeIdLocal; // Unique ID per account if multiple
-            const item: any = {
-              userId,
-              tradeId,
-              accountId: accountId || '-1',
-              symbol: t.symbol,
-              side: t.side,
-              quantity,
-              openDate: t.openDate,
-              closeDate: t.closeDate || null,
-              entryPrice,
-              exitPrice,
-              stopLoss: num(t.stopLoss),
-              takeProfit: num(t.takeProfit),
-              pnl,
-              riskRewardRatio,
-              setupType: t.setupType || null,
-              marketCondition: t.marketCondition || null,
-              tradingSession: t.tradingSession || null,
-              tradeNotes: t.tradeNotes || null,
-              mistakes: Array.isArray(t.mistakes) ? t.mistakes : [],
-              lessons: Array.isArray(t.lessons) ? t.lessons : [],
-              newsEvents: Array.isArray(t.newsEvents) ? t.newsEvents : [],
-              outcome,
-              tags: Array.isArray(t.tags) ? t.tags : [],
-              images,
-              brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
-              ...contractFields(t),
-              createdAt: nowLocal,
-              updatedAt: nowLocal,
-            };
-            if (idemKeyItem) item.idempotencyKey = `${idemKeyItem}-${accountId || '-1'}`;
-            return item;
-          });
-          
-          created.push(...itemsToCreate);
+          // The first account's trade owns the uploaded screenshots (images/<user>/<tradeId>/); the others get copies.
+          const itemsToCreate: any[] = [];
+          for (const [i, accountId] of accountsToCreate.entries()) {
+            const tradeId = i === 0 ? tradeIdLocal : uuid();
+            const itemImages = i === 0 ? images : await copyImagesToTrade(userId, images, tradeId);
+            itemsToCreate.push(buildItem(userId, t, { tradeId, accountId, images: itemImages, now: nowLocal, idempotencyKey: idemKeyItem || undefined }));
+          }
+
           log.debug('bulk item prepared', { index, tradeId: tradeIdLocal, accountCount: itemsToCreate.length });
           return itemsToCreate;
         } catch (err: any) {
@@ -242,74 +239,61 @@ export const handler: ApiHandler = async (event) => {
         }
       }
 
-      // Batch write in chunks of 25
+      // Batch write in chunks of 25; `created` lists only what reached the table.
       const CHUNK = 25;
-      for (let i=0;i<toWrite.length;i+=CHUNK) {
-        let slice = toWrite.slice(i, i+CHUNK);
+      for (let i = 0; i < toWrite.length; i += CHUNK) {
+        const slice = toWrite.slice(i, i + CHUNK);
         let attempts = 0;
         let unprocessed = slice;
-    while (unprocessed.length && attempts < 3) {
-          const respBW = await ddb.send(new BatchWriteCommand({
-            RequestItems: {
-              [TRADES_TABLE]: unprocessed.map(it => ({ PutRequest: { Item: it } }))
+        let reason = 'Unprocessed after retries';
+        try {
+          while (unprocessed.length && attempts < 3) {
+            const respBW = await ddb.send(new BatchWriteCommand({
+              RequestItems: {
+                [TRADES_TABLE]: unprocessed.map(it => ({ PutRequest: { Item: it } }))
+              }
+            }));
+            const up = respBW.UnprocessedItems?.[TRADES_TABLE];
+            if (up && up.length) {
+              unprocessed = up.map(r => (r as any).PutRequest.Item);
+              attempts++;
+              log.warn('batch write unprocessed retrying', { attempt: attempts, remaining: unprocessed.length });
+              await new Promise(r => setTimeout(r, 50 * attempts));
+            } else {
+              unprocessed = [];
             }
-          }));
-          const up = respBW.UnprocessedItems?.[TRADES_TABLE];
-          if (up && up.length) {
-      unprocessed = up.map(r => (r as any).PutRequest.Item);
-            attempts++;
-      log.warn('batch write unprocessed retrying', { attempt: attempts, remaining: unprocessed.length });
-      await new Promise(r => setTimeout(r, 50 * attempts));
-          } else {
-            unprocessed = [];
           }
+        } catch (err: any) {
+          log.error('bulk batch write failed', { error: err?.message });
+          reason = 'Write failed';
         }
-        if (unprocessed.length) {
-          // Mark remaining as errors
-          for (const it of unprocessed) {
-            errors.push({ tradeId: it.tradeId, message: 'Unprocessed after retries' });
-          }
-        }
+        const notSaved = new Set(unprocessed.map(it => it.tradeId));
+        created.push(...slice.filter(it => !notSaved.has(it.tradeId)));
+        for (const it of unprocessed) errors.push({ tradeId: it.tradeId, message: reason });
       }
-    log.info('bulk create complete', { created: created.length, skipped: skipped.length, errors: errors.length });
-  return envelope({ statusCode: 201, data: { created: created.length, skipped, errors, items: created } });
+      log.info('bulk create complete', { created: created.length, skipped: skipped.length, errors: errors.length });
+      return envelope({ statusCode: 201, data: { created: created.length, skipped, errors, items: created.map(presentTrade) } });
     }
 
     // Single create path
-    const required = ['symbol', 'side', 'quantity', 'openDate'];
-  for (const f of required) if (data[f] === undefined || data[f] === null || data[f] === '') { log.warn('single create missing field', { field: f }); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Missing field ${f}`); }
-    const idemKey = event.headers?.['Idempotency-Key'] || event.headers?.['idempotency-key'];
-    let tradeId = uuid();
-    const accountIds: string[] = Array.isArray(data.accountIds) && data.accountIds.length > 0 ? data.accountIds : ['-1'];
+    const idemKey: string | undefined = event.headers?.['idempotency-key'];
+    const tradeId = uuid();
+    const accountIds = requestedAccounts(data);
+    // An account that already holds this trade (stored as `<key>-<accountId>`) is not created again.
+    const existingItems: any[] = [];
+    let toCreate = accountIds;
     if (idemKey) {
-      try {
-        // Stored form is `<key>-<accountId>`; a repeat is recognised by the first account's record.
-        const existing = await ddb.send(new QueryCommand({
-          TableName: TRADES_TABLE,
-          IndexName: 'user-idempotency-gsi',
-          KeyConditionExpression: 'userId = :u AND idempotencyKey = :k',
-          ExpressionAttributeValues: { ':u': userId, ':k': `${idemKey}-${accountIds[0] || '-1'}` }
-        }));
-        if (existing.Items && existing.Items[0]) {
-          log.info('single create idempotent repeat', { tradeId: existing.Items[0].tradeId });
-          const existingItem: any = existing.Items[0];
-          if (Array.isArray(existingItem.images)) {
-            existingItem.images = existingItem.images.map((im: any) => {
-              const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
-              if (keyCandidate) {
-                // Return image ID instead of signed URL
-                return { ...im, id: keyCandidate, key: keyCandidate };
-              }
-              return { ...im, id: im.id || im.key || '' };
-            });
-          }
-          return envelope({ statusCode: 200, data: { trade: existingItem }, message: 'Trade already created' });
-        }
-      } catch (e) { log.warn('idempotency lookup failed', { error: (e as any)?.message }); }
+      toCreate = [];
+      for (const accountId of accountIds) {
+        const found = await findByIdempotencyKey(userId, idemKey, accountId);
+        if (found) existingItems.push(found); else toCreate.push(accountId);
+      }
+      if (toCreate.length === 0) {
+        log.info('single create idempotent repeat', { tradeId: existingItems[0].tradeId });
+        const shown = existingItems.map(presentTrade);
+        return envelope({ statusCode: 200, data: shown.length === 1 ? { trade: shown[0] } : { trades: shown, count: shown.length }, message: 'Trade already created' });
+      }
     }
-
-    // Helper to sanitize number or null
-    const num = (v: any) => (v === undefined || v === null || v === '' ? null : Number(v));
 
     // Process images (optional). Each image may have: id, base64Data, timeframe, description.
           const imagesInput: any[] = Array.isArray(data.images) ? data.images : [];
@@ -355,87 +339,28 @@ export const handler: ApiHandler = async (event) => {
       }
     }
 
-    // Derived calculations
-  const entryPrice = num(data.entryPrice);
-  const exitPrice = num(data.exitPrice);
-  const quantity = Number(data.quantity);
-  
-  // Use PnL from frontend if provided (already calculated in UI)
-  let pnl = num(data.pnl);
-  if (pnl == null && entryPrice != null && exitPrice != null && !Number.isNaN(quantity)) {
-    if (data.side === 'BUY') pnl = (exitPrice - entryPrice) * quantity; 
-    else if (data.side === 'SELL') pnl = (entryPrice - exitPrice) * quantity;
-  }
-  
-  // Use riskRewardRatio from frontend if provided, otherwise calculate from SL
-  const riskRewardRatio = calculateRiskReward(data);
-  const outcome = data.outcome;
-
     const now = new Date().toISOString();
-    
-    // One entry per account (accountIds defaults to ['-1'], computed above).
-    
-    const itemsToCreate = accountIds.map((accountId: string) => {
-      const itemTradeId = accountIds.length > 1 ? uuid() : tradeId; // Unique ID per account if multiple
-      const item: any = {
-        userId,
-        tradeId: itemTradeId,
-        accountId: accountId || '-1',
-        symbol: data.symbol,
-        side: data.side,
-        quantity,
-        openDate: data.openDate,
-        closeDate: data.closeDate || null,
-        entryPrice,
-        exitPrice,
-        stopLoss: num(data.stopLoss),
-        takeProfit: num(data.takeProfit),
-        pnl,
-        riskRewardRatio,
-        setupType: data.setupType || null,
-        marketCondition: data.marketCondition || null,
-        tradingSession: data.tradingSession || null,
-        tradeNotes: data.tradeNotes || null,
-        mistakes: Array.isArray(data.mistakes) ? data.mistakes : [],
-        lessons: Array.isArray(data.lessons) ? data.lessons : [],
-        newsEvents: Array.isArray(data.newsEvents) ? data.newsEvents : [],
-        outcome,
-        tags: Array.isArray(data.tags) ? data.tags : [],
-        brokenRuleIds: Array.isArray(data.brokenRuleIds) ? data.brokenRuleIds : [],
-        ...contractFields(data),
-        images: images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null })),
-        createdAt: now,
-        updatedAt: now,
-      };
-      if (idemKey) item.idempotencyKey = `${idemKey}-${accountId || '-1'}`;
-      return item;
-    });
+    // The first created account's trade owns the uploaded screenshots (images/<user>/<tradeId>/); the others get copies.
+    const storedImages = images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null }));
+    const itemsToCreate: any[] = [];
+    for (const [i, accountId] of toCreate.entries()) {
+      const itemTradeId = i === 0 ? tradeId : uuid();
+      const itemImages = i === 0 ? storedImages : await copyImagesToTrade(userId, storedImages, itemTradeId);
+      itemsToCreate.push(buildItem(userId, data, { tradeId: itemTradeId, accountId, images: itemImages, now, idempotencyKey: idemKey }));
+    }
 
-  // Write all items (one per account)
-  await Promise.all(itemsToCreate.map((item: any) => 
-    ddb.send(new PutCommand({ TableName: TRADES_TABLE, Item: item }))
-  ));
-  
-  log.info('single trade(s) created', { count: itemsToCreate.length, tradeIds: itemsToCreate.map((i: any) => i.tradeId) });
-  
-  // Attach image IDs for response only
-  const itemsWithImageIds = itemsToCreate.map((item: any) => {
-    const imagesWithIds = item.images.map((im: any) => {
-      if (im.key) {
-        // Return image ID instead of signed URL
-        return { ...im, id: im.key };
-      }
-      return { ...im, id: im.id || im.key || '' };
-    });
-    return { ...item, images: imagesWithIds };
-  });
-  
-  // Return first item for single account, or all items for multiple accounts
-  const responseData = itemsToCreate.length === 1 
-    ? { trade: itemsWithImageIds[0] } 
-    : { trades: itemsWithImageIds, count: itemsWithImageIds.length };
-  
-  return envelope({ statusCode: 201, data: responseData, message: 'Trade created successfully' });
+    // Write all items (one per account)
+    await Promise.all(itemsToCreate.map((item: any) =>
+      ddb.send(new PutCommand({ TableName: TRADES_TABLE, Item: item }))
+    ));
+
+    log.info('single trade(s) created', { count: itemsToCreate.length, tradeIds: itemsToCreate.map((i: any) => i.tradeId) });
+
+    // Return the one trade, or every account's trade (those an earlier attempt created included)
+    const all = [...existingItems, ...itemsToCreate].map(presentTrade);
+    const responseData = all.length === 1 ? { trade: all[0] } : { trades: all, count: all.length };
+
+    return envelope({ statusCode: 201, data: responseData, message: 'Trade created successfully' });
   } catch (err: any) {
     console.error(err);
     return errorFromException(err, true);

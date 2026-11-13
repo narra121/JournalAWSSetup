@@ -1,4 +1,4 @@
-import { computeInsightInputs } from '../insights/metrics';
+import { computeChatMetrics } from '../insights/metrics';
 import type { Insight } from '../insights/store';
 import type { TradeRow } from '../trades-repo';
 
@@ -44,7 +44,7 @@ export interface ChatContext {
 
 /** Compact JSON data block appended to the system instruction. No notes, lessons, images, emails or account names. */
 export function buildChatContext(question: string, trades: TradeRow[], rules: Map<string, string>, insight: Insight | null, period: { from: string; to: string }, truncated = false): ChatContext {
-  const c = computeInsightInputs(trades, rules);
+  const c = computeChatMetrics(trades);
   const metrics = Object.fromEntries(c.baseMetricIds.map((id) => [id, `${c.metrics[id].label}: ${c.metrics[id].display}`]));
   const picked = selectTrades(question, trades);
   const data = {

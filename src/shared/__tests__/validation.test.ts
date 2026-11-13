@@ -58,39 +58,32 @@ describe('formatErrors', () => {
     expect(formatErrors(undefined)).toEqual([]);
   });
 
-  it('maps AJV errors to { code, field, message }', () => {
+  it('maps AJV errors to { field, message } sentences a trader can read', () => {
     const ajvErrors = [
-      { instancePath: '/name', schemaPath: '#/properties/name/minLength', message: 'must NOT have fewer than 1 characters', keyword: 'minLength', params: {} },
+      { instancePath: '/name', schemaPath: '#/properties/name/minLength', message: 'must NOT have fewer than 1 characters', keyword: 'minLength', params: { limit: 1 } },
       { instancePath: '', schemaPath: '#/required', message: "must have required property 'name'", keyword: 'required', params: { missingProperty: 'name' } },
     ] as any;
 
-    const result = formatErrors(ajvErrors);
-    expect(result).toHaveLength(2);
-    expect(result![0]).toEqual({
-      code: 'VALIDATION_ERROR',
-      field: '/name',
-      message: 'must NOT have fewer than 1 characters',
-    });
-    // When instancePath is '' (falsy), formatErrors falls back to schemaPath
-    expect(result![1].field).toBe('#/required');
-    expect(result![1].code).toBe('VALIDATION_ERROR');
+    expect(formatErrors(ajvErrors)).toEqual([
+      { field: 'name', message: "Name can't be empty" },
+      { field: 'name', message: 'Name is required' },
+    ]);
   });
 
-  it('falls back to schemaPath when instancePath is empty', () => {
-    const ajvErrors = [
-      { instancePath: '', schemaPath: '#/required', message: 'required', keyword: 'required', params: {} },
-    ] as any;
-    const result = formatErrors(ajvErrors);
-    // When instancePath is empty string (falsy), it should use instancePath (empty string) || schemaPath
-    expect(result![0].field).toBe('#/required');
-  });
-
-  it('uses "invalid" when message is missing', () => {
-    const ajvErrors = [
-      { instancePath: '/foo', schemaPath: '#', keyword: 'type', params: {} },
-    ] as any;
-    const result = formatErrors(ajvErrors);
-    expect(result![0].message).toBe('invalid');
+  it.each([
+    [{ instancePath: '/entryPrice', keyword: 'type', params: { type: 'number' } }, 'entryPrice', 'Entry price must be a number'],
+    [{ instancePath: '/side', keyword: 'enum', params: { allowedValues: ['BUY', 'SELL'] } }, 'side', 'Side must be one of: BUY, SELL'],
+    [{ instancePath: '/notes', keyword: 'maxLength', params: { limit: 5000 } }, 'notes', 'Notes can have at most 5000 characters'],
+    [{ instancePath: '/quantity', keyword: 'minimum', params: { limit: 0 } }, 'quantity', 'Quantity must be at least 0'],
+    [{ instancePath: '/tags', keyword: 'maxItems', params: { limit: 50 } }, 'tags', 'Tags can have at most 50 items'],
+    [{ instancePath: '/images/3/timeframe', keyword: 'type', params: { type: 'string' } }, 'images.3.timeframe', 'Image 4 timeframe must be text'],
+    [{ instancePath: '/images/2', keyword: 'type', params: { type: 'object' } }, 'images.2', 'Image 3 must be an object'],
+    [{ instancePath: '/email', keyword: 'format', params: { format: 'email' } }, 'email', "Email isn't a valid email"],
+    [{ instancePath: '/exitDate', keyword: 'pattern', params: { pattern: '^x$' } }, 'exitDate', "Exit date isn't in the expected format"],
+    [{ instancePath: '', keyword: 'type', params: { type: 'object' } }, '', 'The request must be an object'],
+    [{ instancePath: '/foo', keyword: 'oneOf', params: {} }, 'foo', "Foo isn't valid"],
+  ])('describes %j', (error, field, message) => {
+    expect(formatErrors([error] as any)).toEqual([{ field, message }]);
   });
 });
 
@@ -113,18 +106,31 @@ describe('envelope', () => {
     expect(body.data).toBeNull();
   });
 
-  it('creates an error response with errorCode and details', () => {
+  it('creates an error response in the one error contract: errorCode, message === errorMessage, fields under error', () => {
     const res = envelope({
       statusCode: 400,
-      error: { code: 'BAD', message: 'bad request', details: [{ field: 'x' }] },
+      error: { code: 'BAD', message: 'bad request', details: [{ field: 'x', message: 'X is required' }] },
       message: 'Validation failed',
     });
     expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('BAD');
-    expect(body.errors).toEqual([{ field: 'x' }]);
-    expect(body.message).toBe('Validation failed');
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      message: 'X is required',
+      errorCode: 'BAD',
+      errorMessage: 'X is required',
+      error: { code: 'BAD', fields: [{ field: 'x', message: 'X is required' }] },
+    });
+  });
+
+  it('puts an object in details (retryAfter) under error and keeps the message', () => {
+    const res = envelope({ statusCode: 429, error: { code: 'RATE_LIMITED', message: 'Too many attempts', details: { retryAfter: 42 } } });
+    expect(JSON.parse(res.body)).toEqual({
+      success: false,
+      message: 'Too many attempts',
+      errorCode: 'RATE_LIMITED',
+      errorMessage: 'Too many attempts',
+      error: { code: 'RATE_LIMITED', retryAfter: 42 },
+    });
   });
 
   it('includes meta if provided', () => {
@@ -133,10 +139,12 @@ describe('envelope', () => {
     expect(body.meta).toEqual({ page: 1 });
   });
 
-  it('defaults message to "Error" for non-success without explicit message', () => {
+  it('uses the status sentence for a non-success without a message', () => {
     const res = envelope({ statusCode: 500, error: { code: 'X' } });
     const body = JSON.parse(res.body);
-    expect(body.message).toBe('Error');
+    expect(body.message).toBe('Something went wrong on our side. Please try again.');
+    expect(body.errorMessage).toBe(body.message);
+    expect(body.errorCode).toBe('X');
   });
 });
 
@@ -149,14 +157,25 @@ describe('errorResponse', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('NOT_FOUND');
-    expect(body.message).toBe('Not found');
+    expect(body.message).toBe("We couldn't find what you asked for.");
   });
 
-  it('includes details array when provided', () => {
-    const details = [{ field: '/email', message: 'required' }];
-    const res = errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Bad', details);
-    const body = JSON.parse(res.body);
-    expect(body.errors).toEqual(details);
+  it('keeps a specific message and mirrors it in errorMessage', () => {
+    const body = JSON.parse(errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'A trade can have at most 6 images').body);
+    expect(body).toEqual({
+      success: false,
+      message: 'A trade can have at most 6 images',
+      errorCode: 'VALIDATION_ERROR',
+      errorMessage: 'A trade can have at most 6 images',
+    });
+  });
+
+  it('lists field errors under error.fields and leads with the first one', () => {
+    const fields = [{ field: 'email', message: 'Email is required' }, { field: 'name', message: 'Name is required' }];
+    const body = JSON.parse(errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid request body', fields).body);
+    expect(body.message).toBe('Email is required (and 1 more)');
+    expect(body.error).toEqual({ code: 'VALIDATION_ERROR', fields });
+    expect(body.errors).toBeUndefined();
   });
 });
 
@@ -213,7 +232,7 @@ describe('errorFromException', () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
-    expect(body.message).toBe('Internal error');
+    expect(body.message).toBe('Something went wrong on our side. Please try again.');
     expect(res.body).not.toContain('dynamodb');
     expect(res.body).not.toContain('stack');
   });
@@ -222,7 +241,7 @@ describe('errorFromException', () => {
     const res = errorFromException(null);
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.message).toBe('Internal error');
+    expect(body.message).toBe('Something went wrong on our side. Please try again.');
   });
 });
 

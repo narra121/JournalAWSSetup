@@ -69,12 +69,6 @@ export function pipSize(symbol: string): number | null {
   return quote === 'JPY' ? 0.01 : 0.0001;
 }
 
-/** Value of one pip in the quote currency for `lots` lots. */
-export function pipValue(symbol: string, lots: number, contractSize = 100000): number | null {
-  const p = pipSize(symbol);
-  return p == null ? null : p * contractSize * lots;
-}
-
 /** Outcome used across imports: by net P&L sign. */
 export function outcomeFromPnl(netPnl: number): 'TP' | 'SL' | 'BREAKEVEN' {
   return netPnl > 0 ? 'TP' : netPnl < 0 ? 'SL' : 'BREAKEVEN';

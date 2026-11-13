@@ -28,16 +28,13 @@ Parameters:
     Description: Name of SSM SecureString parameter storing the Gemini API key.
   StripeSecretKeyParamName:
     Type: String
-    Default: /tradequt/dev/stripeSecretKey
-    Description: Name of SSM SecureString parameter storing the Stripe secret key.
+    Description: Name of SSM SecureString parameter storing the Stripe secret key (/tradequt/<stage>/stripeSecretKey). No default, so a stack can never fall back to another stage's key; scripts/deploy.mjs refuses prod unless it is under /tradequt/prod/.
   StripeWebhookSecretParamName:
     Type: String
-    Default: /tradequt/dev/stripeWebhookSecret
-    Description: Name of SSM SecureString parameter storing the Stripe webhook secret.
+    Description: Name of SSM SecureString parameter storing the Stripe webhook secret (/tradequt/<stage>/stripeWebhookSecret). No default; same prod rule.
   AdConfigParamName:
     Type: String
-    Default: /tradequt/dev/adConfig
-    Description: Name of SSM parameter storing the ad placement configuration JSON.
+    Description: Name of SSM parameter storing the ad placement configuration JSON (/tradequt/<stage>/adConfig). No default; same prod rule.
   AdminSecretParamName:
     Type: String
     Default: /tradequt/adminSecret
@@ -183,6 +180,7 @@ Resources:
       ClientName: web
       GenerateSecret: false
       ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       PreventUserExistenceErrors: ENABLED
@@ -208,17 +206,119 @@ Resources:
           - IsProd
           - - https://tradequt.com/auth/callback
             - https://www.tradequt.com/auth/callback
+            - https://tradequt.com/
+            - https://www.tradequt.com/
           - - https://dev.tradequt.com/auth/callback
+            - https://dev.tradequt.com/
             - http://localhost:8080/auth/callback
+            - http://localhost:8080/
+            - http://localhost:8081/auth/callback
+            - http://localhost:8081/
+            - http://localhost:8090/auth/callback
+            - http://localhost:8090/
+            - http://localhost:8091/auth/callback
+            - http://localhost:8091/
+            - http://localhost:8095/auth/callback
+            - http://localhost:8095/
+            - http://localhost:5173/auth/callback
+            - http://localhost:5173/
+            - http://localhost:5180/auth/callback
+            - http://localhost:5180/
+            - http://localhost:5181/auth/callback
+            - http://localhost:5181/
+            - http://localhost:5182/auth/callback
+            - http://localhost:5182/
+            - http://localhost:5183/auth/callback
+            - http://localhost:5183/
+            - http://localhost:5184/auth/callback
+            - http://localhost:5184/
+            - http://localhost:5185/auth/callback
+            - http://localhost:5185/
+            - http://localhost:5187/auth/callback
+            - http://localhost:5187/
+            - http://localhost:5190/auth/callback
+            - http://localhost:5190/
+            - http://localhost:5191/auth/callback
+            - http://localhost:5191/
+            - http://localhost:5192/auth/callback
+            - http://localhost:5192/
+            - http://localhost:4173/auth/callback
+            - http://localhost:4173/
+            - http://localhost:4174/auth/callback
+            - http://localhost:4174/
+            - http://localhost:4199/auth/callback
+            - http://localhost:4199/
         - - http://localhost:8080/
       LogoutURLs: !If
         - HasGoogleAuth
         - !If
           - IsProd
           - - https://tradequt.com/login
+            - https://tradequt.com/login?view=logged-out
+            - https://tradequt.com/
             - https://www.tradequt.com/login
+            - https://www.tradequt.com/login?view=logged-out
+            - https://www.tradequt.com/
           - - https://dev.tradequt.com/login
+            - https://dev.tradequt.com/login?view=logged-out
+            - https://dev.tradequt.com/
             - http://localhost:8080/login
+            - http://localhost:8080/login?view=logged-out
+            - http://localhost:8080/
+            - http://localhost:8081/login
+            - http://localhost:8081/login?view=logged-out
+            - http://localhost:8081/
+            - http://localhost:8090/login
+            - http://localhost:8090/login?view=logged-out
+            - http://localhost:8090/
+            - http://localhost:8091/login
+            - http://localhost:8091/login?view=logged-out
+            - http://localhost:8091/
+            - http://localhost:8095/login
+            - http://localhost:8095/login?view=logged-out
+            - http://localhost:8095/
+            - http://localhost:5173/login
+            - http://localhost:5173/login?view=logged-out
+            - http://localhost:5173/
+            - http://localhost:5180/login
+            - http://localhost:5180/login?view=logged-out
+            - http://localhost:5180/
+            - http://localhost:5181/login
+            - http://localhost:5181/login?view=logged-out
+            - http://localhost:5181/
+            - http://localhost:5182/login
+            - http://localhost:5182/login?view=logged-out
+            - http://localhost:5182/
+            - http://localhost:5183/login
+            - http://localhost:5183/login?view=logged-out
+            - http://localhost:5183/
+            - http://localhost:5184/login
+            - http://localhost:5184/login?view=logged-out
+            - http://localhost:5184/
+            - http://localhost:5185/login
+            - http://localhost:5185/login?view=logged-out
+            - http://localhost:5185/
+            - http://localhost:5187/login
+            - http://localhost:5187/login?view=logged-out
+            - http://localhost:5187/
+            - http://localhost:5190/login
+            - http://localhost:5190/login?view=logged-out
+            - http://localhost:5190/
+            - http://localhost:5191/login
+            - http://localhost:5191/login?view=logged-out
+            - http://localhost:5191/
+            - http://localhost:5192/login
+            - http://localhost:5192/login?view=logged-out
+            - http://localhost:5192/
+            - http://localhost:4173/login
+            - http://localhost:4173/login?view=logged-out
+            - http://localhost:4173/
+            - http://localhost:4174/login
+            - http://localhost:4174/login?view=logged-out
+            - http://localhost:4174/
+            - http://localhost:4199/login
+            - http://localhost:4199/login?view=logged-out
+            - http://localhost:4199/
         - - http://localhost:8080/
 
   # Google Identity Provider (only created when GoogleClientId is provided)
@@ -727,7 +827,9 @@ Resources:
           Runtime: nodejs24.x
       ServiceConfig:
         ExecutionRoleArn: !GetAtt ApiFunctionRole.Arn
-        TimeoutSeconds: 300
+        # Just under ApiDistribution's OriginReadTimeout (60): CloudFront answers 504 at 60 s, so work that runs longer is billed and lost.
+        # Paid AI flows keep their own deadline below this: GEMINI_REQUEST_TIMEOUT_MS, DEFAULT_DEADLINE_MS in src/features/ai/gemini.ts.
+        TimeoutSeconds: 58
         MaxConcurrencyPerEnvironment: 64
         EnvironmentVariables:
           TRADES_TABLE: !Ref TradesTable
@@ -749,7 +851,7 @@ Resources:
           STAGE_NAME: !Ref Environment
           LOG_LEVEL: info
           GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
-          GEMINI_REQUEST_TIMEOUT_MS: "55000"
+          GEMINI_REQUEST_TIMEOUT_MS: "50000"
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
           STRIPE_WEBHOOK_SECRET_PARAM: !Ref StripeWebhookSecretParamName
           ADMIN_SECRET_PARAM: !Ref AdminSecretParamName
@@ -775,7 +877,9 @@ Resources:
       ThrottleConfig:
         RateLimit: !If [IsProd, 300, 100]
       ScalingConfig:
-        MaxEnvironments: !If [IsProd, 10, 2]
+        # Lower caps throttle one dashboard load (about 11 requests at once) with 429 Platform.EndpointMaxEnvThrottle while
+        # environments start. Environments scale to zero, so the cap costs nothing idle; RateLimit bounds abuse.
+        MaxEnvironments: 10
 
   ApiOAC:
     Type: AWS::CloudFront::OriginAccessControl
@@ -806,6 +910,44 @@ Resources:
             QueryStringBehavior: all
           CookiesConfig:
             CookieBehavior: none
+
+  # CORS on top of the managed SecurityHeadersPolicy. OriginOverride false keeps the app's own CORS headers on its responses
+  # and fills them in on responses AWS generates (Web Function throttle 429, CloudFront 4xx/5xx), so a browser sees the
+  # HTTP status instead of a network failure.
+  ApiResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${StageName}-api"
+        Comment: Security headers and CORS for the API distribution
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items: [authorization, content-type, idempotency-key, x-amz-date, x-api-key]
+          AccessControlAllowMethods:
+            Items: [DELETE, GET, OPTIONS, PATCH, POST, PUT]
+          AccessControlAllowOrigins:
+            Items: !Split [",", !Ref AllowedOrigins]
+          AccessControlExposeHeaders:
+            Items: [authorization, content-type]
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: false
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: SAMEORIGIN
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
 
   ApiDistribution:
     Type: AWS::CloudFront::Distribution
@@ -839,7 +981,7 @@ Resources:
           Compress: true
           CachePolicyId: !Ref ApiCachePolicy
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
         CacheBehaviors:
           - PathPattern: /v1/chat/*
             TargetOriginId: web-function
@@ -849,7 +991,7 @@ Resources:
             Compress: false
             CachePolicyId: !Ref ApiCachePolicy
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+            ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
 
   ApiResourcePolicy:
     Type: AWS::Lambda::ResourcePolicy
@@ -1038,6 +1180,7 @@ Resources:
               - cognito-idp:ListUsers
               - cognito-idp:AdminLinkProviderForUser
               - cognito-idp:AdminGetUser
+              - cognito-idp:AdminDeleteUser
             Resource: !GetAtt UserPool.Arn
       Roles:
         - !Ref EventFunctionRole
@@ -1234,6 +1377,35 @@ Resources:
       Period: 300
       EvaluationPeriods: 1
       Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Plain-text terms, not a JSON pattern: Lambda wraps each app log line as a string in the event's `message`, so `$.msg` never matches
+  # (verified with `aws logs test-metric-filter` on dev events). Messages are logged by src/handlers/admin-login/app.ts.
+  AdminLoginFailedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiLogGroup
+      FilterPattern: '?"Admin login failed: wrong password" ?"Admin login blocked: global attempt limit reached"'
+      MetricTransformations:
+        - MetricNamespace: !Sub TradeQut/${StageName}
+          MetricName: AdminLoginFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  AdminLoginFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub AdminLoginFailed-${StageName}
+      AlarmDescription: Wrong admin passwords or hits on the global admin-login limit; the real admin mistypes once or twice, so this many is guessing.
+      Namespace: !Sub TradeQut/${StageName}
+      MetricName: AdminLoginFailed
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions:

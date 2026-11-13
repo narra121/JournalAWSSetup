@@ -7,10 +7,6 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
 
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const s3Mock = mockClient(S3Client);
 const { handler } = await import('../app.ts');

@@ -5,7 +5,6 @@ import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { removeImagesForTrade } from '../../shared/images';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 import { batchWriteDeleteAll } from '../../shared/batchWrite';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
@@ -41,9 +40,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!accountId) {
     log.warn('missing accountId');

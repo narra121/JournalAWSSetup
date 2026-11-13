@@ -1,31 +1,12 @@
 import type { ApiHandler } from '../../shared/types';
 import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { getStripe } from '../../shared/stripe-config';
 
-const ssm = new SSMClient({});
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
-
-let cachedStripeKey: string | undefined;
-let stripeClient: Stripe | undefined;
-
-async function getStripeClient(): Promise<Stripe> {
-  if (stripeClient) return stripeClient;
-  if (!cachedStripeKey) {
-    const res = await ssm.send(new GetParameterCommand({
-      Name: STRIPE_SECRET_KEY_PARAM,
-      WithDecryption: true,
-    }));
-    cachedStripeKey = res.Parameter?.Value;
-    if (!cachedStripeKey) throw new Error('Stripe secret key not found in SSM');
-  }
-  stripeClient = new Stripe(cachedStripeKey);
-  return stripeClient;
-}
+const PERIOD_UNITS = ['days', 'months', 'lifetime'];
 
 function computePeriodEnd(period?: number, unit?: string): Date {
   if (unit === 'lifetime') {
@@ -54,10 +35,14 @@ async function setStatus(userId: string, fields: Record<string, any>): Promise<v
   }));
 }
 
+/** An already-cancelled or missing subscription counts as cancelled, so a retry after a failed refund reaches the refund. */
 async function cancelStripeSubscription(stripeSubscriptionId: string | undefined): Promise<void> {
   if (!stripeSubscriptionId) return;
-  const stripe = await getStripeClient();
-  await stripe.subscriptions.cancel(stripeSubscriptionId);
+  try {
+    await (await getStripe()).subscriptions.cancel(stripeSubscriptionId);
+  } catch (err: any) {
+    if (err?.code !== 'resource_missing' && !/cancel+ed/i.test(err?.message ?? '')) throw err;
+  }
 }
 
 export const handler: ApiHandler = async (event) => {
@@ -72,7 +57,22 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing request body');
     }
 
-    const { action, period, unit } = JSON.parse(event.body);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(event.body);
+    } catch {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid JSON body');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
+    }
+    const { action, period, unit } = parsed;
+    if (period !== undefined && !(Number.isInteger(period) && period > 0)) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'period must be a positive whole number');
+    }
+    if (unit !== undefined && !PERIOD_UNITS.includes(unit)) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'unit must be days, months or lifetime');
+    }
 
     switch (action) {
       case 'grant_free': {
@@ -105,20 +105,21 @@ export const handler: ApiHandler = async (event) => {
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No Stripe customer found for this user');
         }
 
-        const stripe = await getStripeClient();
-        const invoices = await stripe.invoices.list({ customer: sub.stripeCustomerId, limit: 1 });
+        const stripe = await getStripe();
+        const invoices = await stripe.invoices.list({ customer: sub.stripeCustomerId, status: 'paid', limit: 1 });
         if (!invoices.data.length) {
-          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No invoices found for this customer');
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No paid invoices found for this customer');
         }
 
         const paymentIntent = invoices.data[0].payment_intent;
         if (!paymentIntent) {
-          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'The latest invoice has no payment to refund');
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'The latest paid invoice has no payment to refund');
         }
+        // Cancel first: a failed refund then leaves a cancelled subscription that a retry can still refund.
+        await cancelStripeSubscription(sub.stripeSubscriptionId);
         const refund = await stripe.refunds.create({
           payment_intent: typeof paymentIntent === 'string' ? paymentIntent : paymentIntent.id,
         });
-        await cancelStripeSubscription(sub.stripeSubscriptionId);
         await setStatus(userId, { status: 'cancelled', source: 'admin_refund', refundId: refund.id });
 
         log.info('Refunded subscription', { userId, refundId: refund.id });

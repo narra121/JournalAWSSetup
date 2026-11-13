@@ -388,6 +388,50 @@ describe('get-goals-progress handler', () => {
 
   // ── Empty Results ──────────────────────────────────────────────
 
+  it('without a periodKey only the legacy goals count, not every weekly/monthly clone (BE-101)', async () => {
+    setupMocks({
+      dailyStats: [makeDailyRecord()],
+      goals: [
+        { userId: 'user-1', goalId: 'legacy-1', goalType: 'profit', period: 'weekly', target: 500, accountId: 'ALL-LEGACY' },
+        { userId: 'user-1', goalId: 'week#2026-03-30#a', goalType: 'profit', period: 'weekly', target: 500, accountId: 'acc1' },
+        { userId: 'user-1', goalId: 'week#2026-04-06#b', goalType: 'profit', period: 'weekly', target: 500, accountId: 'acc1' },
+        { userId: 'user-1', goalId: 'month#2026-04#c', goalType: 'profit', period: 'monthly', target: 2000, accountId: 'acc1' },
+      ],
+      rules: mockRules,
+    });
+    const res = await handler(makeEvent({ accountId: 'ALL', startDate: '2026-04-06', endDate: '2026-04-12', period: 'weekly' }));
+    const body = JSON.parse(res.body!);
+    expect(body.data.goals.map((g: any) => g.goalId)).toEqual(['legacy-1']);
+    expect(body.data.goalProgress.profit.target).toBe(500);
+  });
+
+  it('does not read the equity curve points: only the fields the progress needs are projected (BE-101)', async () => {
+    setupMocks({ dailyStats: [makeDailyRecord()], goals: mockGoals, rules: mockRules });
+    await handler(makeEvent({ accountId: 'acc1', startDate: '2026-04-06', endDate: '2026-04-12', period: 'weekly' }));
+    const stats = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats')!.args[0].input;
+    expect(stats.ProjectionExpression).not.toContain('equityCurvePoints');
+    expect(stats.ProjectionExpression).toContain('pnlSequence');
+  });
+
+  it('a rule text or goal type called __proto__ is an ordinary entry (BE-007)', async () => {
+    setupMocks({
+      dailyStats: [makeDailyRecord({ brokenRulesCounts: { base1: 1 } })],
+      goals: [{ userId: 'user-1', goalId: 'week#2026-04-06#g', goalType: '__proto__', period: 'weekly', target: 5, accountId: 'acc1' }],
+      rules: [{ userId: 'user-1', ruleId: 'week#2026-04-06#r1', rule: '__proto__', isActive: true }],
+    });
+    const allRules = [
+      { userId: 'user-1', ruleId: 'week#2026-04-06#r1', rule: '__proto__', isActive: true },
+      { userId: 'user-1', ruleId: 'base1', rule: '__proto__', isActive: true },
+    ];
+    ddbMock.on(QueryCommand, { TableName: 'test-rules' }).callsFake((input: any) => ({
+      Items: input.ExpressionAttributeValues[':prefix'] ? allRules.filter((r) => r.ruleId.startsWith(input.ExpressionAttributeValues[':prefix'])) : allRules,
+    }));
+    const res = await handler(makeEvent({ accountId: 'acc1', startDate: '2026-04-06', endDate: '2026-04-12', period: 'weekly', periodKey: 'week#2026-04-06' }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body!).data.ruleCompliance.brokenRulesCounts['week#2026-04-06#r1']).toBe(1);
+    expect(({} as any).goalType).toBeUndefined();
+  });
+
   it('returns zero progress when no daily stats records exist', async () => {
     setupMocks({
       dailyStats: [],
@@ -795,7 +839,7 @@ describe('get-goals-progress handler', () => {
     // Specific account should NOT use IndexName
     expect(dailyStatsCalls[0].args[0].input.IndexName).toBeUndefined();
     // Should use sk BETWEEN (aliased as #s for ProjectionExpression compatibility)
-    expect(dailyStatsCalls[0].args[0].input.KeyConditionExpression).toContain('#s BETWEEN');
+    expect(dailyStatsCalls[0].args[0].input.KeyConditionExpression).toContain('#sk BETWEEN');
   });
 
   it('remaps base rule UUIDs to period rule IDs via text matching when periodKey is provided', async () => {

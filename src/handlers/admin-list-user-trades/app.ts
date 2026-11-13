@@ -1,9 +1,10 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { makeLogger } from '../../shared/logger';
 import { normalizePotentialKey } from '../../shared/s3';
+import { loadFullRecords } from '../../shared/tradeRecords';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -42,7 +43,8 @@ export const handler: ApiHandler = async (event) => {
 
     log.info('Filter settings', { shouldFilterByAccount, accountId });
 
-    const limit = query.limit ? Math.min(100, Math.max(1, parseInt(query.limit))) : 50;
+    const parsedLimit = parseInt(query.limit ?? '', 10);
+    const limit = Number.isNaN(parsedLimit) ? 50 : Math.min(100, Math.max(1, parsedLimit));
     const cursor = query.cursor || query.nextToken;
     let exclusiveStartKey: Record<string, any> | undefined;
     if (cursor) {
@@ -54,143 +56,51 @@ export const handler: ApiHandler = async (event) => {
       }
     }
 
-    // Query trades — GSI for date range, main table for no-date queries
-    let command;
-    if (startDate && endDate) {
-      // GSI query: userId + openDate range (KEYS_ONLY — no FilterExpression here)
-      const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
-      command = new QueryCommand({
-        TableName: TRADES_TABLE,
-        IndexName: 'trades-by-date-gsi',
-        KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
-        ExpressionAttributeNames: { '#od': 'openDate' },
-        Limit: limit * 3,
-        ExclusiveStartKey: exclusiveStartKey,
-      });
-    } else {
-      // Main table query: userId only, accountId filter works here (full record available)
-      const exprValues: Record<string, any> = { ':u': userId };
-      const exprNames: Record<string, string> = {};
-      let filterExpression: string | undefined;
-      if (shouldFilterByAccount) {
-        filterExpression = '#aid = :aid';
-        exprValues[':aid'] = accountId;
-        exprNames['#aid'] = 'accountId';
-      }
-      command = new QueryCommand({
-        TableName: TRADES_TABLE,
-        KeyConditionExpression: 'userId = :u',
-        FilterExpression: filterExpression,
-        ExpressionAttributeValues: exprValues,
-        ExpressionAttributeNames: Object.keys(exprNames).length > 0 ? exprNames : undefined,
-        Limit: limit,
-        ExclusiveStartKey: exclusiveStartKey,
-      });
-    }
-
-    let result = await ddb.send(command);
-    let items = result.Items || [];
-
-    // GSI returns KEYS_ONLY — BatchGet full records from main table (parallel chunks)
-    if (startDate && endDate && items.length > 0) {
-      const keys = items.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
-      const chunks: Record<string, any>[][] = [];
-      for (let i = 0; i < keys.length; i += 100) {
-        chunks.push(keys.slice(i, i + 100));
-      }
-
-      // Fire all BatchGet requests in parallel
-      const batchResults = await Promise.all(
-        chunks.map(chunk =>
-          ddb.send(new BatchGetCommand({
-            RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
-          }))
-        )
-      );
-
-      const fullItems: any[] = [];
-      const unprocessedKeys: Record<string, any>[][] = [];
-      for (const batchResult of batchResults) {
-        if (batchResult.Responses?.[TRADES_TABLE]) {
-          fullItems.push(...batchResult.Responses[TRADES_TABLE]);
-        }
-        if (batchResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys?.length) {
-          unprocessedKeys.push(batchResult.UnprocessedKeys[TRADES_TABLE].Keys as Record<string, any>[]);
-        }
-      }
-
-      // Retry any unprocessed keys (sequential with backoff)
-      for (const retryKeys of unprocessedKeys) {
-        let keysToRetry = retryKeys;
-        let attempt = 0;
-        while (keysToRetry.length > 0 && attempt < 3) {
-          if (attempt > 0) {
-            await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
-          }
-          const retryResult = await ddb.send(new BatchGetCommand({
-            RequestItems: { [TRADES_TABLE]: { Keys: keysToRetry } },
-          }));
-          if (retryResult.Responses?.[TRADES_TABLE]) {
-            fullItems.push(...retryResult.Responses[TRADES_TABLE]);
-          }
-          keysToRetry = (retryResult.UnprocessedKeys?.[TRADES_TABLE]?.Keys as Record<string, any>[] | undefined) || [];
-          attempt++;
-        }
-      }
-
-      const fullMap = new Map(fullItems.map((it: any) => [it.tradeId, it]));
-      items = items.map((it: any) => fullMap.get(it.tradeId) || it);
-    }
-
-    items = items.filter((it: any) => !it.deletedAt);
-
-    // Account filter applied AFTER full data is fetched (GSI doesn't have accountId)
-    if (shouldFilterByAccount) {
-      items = items.filter((it: any) => it.accountId === accountId);
-    }
-
-    // If GSI path returned fewer results than limit after filtering, loop to fill the page
-    if (startDate && endDate && shouldFilterByAccount && items.length < limit && result.LastEvaluatedKey) {
-      const MAX_FILL_LOOPS = 5;
-      for (let loop = 0; loop < MAX_FILL_LOOPS && items.length < limit && result.LastEvaluatedKey; loop++) {
-        const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
-        const fillCmd = new QueryCommand({
+    // GSI query: userId + openDate range (KEYS_ONLY), then the full records from the main table. The GSI has no
+    // accountId, so for one account several index pages may be read until the page is full.
+    const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
+    const MAX_FILL_PAGES = 6;
+    let items: any[] = [];
+    let lastEvaluatedKey: Record<string, any> | undefined;
+    let startKey = exclusiveStartKey;
+    for (let page = 0; page < MAX_FILL_PAGES; page++) {
+      const result = await ddb.send(
+        new QueryCommand({
           TableName: TRADES_TABLE,
           IndexName: 'trades-by-date-gsi',
           KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
           ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
           ExpressionAttributeNames: { '#od': 'openDate' },
-          Limit: limit * 3,
-          ExclusiveStartKey: result.LastEvaluatedKey,
-        });
-        result = await ddb.send(fillCmd);
-        let moreItems = result.Items || [];
-        if (moreItems.length > 0) {
-          const moreKeys = moreItems.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
-          const moreChunks: Record<string, any>[][] = [];
-          for (let i = 0; i < moreKeys.length; i += 100) moreChunks.push(moreKeys.slice(i, i + 100));
-          const moreBatchResults = await Promise.all(
-            moreChunks.map(chunk => ddb.send(new BatchGetCommand({ RequestItems: { [TRADES_TABLE]: { Keys: chunk } } })))
-          );
-          const moreFullItems: any[] = [];
-          for (const br of moreBatchResults) {
-            if (br.Responses?.[TRADES_TABLE]) moreFullItems.push(...br.Responses[TRADES_TABLE]);
-          }
-          const moreMap = new Map(moreFullItems.map((it: any) => [it.tradeId, it]));
-          moreItems = moreItems.map((it: any) => moreMap.get(it.tradeId) || it);
-          moreItems = moreItems.filter((it: any) => it.accountId === accountId);
-          items.push(...moreItems);
-        }
+          Limit: shouldFilterByAccount ? limit * 3 : limit,
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      const keyRows = result.Items || [];
+      // Retries unprocessed keys and throws when some stay unprocessed, so a throttled read never drops trades silently.
+      const full = await loadFullRecords(userId, keyRows);
+      for (const row of keyRows) {
+        const trade = full.get(row.tradeId);
+        if (!trade || trade.deletedAt) continue;
+        if (shouldFilterByAccount && trade.accountId !== accountId) continue;
+        items.push(trade);
       }
-      // Trim to requested limit
-      if (items.length > limit) items = items.slice(0, limit);
+      lastEvaluatedKey = result.LastEvaluatedKey;
+      startKey = lastEvaluatedKey;
+      if (items.length >= limit || !lastEvaluatedKey) break;
+    }
+
+    // The cursor must continue right after the last trade returned, not after everything that was read.
+    let nextKey = lastEvaluatedKey;
+    if (items.length > limit) {
+      items = items.slice(0, limit);
+      const last = items[items.length - 1];
+      nextKey = { userId: last.userId, openDate: last.openDate, tradeId: last.tradeId };
     }
 
     log.info('Query results', {
       itemCount: items.length,
       sampleAccountIds: items.slice(0, 3).map((i: any) => i.accountId),
-      hasMore: !!result.LastEvaluatedKey,
+      hasMore: !!nextKey,
     });
 
     // Presign image keys (short-lived) if present
@@ -211,10 +121,8 @@ export const handler: ApiHandler = async (event) => {
         }
       }));
     }
-    const nextCursor = result.LastEvaluatedKey
-      ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64')
-      : null;
-    const hasMore = !!result.LastEvaluatedKey;
+    const nextCursor = nextKey ? Buffer.from(JSON.stringify(nextKey)).toString('base64') : null;
+    const hasMore = !!nextKey;
 
     log.info('Trades listed', { count: items.length, hasMore });
     return envelope({

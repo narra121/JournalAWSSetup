@@ -46,7 +46,9 @@ Every prod run (dry run included) is given the parameters that differ from the s
 
 - `AlarmEmail` is a real e-mail address (otherwise the alarms have no subscriber), and
 - `AdminSecretParamName` and `AdminJwtSecretParamName` are under `/tradequt/prod/` (the stack still points at the
-  `/tradequt/adminSecret` and `/tradequt/adminJwtSecret` that dev shares).
+  `/tradequt/adminSecret` and `/tradequt/adminJwtSecret` that dev shares), and
+- `StripeSecretKeyParamName`, `StripeWebhookSecretParamName` and `AdConfigParamName` are under `/tradequt/prod/` (the template
+  has no default for them; the existing prod stack already holds `/tradequt/prod/...`, so they carry over with no `--param`).
 
 `--param` accepts only parameters the template declares, and not the ones the script computes (`CodeBucket`, `WebCodeKey`,
 `WebCodeVersion`, `EventsCodeKey`, `EventsCodeVersion`). Every other parameter is carried over (`UsePreviousValue`).

@@ -226,7 +226,7 @@ describe('Path traversal in image ID', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error).toBeDefined();
+    expect(body.message).toBeDefined();
   });
 
   it('rejects imageId with backslash path traversal', async () => {
@@ -564,7 +564,7 @@ describe('Error response data leakage', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     // Should use generic error message, not raw AWS error
-    expect(body.error).toBe('Failed to retrieve image');
+    expect(body.message).toBe("We couldn't load that image. Please try again.");
   });
 });
 

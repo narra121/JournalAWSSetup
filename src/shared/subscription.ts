@@ -1,4 +1,5 @@
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { computeEntitlements } from '../app/billing/entitlements';
 import { ddb } from './dynamo';
 import { envelope } from './validation';
 
@@ -11,6 +12,8 @@ export interface SubscriptionRecord {
   userId: string;
   status: string;
   trialEnd?: string;
+  source?: string;
+  periodEnd?: string;
   stripeSubscriptionId?: string;
   stripeCustomerId?: string;
   planId?: string;
@@ -96,31 +99,15 @@ export async function getSubscriptionTier(userId: string): Promise<TierResult> {
       return { tier: 'free_with_ads', showAds: true, status: 'none' };
     }
 
-    const now = new Date();
-
-    // Active subscription — paid tier
-    if (sub.status === 'active') {
-      return { tier: 'paid', showAds: false, status: 'active' };
+    // The plan rules live in computeEntitlements, so ads follow the same Free / trial / Pro decision as the features.
+    const entitlements = computeEntitlements(sub);
+    if (entitlements.plan === 'trial') {
+      return { tier: 'trial', showAds: false, trialEnd: sub.trialEnd, status: sub.status };
     }
-
-    // Trial period — check if still valid
-    if (sub.status === 'trial') {
-      if (sub.trialEnd && new Date(sub.trialEnd) > now) {
-        return { tier: 'trial', showAds: false, trialEnd: sub.trialEnd, status: 'trial' };
-      }
-      return { tier: 'free_with_ads', showAds: true, trialEnd: sub.trialEnd, status: 'trial' };
+    if (entitlements.plan === 'free') {
+      return { tier: 'free_with_ads', showAds: true, trialEnd: sub.trialEnd, status: sub.status };
     }
-
-    // Cancellation requested — still paid if within current period
-    if (sub.status === 'cancellation_requested') {
-      if (sub.currentEnd && new Date(sub.currentEnd) > now) {
-        return { tier: 'paid', showAds: false, status: 'cancellation_requested' };
-      }
-      return { tier: 'free_with_ads', showAds: true, status: 'cancellation_requested' };
-    }
-
-    // All other statuses: cancelled, completed, paused, past_due, created
-    return { tier: 'free_with_ads', showAds: true, status: sub.status };
+    return { tier: 'paid', showAds: false, status: sub.status };
   } catch (error) {
     console.error('Error getting subscription tier:', error);
     return { tier: 'free_with_ads', showAds: true, status: 'error' };
@@ -134,9 +121,8 @@ function subscriptionErrorResponse() {
     statusCode: 503,
     error: {
       code: 'SUBSCRIPTION_CHECK_FAILED',
-      message: 'Unable to verify subscription. Please try again.',
+      message: "We couldn't check your subscription right now. Please try again in a moment.",
     },
-    message: 'Service temporarily unavailable',
   });
 }
 

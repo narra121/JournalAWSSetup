@@ -1,32 +1,13 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
+import { getStripe } from '../../shared/stripe-config';
+import { subscriptionStatus } from '../../shared/stripe-status';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
-
-const ssmClient = new SSMClient({});
-let stripe: Stripe | null = null;
-
-async function getStripe(): Promise<Stripe> {
-  if (stripe) return stripe;
-
-  const result = await ssmClient.send(
-    new GetParameterCommand({ Name: STRIPE_SECRET_KEY_PARAM, WithDecryption: true })
-  );
-
-  const secretKey = result.Parameter?.Value;
-  if (!secretKey) {
-    throw new Error('Stripe secret key not found in SSM');
-  }
-
-  stripe = new Stripe(secretKey);
-  return stripe;
-}
 
 /** Convert a Stripe Unix timestamp (seconds) to an ISO string, or null. */
 function toISO(ts: number | null | undefined): string | null {
@@ -71,7 +52,7 @@ export const handler = async (
       return await handleDelete(userId, event.body);
     }
 
-    return errorResponse(405, ErrorCodes.VALIDATION_ERROR, 'Method not allowed');
+    return errorResponse(405, ErrorCodes.METHOD_NOT_ALLOWED, 'Method not allowed');
   } catch (error: any) {
     console.error('Error managing Stripe subscription:', error);
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to manage subscription');
@@ -115,7 +96,7 @@ async function handleGet(userId: string): Promise<APIGatewayProxyResult> {
   }
 
   // ── Sync DB status with Stripe status ──
-  const syncedStatus = resolveStatus(stripeSub, record.status);
+  const syncedStatus = subscriptionStatus(stripeSub);
 
   if (syncedStatus !== record.status) {
     await ddb.send(
@@ -154,46 +135,6 @@ async function handleGet(userId: string): Promise<APIGatewayProxyResult> {
       },
     },
   });
-}
-
-/**
- * Map Stripe subscription state to our canonical DB status.
- *
- * Priority:
- *  1. pause_collection set            → 'paused'
- *  2. Stripe status 'canceled'        → 'cancelled'
- *  3. Stripe status 'past_due'        → 'past_due'
- *  4. Stripe 'active' + cancel_at_period_end → 'cancellation_requested'
- *  5. Stripe 'active' + DB already 'cancellation_requested' → keep it
- *  6. Stripe 'active'                 → 'active'
- *  7. Fallback: Stripe status as-is
- */
-function resolveStatus(stripeSub: Stripe.Subscription, dbStatus: string): string {
-  if (stripeSub.pause_collection) {
-    return 'paused';
-  }
-
-  if (stripeSub.status === 'canceled') {
-    return 'cancelled';
-  }
-
-  if (stripeSub.status === 'past_due') {
-    return 'past_due';
-  }
-
-  if (stripeSub.status === 'active') {
-    if (stripeSub.cancel_at_period_end) {
-      return 'cancellation_requested';
-    }
-    if (dbStatus === 'cancellation_requested') {
-      // Stripe no longer shows cancel_at_period_end but DB still does — trust Stripe
-      return 'active';
-    }
-    return 'active';
-  }
-
-  // trialing, incomplete, incomplete_expired, unpaid — pass through
-  return stripeSub.status;
 }
 
 // ─── PUT: Pause / Resume ────────────────────────────────────────────────────

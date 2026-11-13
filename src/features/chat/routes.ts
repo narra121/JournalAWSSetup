@@ -11,7 +11,8 @@ import { dynamoTradeSource, type TradeSource } from '../trades-repo';
 import { buildChatContext, chatPeriod } from './context';
 import { ADVICE_REFUSAL, DISCLAIMER, isAdviceRequest } from './guard';
 import { CHAT_SYSTEM, TRADE_REF } from './prompt';
-import { deleteSession, getSession, listMessages, listSessions, MAX_SESSION_MESSAGES, putMessage, putSession, type ChatMessage, type ChatSession } from './store';
+import { addMessages, deleteSession, getSession, listMessages, listSessions, MAX_SESSION_MESSAGES, putMessage, putSession, touchSession, type ChatMessage, type ChatSession } from './store';
+import { checkRateLimit } from '../../handlers/auth-rate-limit-wrapper/rateLimit';
 
 export interface ChatDeps {
   store: AiStore;
@@ -19,9 +20,41 @@ export interface ChatDeps {
   stream: typeof geminiStream;
   now: () => Date;
   pingMs: number;
+  /** Cheap per-user limit for messages that are refused before any model call (they cost no quota); true = allowed. */
+  refusalAllowed?: (userId: string) => Promise<boolean>;
 }
 
-export const defaultChatDeps: ChatDeps = { store: dynamoAiStore, trades: dynamoTradeSource, stream: geminiStream, now: () => new Date(), pingMs: 15_000 };
+const REFUSALS_PER_MINUTE = 10;
+
+/**
+ * The loaded period (trades and rule texts) of a user, kept for a minute: every message of a conversation asks for the same
+ * period, and loading it is 50+ DynamoDB round trips at 5,000 trades. A trade saved in that minute shows up in the next one.
+ */
+const CONTEXT_TTL_MS = 60_000;
+const CONTEXT_CACHE_MAX = 50;
+const contextCache = new Map<string, { at: number; loaded: Awaited<ReturnType<TradeSource['loadTrades']>>; rules: Map<string, string> }>();
+
+/** Test hook. */
+export function __resetChatContextCache() {
+  contextCache.clear();
+}
+
+async function loadPeriod(deps: ChatDeps, userId: string, period: { from: string; to: string; accountId: string | null }) {
+  const key = `${userId}|${period.accountId ?? 'ALL'}|${period.from}|${period.to}`;
+  const now = deps.now().getTime();
+  const hit = contextCache.get(key);
+  if (hit && now - hit.at < CONTEXT_TTL_MS) return hit;
+  const [loaded, rules] = await Promise.all([deps.trades.loadTrades(userId, period), deps.trades.loadRuleTexts(userId)]);
+  const entry = { at: now, loaded, rules };
+  contextCache.delete(key);
+  contextCache.set(key, entry);
+  if (contextCache.size > CONTEXT_CACHE_MAX) contextCache.delete(contextCache.keys().next().value!);
+  return entry;
+}
+export const defaultChatDeps: ChatDeps = {
+  store: dynamoAiStore, trades: dynamoTradeSource, stream: geminiStream, now: () => new Date(), pingMs: 15_000,
+  refusalAllowed: async (userId) => (await checkRateLimit({ key: `chat-refused:${userId}`, limit: REFUSALS_PER_MINUTE, windowSeconds: 60 })).allowed,
+};
 
 const MAX_CONTENT = 2000;
 const TITLE_MAX = 60;
@@ -80,11 +113,19 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
     if (session.messageCount >= MAX_SESSION_MESSAGES) return fail(c, 422, 'SESSION_FULL', 'This chat has reached its message limit. Start a new chat.');
 
     const refused = isAdviceRequest(content);
+    if (refused && deps.refusalAllowed && !(await deps.refusalAllowed(userId))) {
+      return fail(c, 429, 'RATE_LIMITED', 'You are sending messages too fast. Wait a minute and try again.', { retryAfter: 60 });
+    }
     let remaining: number | null = null;
     if (!refused) {
       const q = await c.get('quota').consume('ai_chat');
       if (!q.ok) return quotaFail(c, 'ai_chat', q);
       remaining = q.remaining;
+    }
+    // Reserve the user's message and the reply in the session counter atomically: two tabs cannot both pass the cap.
+    if (!(await addMessages(deps.store, userId, sessionId, 2, MAX_SESSION_MESSAGES))) {
+      if (!refused) await c.get('quota').consume('ai_chat', -1).catch(() => undefined);
+      return fail(c, 422, 'SESSION_FULL', 'This chat has reached its message limit. Start a new chat.');
     }
 
     const userMsg: ChatMessage = { id: timeId(deps.now()), role: 'user', content, createdAt: deps.now().toISOString() };
@@ -93,6 +134,9 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
 
     const encoder = new TextEncoder();
     let closed = false;
+    // Aborted when the client goes away (Stop, closed tab), so the model call stops and is not paid for any further.
+    const upstream = new AbortController();
+    c.req.raw.signal.addEventListener('abort', () => upstream.abort(), { once: true });
     const body$ = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (s: string) => {
@@ -114,12 +158,12 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
           } else {
             const insight = session.insightId ? await getInsight(deps.store, userId, session.insightId) : null;
             const period = chatPeriod(insight, deps.now());
-            const [loaded, rules] = await Promise.all([deps.trades.loadTrades(userId, period), deps.trades.loadRuleTexts(userId)]);
+            const { loaded, rules } = await loadPeriod(deps, userId, period);
             truncated = loaded.truncated;
             const ctx = buildChatContext(content, loaded.trades, rules, insight, period, loaded.truncated);
             known = ctx.knownTradeIds;
             const turns: GeminiContent[] = [...prior.map<GeminiContent>((m) => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })), { role: 'user', parts: [{ text: content }] }];
-            for await (const chunk of deps.stream({ system: `${CHAT_SYSTEM}\n\n${ctx.text}`, contents: turns, temperature: 0.3, maxOutputTokens: 700 })) {
+            for await (const chunk of deps.stream({ system: `${CHAT_SYSTEM}\n\n${ctx.text}`, contents: turns, temperature: 0.3, maxOutputTokens: 700, signal: upstream.signal })) {
               if (chunk.type === 'text') {
                 answer += chunk.text;
                 send(sseFrame('token', { t: chunk.text }));
@@ -135,24 +179,30 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
           if (!answer) await c.get('quota').consume('ai_chat', -1).catch(() => undefined);
           send(sseFrame('error', { code: 'AI_UNAVAILABLE', message: answer ? 'The answer was cut off. Please ask again.' : 'The AI service is unavailable right now. You were not charged; try again shortly.' }));
         }
+        // A reply with no text (blocked or empty) is a failure: the unit is given back and the client is told.
+        if (!answer && !failed) {
+          failed = true;
+          await c.get('quota').consume('ai_chat', -1).catch(() => undefined);
+          send(sseFrame('error', { code: 'AI_UNAVAILABLE', message: 'The AI service could not answer that. You were not charged; try again or rephrase.' }));
+        }
         if (answer) {
           const assistant: ChatMessage = {
             id: timeId(deps.now()), role: 'assistant', content: answer, createdAt: deps.now().toISOString(), usage, disclaimer: DISCLAIMER,
             ...(model ? { model } : {}), tradeIds: citedTradeIds(answer, known),
           };
           await putMessage(deps.store, userId, sessionId, assistant).catch(() => undefined);
-          await putSession(deps.store, userId, {
-            ...session, updatedAt: deps.now().toISOString(), messageCount: session.messageCount + 2,
-            title: session.title || content.slice(0, TITLE_MAX),
-          }).catch(() => undefined);
+          await touchSession(deps.store, userId, sessionId, { updatedAt: deps.now().toISOString(), title: session.title || content.slice(0, TITLE_MAX) }).catch(() => undefined);
           if (!failed) send(sseFrame('done', { messageId: assistant.id, usage: { ...usage, remaining }, disclaimer: DISCLAIMER, tradeIds: assistant.tradeIds, ...(refused ? { refused: true } : {}), ...(truncated ? { truncated: true } : {}) }));
         }
+        // No reply was stored: only the user's message counts.
+        if (!answer) await addMessages(deps.store, userId, sessionId, -1).catch(() => undefined);
         clearInterval(ping);
         if (!closed) controller.close();
         closed = true;
       },
       cancel() {
         closed = true; // start() keeps running to persist what was generated; later sends are dropped
+        upstream.abort();
       },
     });
     return new Response(body$, { status: 200, headers: SSE_HEADERS });

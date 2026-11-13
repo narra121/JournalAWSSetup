@@ -1,7 +1,7 @@
 export const DEFAULT_USER_PREFERENCES = {
   darkMode: false,
   currency: 'USD',
-  timezone: 'UTC',
+  timeZone: 'UTC',
   notifications: {
     tradeReminders: true,
     weeklyReport: true,

@@ -4,10 +4,6 @@ import { DynamoDBDocumentClient, GetCommand, UpdateCommand, BatchWriteCommand } 
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('TRADES_TABLE', 'test-trades');
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const { handler } = await import('../app.ts');
 

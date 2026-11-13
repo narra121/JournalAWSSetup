@@ -115,7 +115,7 @@ describe('auth-refresh handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('UNAUTHORIZED');
-    expect(body.message).toContain('expired');
+    expect(body.message).toBe('Your session has ended. Please log in again.');
   });
 
   it('returns 400 when refresh token is malformed', async () => {
@@ -193,6 +193,6 @@ describe('auth-refresh handler', () => {
     const res = await handler(event, {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).errorCode).toBe('UNAUTHORIZED');
+    expect(JSON.parse(res.body).errorCode).toBe('VALIDATION_ERROR');
   });
 });

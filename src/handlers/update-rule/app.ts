@@ -1,10 +1,9 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 
@@ -19,9 +18,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!ruleId) {
     log.warn('missing ruleId');
@@ -49,22 +45,13 @@ export const handler: ApiHandler = async (event) => {
   data.rule = data.rule.trim();
 
   try {
-    // Verify rule exists and belongs to user
-    const existing = await ddb.send(new GetCommand({
-      TableName: RULES_TABLE,
-      Key: { userId, ruleId }
-    }));
-
-    if (!existing.Item) {
-      log.warn('rule not found', { ruleId });
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Rule not found');
-    }
-
     const now = new Date().toISOString();
 
     const result = await ddb.send(new UpdateCommand({
       TableName: RULES_TABLE,
       Key: { userId, ruleId },
+      // A rule deleted meanwhile must not be recreated as a stub by the update.
+      ConditionExpression: 'attribute_exists(ruleId)',
       UpdateExpression: 'SET #rule = :rule, #updatedAt = :updatedAt',
       ExpressionAttributeNames: {
         '#rule': 'rule',
@@ -81,6 +68,10 @@ export const handler: ApiHandler = async (event) => {
     
     return envelope({ statusCode: 200, data: { rule: result.Attributes } });
   } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      log.warn('rule not found', { ruleId });
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Rule not found');
+    }
     log.error('failed to update rule', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update rule');
   }

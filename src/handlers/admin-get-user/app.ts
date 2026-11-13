@@ -7,6 +7,8 @@ import { QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { resolveCognitoUsername } from '../../shared/cognitoUser';
+import { loadFullRecords } from '../../shared/tradeRecords';
 
 const cognito = new CognitoIdentityProviderClient({});
 
@@ -18,6 +20,46 @@ const RULES_TABLE = process.env.RULES_TABLE!;
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE!;
 
+const RECENT_TRADES = 20;
+
+/** The newest trades by open date (trades-by-date-gsi), without soft-deleted ones. Reads twice the wanted rows to leave room for deleted ones. */
+async function recentTrades(userId: string): Promise<any[]> {
+  const res = await ddb.send(
+    new QueryCommand({
+      TableName: TRADES_TABLE,
+      IndexName: 'trades-by-date-gsi',
+      KeyConditionExpression: 'userId = :u',
+      ExpressionAttributeValues: { ':u': userId },
+      ScanIndexForward: false,
+      Limit: RECENT_TRADES * 2,
+    }),
+  );
+  const rows = res.Items ?? [];
+  const full = await loadFullRecords(userId, rows);
+  return rows.map((r) => full.get(r.tradeId)).filter((t) => t && !t.deletedAt).slice(0, RECENT_TRADES);
+}
+
+/** All live trades of the user. Counting reads the whole partition (paid per item), so only this single-user view does it. */
+async function countTrades(userId: string): Promise<number> {
+  let count = 0;
+  let lastKey: Record<string, any> | undefined;
+  do {
+    const res = await ddb.send(
+      new QueryCommand({
+        TableName: TRADES_TABLE,
+        KeyConditionExpression: 'userId = :u',
+        FilterExpression: 'attribute_not_exists(deletedAt)',
+        ExpressionAttributeValues: { ':u': userId },
+        Select: 'COUNT',
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    count += res.Count ?? 0;
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return count;
+}
+
 export const handler: ApiHandler = async (event) => {
   const log = makeLogger({ requestId: event.requestContext?.requestId });
 
@@ -27,23 +69,13 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'userId path parameter is required');
     }
 
-    const [cognitoUser, tradesResult, accountsResult, goalsResult, rulesResult, subscriptionResult, preferencesResult] =
+    const [cognitoUser, recent, tradeCount, accountsResult, goalsResult, rulesResult, subscriptionResult, preferencesResult] =
       await Promise.all([
-        cognito.send(
-          new AdminGetUserCommand({
-            UserPoolId: USER_POOL_ID,
-            Username: userId,
-          }),
+        resolveCognitoUsername(USER_POOL_ID, userId).then((Username) =>
+          cognito.send(new AdminGetUserCommand({ UserPoolId: USER_POOL_ID, Username })),
         ),
-        ddb.send(
-          new QueryCommand({
-            TableName: TRADES_TABLE,
-            KeyConditionExpression: 'userId = :u',
-            ExpressionAttributeValues: { ':u': userId },
-            Limit: 20,
-            ScanIndexForward: false,
-          }),
-        ),
+        recentTrades(userId),
+        countTrades(userId),
         ddb.send(
           new QueryCommand({
             TableName: ACCOUNTS_TABLE,
@@ -99,8 +131,8 @@ export const handler: ApiHandler = async (event) => {
       enabled: cognitoUser.Enabled ?? null,
       hasGoogle,
       accounts: accountsResult.Items || [],
-      recentTrades: tradesResult.Items || [],
-      tradeCount: tradesResult.Count ?? 0,
+      recentTrades: recent,
+      tradeCount,
       goals: goalsResult.Items || [],
       rules: rulesResult.Items || [],
       subscription: subscriptionResult.Item || null,

@@ -1,6 +1,7 @@
 import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, ConfirmSignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { cognitoFailure } from '../../shared/cognitoErrors';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
@@ -14,5 +15,5 @@ export const handler: ApiHandler = async (event) => {
     await client.send(new ConfirmSignUpCommand({ ClientId: CLIENT_ID, Username: email, ConfirmationCode: code }));
 
     return envelope({ statusCode: 200, data: { confirmed: true }, message: 'Email verified successfully' });
-  } catch (e: any) { console.error(e); return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e.message || 'Confirm failed'); }
+  } catch (e: any) { console.error(e); return cognitoFailure(e, 'confirm-signup'); }
 };

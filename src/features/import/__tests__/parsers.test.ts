@@ -150,3 +150,58 @@ describe('unknown and generic files', () => {
     expect(second.fileHash).toBe(first.fileHash);
   });
 });
+
+describe('generic csv columns (BE-051, BE-052, BE-106)', () => {
+  const csv = (header: string, ...rows: string[]) => parseImport({ source: 'generic_csv', fileName: 'g.csv', contentBase64: text([header, ...rows].join('\n') + '\n'), utcOffsetMinutes: 0 });
+  const head = 'Symbol,Side,Qty,Entry Price,Exit Price,Open Time,Close Time';
+
+  it('a Net P&L column is not charged the fees a second time', () => {
+    const r = csv(`${head},Net P&L,Charges`, 'EURUSD,Buy,1,1.1,1.2,2026-04-07 09:00,2026-04-07 10:00,950,50');
+    expect(r.trades[0]).toMatchObject({ grossPnl: 1000, fees: 50, pnl: 950 });
+  });
+
+  it('a gross profit column still has the fees taken off', () => {
+    const r = csv(`${head},Profit,Charges`, 'EURUSD,Buy,1,1.1,1.2,2026-04-07 09:00,2026-04-07 10:00,1000,50');
+    expect(r.trades[0]).toMatchObject({ grossPnl: 1000, fees: 50, pnl: 950 });
+  });
+
+  it('a Net P&L column without a fees column is the P&L as it is', () => {
+    const r = csv(`${head},Net P&L`, 'EURUSD,Buy,1,1.1,1.2,2026-04-07 09:00,2026-04-07 10:00,950');
+    expect(r.trades[0]).toMatchObject({ pnl: 950, fees: 0 });
+  });
+
+  it('a signed quantity (SELL -100) is its size, so a winning sell stays a win', () => {
+    const r = csv(head, 'XYZ,Sell,-100,50,40,2026-04-07 09:00,2026-04-07 10:00');
+    expect(r.trades[0]).toMatchObject({ side: 'SELL', quantity: 100, pnl: 1000, outcome: 'TP' });
+  });
+
+  it('a zero quantity is skipped', () => {
+    const r = csv(head, 'XYZ,Sell,0,50,40,2026-04-07 09:00,2026-04-07 10:00');
+    expect(r.trades).toHaveLength(0);
+    expect(r.skipped).toBe(1);
+  });
+
+  it('negative quantities in a fills file open and close lots like positive ones', () => {
+    const fills = 'Symbol,Side,Qty,Price,Time\nABC,Buy,10,100,2026-04-07 09:00\nABC,Sell,-10,110,2026-04-07 10:00';
+    const r = parseImport({ source: 'generic_csv', fileName: 'f.csv', contentBase64: text(fills + '\n'), utcOffsetMinutes: 0 });
+    expect(r.trades).toHaveLength(1);
+    expect(r.trades[0]).toMatchObject({ quantity: 10, pnl: 100 });
+  });
+
+  it('a position closed in two rows with the same open, entry and size keeps both rows when there is no id column', () => {
+    const r = csv(head, 'XYZ,Buy,50,100,110,2026-04-07 09:00,2026-04-07 10:00', 'XYZ,Buy,50,100,120,2026-04-07 09:00,2026-04-07 11:00');
+    expect(r.trades).toHaveLength(2);
+    expect(r.trades.map((t) => t.pnl).sort((a, b) => a - b)).toEqual([500, 1000]);
+    expect(r.skipped).toBe(0);
+  });
+
+  it('identical rows are kept (counted) and get the same ids again when the file is re-parsed', () => {
+    const row = 'XYZ,Buy,50,100,110,2026-04-07 09:00,2026-04-07 10:00';
+    const a = csv(head, row, row);
+    const b = csv(head, row, row);
+    expect(a.trades).toHaveLength(2);
+    expect(a.trades.map((t) => t.externalId)).toEqual(b.trades.map((t) => t.externalId));
+    expect(new Set(a.trades.map((t) => t.externalId)).size).toBe(2);
+  });
+});
+

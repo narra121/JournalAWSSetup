@@ -11,7 +11,8 @@ vi.stubEnv('ALLOWED_ORIGINS', 'https://tradequt.com,http://localhost:8080');
 
 vi.mock('../../../shared/stripe-config', async (orig) => ({
   ...(await orig<typeof import('../../../shared/stripe-config')>()),
-  allProPriceIds: async () => ['price_123', 'price_pro_monthly', 'price_existing'],
+  proPriceIdsFor: async (currency: string) =>
+    currency === 'INR' ? ['price_inr_month', 'price_inr_year'] : ['price_123', 'price_pro_monthly', 'price_existing'],
 }));
 
 // Mock SSM
@@ -28,13 +29,15 @@ const mockSessionsCreate = vi.fn().mockResolvedValue({
 
 vi.mock('stripe', () => {
   return {
-    default: vi.fn().mockImplementation(() => ({
-      checkout: {
-        sessions: {
-          create: mockSessionsCreate,
+    default: vi.fn().mockImplementation(function () {
+      return {
+        checkout: {
+          sessions: {
+            create: mockSessionsCreate,
+          },
         },
-      },
-    })),
+      };
+    }),
   };
 });
 
@@ -212,6 +215,38 @@ describe('create-stripe-checkout handler', () => {
     expect(putInput.UpdateExpression).toContain('if_not_exists(#status');
     expect(putInput.UpdateExpression).not.toContain('trialEnd');
     expect(putInput.ConditionExpression).toContain('attribute_not_exists');
+  });
+
+  describe('billing currency (BE-018)', () => {
+    it('rejects the INR price for a viewer outside India, so the cheaper price cannot be picked by editing planId', async () => {
+      const res = (await handler(makeEvent({ planId: 'price_inr_month' }))) as any;
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('Unknown planId');
+      expect(mockSessionsCreate).not.toHaveBeenCalled();
+    });
+
+    it('accepts the INR price for a viewer in India and rejects the USD price', async () => {
+      const headers = { authorization: `Bearer ${makeJwt('user-1')}`, origin: 'https://tradequt.com', 'cloudfront-viewer-country': 'IN' };
+      expect(((await handler(makeEvent({ planId: 'price_inr_month' }, { headers } as any))) as any).statusCode).toBe(200);
+      expect(((await handler(makeEvent({ planId: 'price_123' }, { headers } as any))) as any).statusCode).toBe(400);
+    });
+
+    it('keeps the currency already stored for the customer, whatever the viewer country', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'cancelled', currency: 'INR', stripeCustomerId: 'cus_1' } });
+      expect(((await handler(makeEvent({ planId: 'price_123' }))) as any).statusCode).toBe(400);
+      expect(((await handler(makeEvent({ planId: 'price_inr_year' }))) as any).statusCode).toBe(200);
+    });
+
+    it('reuses the stored Stripe customer instead of creating a new one per checkout', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'cancelled', currency: 'USD', stripeCustomerId: 'cus_1' } });
+      await handler(makeEvent({ planId: 'price_123' }));
+      expect(mockSessionsCreate.mock.calls[0][0].customer).toBe('cus_1');
+    });
+
+    it('sends no customer for a user without a Stripe customer', async () => {
+      await handler(makeEvent({ planId: 'price_123' }));
+      expect(mockSessionsCreate.mock.calls[0][0].customer).toBeUndefined();
+    });
   });
 
   it('rejects a price id that is not a current Pro price', async () => {

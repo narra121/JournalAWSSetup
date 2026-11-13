@@ -1,5 +1,6 @@
 import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext } from '../types';
 import { calcPnL } from '../../utils/pnl';
+import { dict } from '../dict';
 
 type DistMap = Record<string, { count: number; wins: number; pnl: number }>;
 
@@ -24,10 +25,10 @@ function mergeCountDist(target: Record<string, number>, source: Record<string, n
  */
 export class DistributionsProcessor implements MetricProcessor {
   readonly name = 'distributions';
-  private symbolDist: DistMap = {};
-  private strategyDist: DistMap = {};
-  private sessionDist: DistMap = {};
-  private outcomeDist: Record<string, number> = {};
+  private symbolDist: DistMap = dict();
+  private strategyDist: DistMap = dict();
+  private sessionDist: DistMap = dict();
+  private outcomeDist: Record<string, number> = dict();
 
   processTrade(trade: TradeRecord): void {
     const pnl = calcPnL(trade) ?? 0;
@@ -69,19 +70,19 @@ export class DistributionsProcessor implements MetricProcessor {
   }
 
   reset(): void {
-    this.symbolDist = {};
-    this.strategyDist = {};
-    this.sessionDist = {};
-    this.outcomeDist = {};
+    this.symbolDist = dict();
+    this.strategyDist = dict();
+    this.sessionDist = dict();
+    this.outcomeDist = dict();
   }
 }
 
 export class DistributionsAggregator implements AggregationProcessor {
   readonly name = 'distributions';
-  private symbolDist: DistMap = {};
-  private strategyDist: DistMap = {};
-  private sessionDist: DistMap = {};
-  private outcomeDist: Record<string, number> = {};
+  private symbolDist: DistMap = dict();
+  private strategyDist: DistMap = dict();
+  private sessionDist: DistMap = dict();
+  private outcomeDist: Record<string, number> = dict();
 
   merge(record: Record<string, any>): void {
     mergeDist(this.symbolDist, record.symbolDistribution || {});
@@ -100,9 +101,9 @@ export class DistributionsAggregator implements AggregationProcessor {
   }
 
   reset(): void {
-    this.symbolDist = {};
-    this.strategyDist = {};
-    this.sessionDist = {};
-    this.outcomeDist = {};
+    this.symbolDist = dict();
+    this.strategyDist = dict();
+    this.sessionDist = dict();
+    this.outcomeDist = dict();
   }
 }

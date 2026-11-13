@@ -49,6 +49,7 @@ The stack outputs and `aws cloudformation describe-stack-resources` list the phy
 | `ApiCloudFront5xx-<stage>` | > 5 % 5xx for 5 min | web log group, then `aws lambda-web get-web-function-endpoint` state |
 | `StripeWebhookFailed-<stage>` | log line `stripe_webhook_failed` | Stripe dashboard → webhooks → failed deliveries are retried automatically; fix and resend |
 | `GeminiErrors-<stage>` | ≥ 5 `gemini_error` in 5 min | Gemini status, quota, key in SSM |
+| `AdminLoginFailed-<stage>` | ≥ 10 `Admin login failed: wrong password` or `Admin login blocked: global attempt limit reached` in 5 min | web log group for the source IPs (`admin-login:<ip>` rows in the RateLimit table); the global bucket `admin-login:global` (50/hour) locks the real admin out for the rest of the hour while it is hit |
 
 ## Incidents
 
@@ -63,7 +64,8 @@ The stack outputs and `aws cloudformation describe-stack-resources` list the phy
 - **E-mails not arriving:** SES sandbox / unverified identity (ACCESS-NEEDED #10); failures are logged as
   `lifecycle_email_failed` / `payment_failed_email_error`.
 - **Abuse or traffic spike:** the endpoint caps requests (`RateLimit` 100/s dev, 300/s prod) and environments (2 / 10); raise in
-  the template. A CloudFront WAF rate-based rule (2,000 requests / 5 min / IP, about $6/month) is the next step when abuse is
+  the template. Each signed-in user is also held to 600 requests per 60 s (`user:<sub>` items in the RateLimit table, answer
+  429 `RATE_LIMITED`; `src/app/http/rate-limit.ts`), so one account cannot use the whole endpoint budget. A CloudFront WAF rate-based rule (2,000 requests / 5 min / IP, about $6/month) is the next step when abuse is
   seen; it is deliberately not enabled today.
 
 ## Secrets and keys

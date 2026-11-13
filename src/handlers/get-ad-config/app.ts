@@ -34,7 +34,6 @@ async function getAdConfig(): Promise<any> {
  * Paid/trial users get showAds: false; free-tier users get full ad placements.
  */
 export const handler: ApiHandler = async (event) => {
-  const { headers, multiValueHeaders, ...safeEvent } = event as any;
   const log = makeLogger({ requestId: (event.requestContext as any)?.requestId });
 
   try {

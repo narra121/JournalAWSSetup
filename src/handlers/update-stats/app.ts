@@ -5,7 +5,8 @@ import { ddb } from '../../shared/dynamo';
 import { BatchGetCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
 import { calcPnL } from '../../shared/utils/pnl';
-import { dayOf, dayRangeUtc, getUserTimeZone } from '../../shared/timezone';
+import { dayOf, dayQueryRange, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
+import { markStatsDirty } from '../../shared/statsDirty';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
@@ -22,14 +23,20 @@ const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
  */
 async function queryTradesForDay(userId: string, accountId: string, date: string, timeZone?: string | null): Promise<any[]> {
   // The day is a calendar day in the user's zone, i.e. an exact UTC range of openDate values.
-  const { start, end } = dayRangeUtc(date, timeZone);
-  const gsiResult = await ddb.send(new QueryCommand({
-    TableName: TRADES_TABLE,
-    IndexName: 'trades-by-date-gsi',
-    KeyConditionExpression: 'userId = :u AND openDate BETWEEN :start AND :end',
-    ExpressionAttributeValues: { ':u': userId, ':start': start, ':end': end },
-  }));
-  const gsiItems = gsiResult.Items || [];
+  const { start, end } = dayQueryRange(date, timeZone);
+  const gsiItems: any[] = [];
+  let lastKey: Record<string, any> | undefined;
+  do {
+    const gsiResult = await ddb.send(new QueryCommand({
+      TableName: TRADES_TABLE,
+      IndexName: 'trades-by-date-gsi',
+      KeyConditionExpression: 'userId = :u AND openDate BETWEEN :start AND :end',
+      ExpressionAttributeValues: { ':u': userId, ':start': start, ':end': end },
+      ExclusiveStartKey: lastKey,
+    }));
+    gsiItems.push(...(gsiResult.Items || []));
+    lastKey = gsiResult.LastEvaluatedKey;
+  } while (lastKey);
   if (gsiItems.length === 0) return [];
 
   const keys = gsiItems.map((it: any) => ({ userId: it.userId, tradeId: it.tradeId }));
@@ -60,12 +67,9 @@ async function queryTradesForDay(userId: string, accountId: string, date: string
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a PnL delta to an account's balance using atomic ADD.
- * This is O(1) — no scanning, no reading all trades.
- *
- * For safety, uses ADD which is idempotent in the sense that if the stream
- * event is retried, the same delta is applied again. The scheduled
- * rebuild-stats-job corrects any drift periodically.
+ * Apply a PnL delta to an account's balance using atomic ADD (O(1), no trade scan).
+ * ADD is not idempotent: callers pass only deltas of records Lambda will not redeliver. A failed ADD is logged and
+ * left for rebuild-stats-job to correct.
  */
 async function adjustAccountBalance(userId: string, accountId: string, pnlDelta: number): Promise<void> {
   if (!accountId || accountId === '-1' || String(accountId) === '-1') return;
@@ -96,42 +100,35 @@ async function adjustAccountBalance(userId: string, accountId: string, pnlDelta:
 // Sync trade symbols into SavedOptions
 // ---------------------------------------------------------------------------
 
+/** A user's saved symbol list stops growing here; the symbols of trades are still stored on the trades. */
+const MAX_SAVED_SYMBOLS = 500;
+
 /**
- * Merge newly-seen symbols into the user's SavedOptions record.
- * Read-modify-write is acceptable here because stream events are low-frequency
- * and the periodic rebuild-stats-job can correct any drift.
+ * Append newly-seen symbols to the user's SavedOptions record, one conditional append per symbol: it only happens while
+ * the symbol is not in the list and the list is under the cap, so a concurrent edit of the list or a second stream
+ * invocation can neither lose a symbol nor add it twice.
  */
 async function syncSymbolsToSavedOptions(userId: string, newSymbols: Set<string>): Promise<void> {
-  if (newSymbols.size === 0) return;
-
-  try {
-    const existing = await ddb.send(new GetCommand({
-      TableName: SAVED_OPTIONS_TABLE,
-      Key: { userId },
-      ProjectionExpression: 'symbols',
-    }));
-
-    const currentSymbols: string[] = existing.Item?.symbols || [];
-    const currentSet = new Set(currentSymbols);
-    const toAdd = [...newSymbols].filter(s => !currentSet.has(s));
-
-    if (toAdd.length === 0) return;
-
-    const merged = [...currentSymbols, ...toAdd];
-
-    await ddb.send(new UpdateCommand({
-      TableName: SAVED_OPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression: 'SET #symbols = :symbols, #updatedAt = :now',
-      ExpressionAttributeNames: { '#symbols': 'symbols', '#updatedAt': 'updatedAt' },
-      ExpressionAttributeValues: {
-        ':symbols': merged,
-        ':now': new Date().toISOString(),
-      },
-    }));
-  } catch (e) {
-    // Non-critical — don't fail the stream processing for a symbol sync issue
-    console.error(`Failed to sync symbols for user ${userId}`, e);
+  for (const symbol of newSymbols) {
+    try {
+      await ddb.send(new UpdateCommand({
+        TableName: SAVED_OPTIONS_TABLE,
+        Key: { userId },
+        UpdateExpression: 'SET #symbols = list_append(if_not_exists(#symbols, :empty), :one), #updatedAt = :now',
+        ConditionExpression: 'attribute_not_exists(#symbols) OR (NOT contains(#symbols, :symbol) AND size(#symbols) < :max)',
+        ExpressionAttributeNames: { '#symbols': 'symbols', '#updatedAt': 'updatedAt' },
+        ExpressionAttributeValues: {
+          ':empty': [],
+          ':one': [symbol],
+          ':symbol': symbol,
+          ':max': MAX_SAVED_SYMBOLS,
+          ':now': new Date().toISOString(),
+        },
+      }));
+    } catch (e: any) {
+      // Already saved (or the list is full): nothing to do. Anything else is non-critical: don't fail the stream batch.
+      if (e?.name !== 'ConditionalCheckFailedException') console.error(`Failed to sync symbol for user ${userId}`, e);
+    }
   }
 }
 
@@ -146,7 +143,8 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     // 1. Detect affected (userId, accountId, date) tuples from stream records
     //    and compute per-account PnL deltas for incremental balance updates
     const affectedDays = new Map<string, Set<string>>(); // "userId#accountId" → Set<date>
-    const balanceDeltas = new Map<string, number>(); // "userId#accountId" → pnlDelta
+    const balanceEntries: { index: number; key: string; delta: number }[] = []; // key = "userId#accountId"
+    const indexByEventId = new Map<string, number>(); // SequenceNumber → position in the batch
     const symbolsByUser = new Map<string, Set<string>>(); // userId → Set<symbol>
     const purgedTrades: { userId: string; tradeId: string }[] = []; // soft-deleted trades removed by TTL
     const tupleToEventIds = new Map<string, Set<string>>(); // "userId#accountId#date" → Set<eventID>
@@ -156,8 +154,9 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       return zones.get(userId) ?? null;
     };
 
-    for (const record of event.Records) {
+    for (const [index, record] of event.Records.entries()) {
       if (!record.dynamodb) continue;
+      if (record.dynamodb.SequenceNumber) indexByEventId.set(record.dynamodb.SequenceNumber, index);
 
       const newImage = record.dynamodb.NewImage
         ? unmarshall(record.dynamodb.NewImage as Record<string, any>)
@@ -198,7 +197,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       const tz = await zoneOf(userId);
       if (isValidAcct(newAcct)) {
         const date = dayOf(newImage!.openDate, tz);
-        if (date) {
+        if (date && isCalendarDay(date)) {
           const key = `${userId}#${newAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
           affectedDays.get(key)!.add(date);
@@ -209,7 +208,7 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
       if (isValidAcct(oldAcct)) {
         const date = dayOf(oldImage!.openDate, tz);
-        if (date) {
+        if (date && isCalendarDay(date)) {
           const key = `${userId}#${oldAcct}`;
           if (!affectedDays.has(key)) affectedDays.set(key, new Set());
           affectedDays.get(key)!.add(date);
@@ -223,14 +222,12 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       if (effectiveEvent === 'INSERT') {
         // New (or restored) trade: add its PnL
         if (isValidAcct(liveNewAcct)) {
-          const key = `${userId}#${liveNewAcct}`;
-          balanceDeltas.set(key, (balanceDeltas.get(key) || 0) + newPnl);
+          balanceEntries.push({ index, key: `${userId}#${liveNewAcct}`, delta: newPnl });
         }
       } else if (effectiveEvent === 'REMOVE') {
         // Deleted (or soft-deleted) trade: subtract its PnL
         if (isValidAcct(liveOldAcct)) {
-          const key = `${userId}#${liveOldAcct}`;
-          balanceDeltas.set(key, (balanceDeltas.get(key) || 0) - oldPnl);
+          balanceEntries.push({ index, key: `${userId}#${liveOldAcct}`, delta: -oldPnl });
         }
       } else if (effectiveEvent === 'MODIFY') {
         // Updated trade: handle account change and/or PnL change
@@ -238,22 +235,23 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
           // Same account — apply PnL diff
           const delta = newPnl - oldPnl;
           if (delta !== 0) {
-            const key = `${userId}#${newAcct}`;
-            balanceDeltas.set(key, (balanceDeltas.get(key) || 0) + delta);
+            balanceEntries.push({ index, key: `${userId}#${newAcct}`, delta });
           }
         } else {
           // Account changed — subtract from old, add to new
           if (isValidAcct(oldAcct)) {
-            const key = `${userId}#${oldAcct}`;
-            balanceDeltas.set(key, (balanceDeltas.get(key) || 0) - oldPnl);
+            balanceEntries.push({ index, key: `${userId}#${oldAcct}`, delta: -oldPnl });
           }
           if (isValidAcct(newAcct)) {
-            const key = `${userId}#${newAcct}`;
-            balanceDeltas.set(key, (balanceDeltas.get(key) || 0) + newPnl);
+            balanceEntries.push({ index, key: `${userId}#${newAcct}`, delta: newPnl });
           }
         }
       }
     }
+
+    // Flag the users for the next rebuild-stats-job run; best effort, the affected days are rebuilt right below.
+    await Promise.all([...new Set([...affectedDays.keys()].map((k) => k.split('#', 1)[0]))].map((userId) =>
+      markStatsDirty(ddb, DAILY_STATS_TABLE, userId).catch((e) => console.error(`Failed to flag ${userId} for rebuild`, e))));
 
     // 2. Rebuild only the affected daily records in DailyStatsTable
     const tupleFailures: string[] = [];
@@ -300,7 +298,16 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       }
     }
 
-    // 3. Apply incremental balance deltas (O(1) per account, no full scan)
+    // 3. Apply incremental balance deltas (O(1) per account, no full scan). Lambda redelivers every record from the
+    //    first reported failure onward, so only records before it are final; the rest are applied by the redelivery.
+    const firstFailedIndex = Math.min(
+      Infinity,
+      ...failures.map(f => indexByEventId.get(f.itemIdentifier) ?? Infinity),
+    );
+    const balanceDeltas = new Map<string, number>();
+    for (const { index, key, delta } of balanceEntries) {
+      if (index < firstFailedIndex) balanceDeltas.set(key, (balanceDeltas.get(key) || 0) + delta);
+    }
     for (const [userAccKey, delta] of balanceDeltas) {
       const [userId, accountId] = userAccKey.split('#', 2);
       await adjustAccountBalance(userId, accountId, delta);

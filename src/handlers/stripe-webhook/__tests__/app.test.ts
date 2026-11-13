@@ -28,9 +28,11 @@ const mockConstructEvent = vi.fn();
 const mockSubscriptionsRetrieve = vi.fn();
 const mockSubscriptionsUpdate = vi.fn();
 
+const StripeCtor = vi.hoisted(() => vi.fn());
+
 vi.mock('stripe', () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
+  StripeCtor.mockImplementation(function () {
+    return {
       webhooks: {
         constructEvent: mockConstructEvent,
       },
@@ -38,11 +40,13 @@ vi.mock('stripe', () => {
         retrieve: mockSubscriptionsRetrieve,
         update: mockSubscriptionsUpdate,
       },
-    })),
-  };
+    };
+  });
+  return { default: StripeCtor };
 });
 
 const { handler } = await import('../app.ts');
+const { clearParamCache } = await import('../../../shared/stripe-config');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -87,6 +91,7 @@ function makeEvent(body: string, overrides: Partial<APIGatewayProxyEvent> = {}):
 // ─── Tests ──────────────────────────────────────────────────────
 
 beforeEach(() => {
+  clearParamCache();
   ddbMock.reset();
   ssmMock.reset();
   mockConstructEvent.mockReset();
@@ -113,7 +118,7 @@ describe('stripe-webhook handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('MISSING_SIGNATURE');
+    expect(body.errorCode).toBe('MISSING_SIGNATURE');
   });
 
   it('returns 400 when signature verification fails', async () => {
@@ -125,7 +130,7 @@ describe('stripe-webhook handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('INVALID_SIGNATURE');
+    expect(body.errorCode).toBe('INVALID_SIGNATURE');
   });
 
   // ── checkout.session.completed ─────────────────────────────
@@ -142,6 +147,7 @@ describe('stripe-webhook handler', () => {
 
     mockSubscriptionsRetrieve.mockResolvedValue({
       id: 'sub_stripe_789',
+      status: 'active',
       metadata: { userId: 'user-1' },
       items: { data: [{ price: { id: 'price_pro_monthly' } }] },
       current_period_start: 1700000000,
@@ -152,6 +158,7 @@ describe('stripe-webhook handler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
     expect(body.data.message).toBe('Webhook processed successfully');
 
     // Verify DDB UpdateCommand was called
@@ -297,6 +304,7 @@ describe('stripe-webhook handler', () => {
     };
     const webhookEvent = makeWebhookEvent('customer.subscription.updated', subscriptionData);
     mockConstructEvent.mockReturnValue(webhookEvent);
+    mockSubscriptionsRetrieve.mockResolvedValue({ ...subscriptionData, status: 'active' });
 
     const res = await handler(makeEvent('{"raw":"body"}')) as any;
 
@@ -365,6 +373,7 @@ describe('stripe-webhook handler', () => {
 
     mockSubscriptionsRetrieve.mockResolvedValue({
       id: 'sub_b64_789',
+      status: 'active',
       metadata: { userId: 'user-b64' },
       items: { data: [{ price: { id: 'price_pro_monthly' } }] },
       current_period_start: 1700000000,
@@ -409,7 +418,7 @@ describe('stripe-webhook handler', () => {
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('WEBHOOK_PROCESSING_FAILED');
+    expect(body.errorCode).toBe('WEBHOOK_PROCESSING_FAILED');
   });
 
   // ── Status mapping, ordering and replay protection ─────────
@@ -431,17 +440,19 @@ describe('stripe-webhook handler', () => {
     ['active', 'active'],
     ['trialing', 'active'],
     ['past_due', 'past_due'],
-    ['unpaid', 'past_due'],
+    ['unpaid', 'unpaid'],
     ['canceled', 'cancelled'],
     ['incomplete_expired', 'cancelled'],
   ])('maps Stripe status %s to %s', async (stripeStatus, expected) => {
     mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.updated', subscription({ status: stripeStatus })));
+    mockSubscriptionsRetrieve.mockResolvedValue(subscription({ status: stripeStatus }));
     await handler(makeEvent('{}'));
     expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues![':status']).toBe(expected);
   });
 
   it('handles customer.subscription.created like an update', async () => {
     mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.created', subscription()));
+    mockSubscriptionsRetrieve.mockResolvedValue(subscription());
     const res = (await handler(makeEvent('{}'))) as any;
     expect(res.statusCode).toBe(200);
     const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
@@ -450,9 +461,9 @@ describe('stripe-webhook handler', () => {
   });
 
   it('writes #status once even when the subscription is paused and cancelling (single SET)', async () => {
-    mockConstructEvent.mockReturnValue(
-      makeWebhookEvent('customer.subscription.updated', subscription({ pause_collection: { behavior: 'void' }, cancel_at_period_end: true })),
-    );
+    const paused = subscription({ pause_collection: { behavior: 'void' }, cancel_at_period_end: true });
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.updated', paused));
+    mockSubscriptionsRetrieve.mockResolvedValue(paused);
     await handler(makeEvent('{}'));
     const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression!.match(/#status = /g)).toHaveLength(1);
@@ -475,6 +486,157 @@ describe('stripe-webhook handler', () => {
     mockSubscriptionsRetrieve.mockResolvedValue(subscription());
     const res = (await handler(makeEvent('{}'))) as any;
     expect(res.statusCode).toBe(200);
+  });
+
+  // ── Review fixes: BE-001, BE-015, BE-016, BE-017, BE-024, BE-074, BE-075 ──
+
+  const lastUpdate = () => ddbMock.commandCalls(UpdateCommand).at(-1)!.args[0].input;
+
+  describe('other-subscription events (BE-001)', () => {
+    it.each([
+      ['customer.subscription.updated', () => makeWebhookEvent('customer.subscription.updated', subscription({ id: 'sub_old' }))],
+      ['customer.subscription.deleted', () => makeWebhookEvent('customer.subscription.deleted', subscription({ id: 'sub_old' }))],
+      ['invoice.paid', () => makeWebhookEvent('invoice.paid', { id: 'in_1', subscription: 'sub_old' })],
+      ['invoice.payment_failed', () => makeWebhookEvent('invoice.payment_failed', { id: 'in_1', subscription: 'sub_old' })],
+    ])('%s applies only when the stored subscription id matches, none is stored, or the row is cancelled', async (_name, build) => {
+      mockConstructEvent.mockReturnValue(build());
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ id: 'sub_old' }));
+      await handler(makeEvent('{}'));
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(input.ConditionExpression).toContain(
+        '(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :eventSubId OR #rowStatus = :cancelled)',
+      );
+      expect(input.ExpressionAttributeValues).toMatchObject({ ':eventSubId': 'sub_old', ':cancelled': 'cancelled' });
+      expect(input.ExpressionAttributeNames).toMatchObject({ '#rowStatus': 'status' });
+    });
+
+    it('acknowledges (200), changes nothing and sends no mail when the row holds another subscription', async () => {
+      const err = Object.assign(new Error('cond'), { name: 'ConditionalCheckFailedException' });
+      ddbMock.on(UpdateCommand).rejects(err);
+      getUserEmailMock.mockResolvedValue('u@example.com');
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('invoice.payment_failed', { id: 'in_1', subscription: 'sub_old' }));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ id: 'sub_old' }));
+      const res = (await handler(makeEvent('{}'))) as any;
+      expect(res.statusCode).toBe(200);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('checkout.session.completed replaces the stored subscription without the id guard', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('checkout.session.completed', { metadata: { userId: 'user-1' }, subscription: 'sub_2', customer: 'cus_1' }));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ id: 'sub_2' }));
+      await handler(makeEvent('{}'));
+      const input = lastUpdate();
+      expect(input.ConditionExpression).not.toContain('eventSubId');
+      expect(input.ExpressionAttributeValues![':subId']).toBe('sub_2');
+    });
+  });
+
+  describe('deleted users (BE-024)', () => {
+    it.each([
+      ['customer.subscription.updated', () => makeWebhookEvent('customer.subscription.updated', subscription())],
+      ['customer.subscription.deleted', () => makeWebhookEvent('customer.subscription.deleted', subscription())],
+      ['invoice.paid', () => makeWebhookEvent('invoice.paid', { id: 'in_1', subscription: 'sub_1' })],
+      ['invoice.payment_failed', () => makeWebhookEvent('invoice.payment_failed', { id: 'in_1', subscription: 'sub_1' })],
+    ])('%s needs an existing row so it cannot recreate a purged user', async (_name, build) => {
+      mockConstructEvent.mockReturnValue(build());
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+      await handler(makeEvent('{}'));
+      expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ConditionExpression).toContain('attribute_exists(userId)');
+    });
+
+    it('checkout.session.completed may create the row', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('checkout.session.completed', { metadata: { userId: 'user-1' }, subscription: 'sub_1', customer: 'cus_1' }));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+      await handler(makeEvent('{}'));
+      expect(lastUpdate().ConditionExpression).not.toContain('attribute_exists(userId)');
+    });
+
+    it('the payment-failed mail marker never creates a row', async () => {
+      getUserEmailMock.mockResolvedValue('u@example.com');
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('invoice.payment_failed', { id: 'in_1', subscription: 'sub_1' }));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+      await handler(makeEvent('{}'));
+      const marker = ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input).find((i) => String(i.UpdateExpression).includes('paymentFailedEmailOn'));
+      expect(marker?.ConditionExpression).toContain('attribute_exists(userId)');
+    });
+  });
+
+  describe('admin grant markers (BE-015)', () => {
+    it('customer.subscription.updated clears source and periodEnd', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.updated', subscription()));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+      await handler(makeEvent('{}'));
+      const input = lastUpdate();
+      expect(input.UpdateExpression).toMatch(/REMOVE #src, periodEnd$/);
+      expect(input.ExpressionAttributeNames).toMatchObject({ '#src': 'source' });
+    });
+
+    it('invoice.paid clears source and periodEnd', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('invoice.paid', { id: 'in_1', subscription: 'sub_1' }));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription());
+      await handler(makeEvent('{}'));
+      const input = lastUpdate();
+      expect(input.UpdateExpression).toMatch(/REMOVE #src, periodEnd$/);
+      expect(input.ExpressionAttributeNames).toMatchObject({ '#src': 'source' });
+    });
+  });
+
+  describe('current state wins over the event snapshot (BE-016)', () => {
+    it('writes the retrieved status and period when a stale "incomplete" snapshot arrives last', async () => {
+      mockConstructEvent.mockReturnValue(
+        makeWebhookEvent('customer.subscription.created', subscription({ status: 'incomplete', current_period_end: 1700000100 })),
+      );
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ status: 'active', current_period_end: 1702592000 }));
+      await handler(makeEvent('{}'));
+      expect(mockSubscriptionsRetrieve).toHaveBeenCalledWith('sub_1');
+      const values = lastUpdate().ExpressionAttributeValues!;
+      expect(values[':status']).toBe('active');
+      expect(values[':currentEnd']).toBe(new Date(1702592000 * 1000).toISOString());
+    });
+
+    it('does not re-label an ended subscription as cancellation_requested', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('customer.subscription.updated', subscription()));
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ status: 'canceled', cancel_at_period_end: true }));
+      await handler(makeEvent('{}'));
+      expect(lastUpdate().ExpressionAttributeValues![':status']).toBe('cancelled');
+    });
+  });
+
+  describe('checkout.session.completed status (BE-075)', () => {
+    const completed = () => makeWebhookEvent('checkout.session.completed', { metadata: { userId: 'user-1' }, subscription: 'sub_1', customer: 'cus_1' });
+
+    it.each([
+      ['incomplete', {}, 'incomplete'],
+      ['past_due', {}, 'past_due'],
+      ['trialing', {}, 'active'],
+      ['active', { cancel_at_period_end: true }, 'cancellation_requested'],
+      ['active', { pause_collection: { behavior: 'void' } }, 'paused'],
+    ])('stores the retrieved %s subscription %j as %s', async (status, over, expected) => {
+      mockConstructEvent.mockReturnValue(completed());
+      mockSubscriptionsRetrieve.mockResolvedValue(subscription({ status, ...over }));
+      await handler(makeEvent('{}'));
+      expect(lastUpdate().ExpressionAttributeValues![':status']).toBe(expected);
+    });
+  });
+
+  describe('configuration (BE-074)', () => {
+    it('fails with a logged configuration error, not a signature error, when the webhook secret is missing', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      ssmMock.on(GetParameterCommand).rejects(Object.assign(new Error('nf'), { name: 'ParameterNotFound' }));
+      const res = (await handler(makeEvent('{}'))) as any;
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).errorCode).toBe('WEBHOOK_PROCESSING_FAILED');
+      expect(spy.mock.calls.some((c) => c[0] === 'stripe_webhook_failed' && /webhook secret not found/.test(c[1]?.error))).toBe(true);
+      expect(mockConstructEvent).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('builds the shared Stripe client with a timeout under the CloudFront limit and network retries', async () => {
+      mockConstructEvent.mockReturnValue(makeWebhookEvent('payment_intent.succeeded', { id: 'pi_1' }));
+      await handler(makeEvent('{}'));
+      expect(StripeCtor).toHaveBeenCalledWith('test-secret-value', { timeout: 20000, maxNetworkRetries: 2 });
+    });
   });
 
   it('logs stripe_webhook_failed when processing throws', async () => {

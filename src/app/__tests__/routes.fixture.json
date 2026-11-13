@@ -145,18 +145,8 @@
   "auth": "cognito"
  },
  {
-  "method": "PATCH",
-  "path": "/v1/rules/{ruleId}/toggle",
-  "auth": "cognito"
- },
- {
   "method": "DELETE",
   "path": "/v1/rules/{ruleId}",
-  "auth": "cognito"
- },
- {
-  "method": "GET",
-  "path": "/v1/analytics",
   "auth": "cognito"
  },
  {

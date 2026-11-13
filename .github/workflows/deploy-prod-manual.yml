@@ -1,7 +1,7 @@
 name: Deploy Backend (Prod, manual)
 
 # Run only after the dev soak passed and docs/runbooks/prod-cutover.md step 0 (prerequisites) is done.
-# The script refuses prod unless AlarmEmail is an address and the admin secret names are under /tradequt/prod/.
+# The script refuses prod unless AlarmEmail is an address and the admin, Stripe and ad-config parameter names are under /tradequt/prod/.
 on:
   workflow_dispatch:
     inputs:

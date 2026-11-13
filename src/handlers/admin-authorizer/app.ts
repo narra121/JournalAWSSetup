@@ -47,7 +47,10 @@ export const handler = async (event: AuthorizerEvent): Promise<AuthorizerRespons
     const payload = verifyAdminToken(token, secret);
 
     return { isAuthorized: payload !== null };
-  } catch {
-    return { isAuthorized: false };
+  } catch (err: any) {
+    // A bad token never gets here (verifyAdminToken returns null); this is a missing parameter or an SSM outage,
+    // which must reach the logs and answer 500, not look like "no permission".
+    console.error(JSON.stringify({ msg: 'admin_authorizer_error', error: err?.message }));
+    throw err;
   }
 };

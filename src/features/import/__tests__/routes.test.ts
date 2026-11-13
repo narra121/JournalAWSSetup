@@ -92,6 +92,29 @@ describe('POST /parse', () => {
     expect(importKey('acc1', trades[0])).toBe(`imp|acc1|angelone|${trades[0].externalId}`);
   });
 
+  it('a file whose trades are all already in the account costs no import (BE-055); one new trade does', async () => {
+    const first = setup();
+    const r1 = (await (await post(first.app, '/parse', body('zerodha.csv', { accountId: 'acc1' }))).json()) as any;
+    const keys = r1.data.trades.map((t: any) => importKey('acc1', t));
+
+    const all = setup({ imported: keys });
+    const j = (await (await post(all.app, '/parse', body('zerodha.csv', { accountId: 'acc1' }))).json()) as any;
+    expect(j.data.duplicates).toBe(3);
+    expect(all.q.calls).toHaveLength(0);
+    expect(all.store.items.size).toBe(0);
+
+    const some = setup({ imported: keys.slice(0, 2) });
+    const k = (await (await post(some.app, '/parse', body('zerodha.csv', { accountId: 'acc1' }))).json()) as any;
+    expect(k.data.duplicates).toBe(2);
+    expect(some.q.used.broker_import).toBe(1);
+  });
+
+  it('without an accountId nothing is flagged as a duplicate and the unit is used', async () => {
+    const { app, q } = setup({ imported: ['whatever'] });
+    await post(app, '/parse', body('zerodha.csv'));
+    expect(q.used.broker_import).toBe(1);
+  });
+
   it('returns a mapping step for an unrecognised generic csv and no quota use', async () => {
     const { app, q } = setup();
     const csv = Buffer.from('Foo,Bar,Baz\n1,2,3\n').toString('base64');

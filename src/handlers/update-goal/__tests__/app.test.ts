@@ -7,10 +7,6 @@ vi.stubEnv('GOALS_TABLE', 'test-goals');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -71,21 +67,6 @@ beforeEach(() => {
 });
 
 describe('update-goal handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent('goal-1', { target: 10000 }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('updates a goal and returns 200', async () => {
@@ -144,14 +125,15 @@ describe('update-goal handler', () => {
 
   // ── Not found ───────────────────────────────────────────────
 
-  it('returns 404 when goal does not exist', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
+  it('returns 404 when goal does not exist, and the update cannot create a stub (BE-087)', async () => {
+    ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }));
 
     const res = await handler(makeEvent('nonexistent', { target: 10000 }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('NOT_FOUND');
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ConditionExpression).toBe('attribute_exists(goalId)');
   });
 
   // ── Field filtering ─────────────────────────────────────────
@@ -180,8 +162,8 @@ describe('update-goal handler', () => {
 
   // ── DynamoDB errors ─────────────────────────────────────────
 
-  it('returns 500 when DynamoDB GetCommand fails', async () => {
-    ddbMock.on(GetCommand).rejects(new Error('DynamoDB error'));
+  it('returns 500 when DynamoDB fails', async () => {
+    ddbMock.on(UpdateCommand).rejects(new Error('DynamoDB error'));
 
     const res = await handler(makeEvent('goal-1', { target: 10000 }), {} as any, () => {}) as any;
 
@@ -252,25 +234,43 @@ describe('update-goal handler', () => {
 
   it('updates multiple allowed fields at once', async () => {
     ddbMock.on(UpdateCommand).resolves({
-      Attributes: { ...existingGoal, title: 'Big Goal', target: 20000, period: 'yearly', updatedAt: '2024-06-16T00:00:00Z' },
+      Attributes: { ...existingGoal, title: 'Big Goal', target: 20000, period: 'monthly', updatedAt: '2024-06-16T00:00:00Z' },
     });
 
-    const res = await handler(makeEvent('goal-1', { title: 'Big Goal', target: 20000, period: 'yearly' }), {} as any, () => {}) as any;
+    const res = await handler(makeEvent('goal-1', { title: 'Big Goal', target: 20000, period: 'monthly' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.goal.title).toBe('Big Goal');
     expect(body.data.goal.target).toBe(20000);
-    expect(body.data.goal.period).toBe('yearly');
+    expect(body.data.goal.period).toBe('monthly');
   });
 
-  it('sends correct Key to GetCommand and UpdateCommand', async () => {
+  describe('field checks like create-goal (BE-042)', () => {
+    it.each([
+      ['a text target', { target: 'abc' }],
+      ['a null target', { target: null }],
+      ['a period outside weekly/monthly', { period: 'daily' }],
+      ['a title that is not text', { title: 5 }],
+      ['an unbounded title', { title: 'x'.repeat(101) }],
+      ['an unbounded description', { description: 'x'.repeat(501) }],
+      ['an accountId that is not text', { accountId: { $ne: 1 } }],
+    ])('400 for %s, nothing is written', async (_name, body) => {
+      const res = await handler(makeEvent('goal-1', body), {} as any, () => {}) as any;
+      expect(res.statusCode).toBe(400);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it('accepts a numeric target, weekly/monthly, short text and a null accountId', async () => {
+      const res = await handler(makeEvent('goal-1', { target: 0, period: 'weekly', title: 'T', description: 'D', accountId: null }), {} as any, () => {}) as any;
+      expect(res.statusCode).toBe(200);
+    });
+  });
+
+  it('sends the caller-scoped Key to UpdateCommand without a read first', async () => {
     await handler(makeEvent('goal-1', { target: 8000 }), {} as any, () => {});
 
-    const getCalls = ddbMock.commandCalls(GetCommand);
-    expect(getCalls).toHaveLength(1);
-    expect(getCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', goalId: 'goal-1' });
-
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', goalId: 'goal-1' });
@@ -284,25 +284,16 @@ describe('update-goal handler', () => {
     expect(body.message).toBe('Goal updated successfully');
   });
 
-  it('returns 500 when DynamoDB throws ProvisionedThroughputExceededException on Get', async () => {
+  it('returns 500 when DynamoDB throws ProvisionedThroughputExceededException', async () => {
     const awsError = new Error('Throughput exceeded');
     awsError.name = 'ProvisionedThroughputExceededException';
-    ddbMock.on(GetCommand).rejects(awsError);
+    ddbMock.on(UpdateCommand).rejects(awsError);
 
     const res = await handler(makeEvent('goal-1', { target: 10000 }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('INTERNAL_ERROR');
-  });
-
-  it('does not call UpdateCommand when goal is not found', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
-
-    await handler(makeEvent('nonexistent', { target: 10000 }), {} as any, () => {});
-
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls).toHaveLength(0);
   });
 
   it('returns 400 when body is empty string', async () => {

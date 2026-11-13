@@ -7,10 +7,6 @@ vi.stubEnv('RULES_TABLE', 'test-rules');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -69,21 +65,6 @@ beforeEach(() => {
 });
 
 describe('update-rule handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent('rule-1', { rule: 'Updated rule text' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('updates a rule and returns 200', async () => {
@@ -142,20 +123,22 @@ describe('update-rule handler', () => {
 
   // ── Not found ───────────────────────────────────────────────
 
-  it('returns 404 when rule does not exist', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
+  it('returns 404 when the rule does not exist, and the update cannot create a stub (BE-087)', async () => {
+    ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }));
 
     const res = await handler(makeEvent('nonexistent', { rule: 'Updated' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
     expect(body.errorCode).toBe('NOT_FOUND');
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ConditionExpression).toBe('attribute_exists(ruleId)');
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
   });
 
   // ── DynamoDB errors ─────────────────────────────────────────
 
   it('returns 500 when DynamoDB fails', async () => {
-    ddbMock.on(GetCommand).rejects(new Error('DynamoDB error'));
+    ddbMock.on(UpdateCommand).rejects(new Error('DynamoDB error'));
 
     const res = await handler(makeEvent('rule-1', { rule: 'Updated' }), {} as any, () => {}) as any;
 

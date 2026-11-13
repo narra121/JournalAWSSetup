@@ -1,10 +1,9 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
@@ -19,9 +18,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!accountId) {
     log.warn('missing accountId');
@@ -49,22 +45,13 @@ export const handler: ApiHandler = async (event) => {
   }
 
   try {
-    // Verify account exists and belongs to user
-    const existing = await ddb.send(new GetCommand({
-      TableName: ACCOUNTS_TABLE,
-      Key: { userId, accountId }
-    }));
-
-    if (!existing.Item) {
-      log.warn('account not found', { accountId });
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
-    }
-
     const now = new Date().toISOString();
     
     const result = await ddb.send(new UpdateCommand({
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId },
+      // An account deleted meanwhile must not be recreated as a stub by the update.
+      ConditionExpression: 'attribute_exists(accountId)',
       UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt',
       ExpressionAttributeNames: {
         '#status': 'status',
@@ -81,6 +68,10 @@ export const handler: ApiHandler = async (event) => {
     
     return envelope({ statusCode: 200, data: { account: result.Attributes }, message: 'Account status updated' });
   } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      log.warn('account not found', { accountId });
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
+    }
     log.error('failed to update account status', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update account status');
   }

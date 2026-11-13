@@ -13,6 +13,7 @@ vi.mock('../../handlers/get-stats/app', () => ({ handler: (e: any) => (reached(e
 const ddb = mockClient(DynamoDBDocumentClient);
 const { createApp } = await import('../app');
 const { setTokenVerifier } = await import('../auth/cognito');
+const { wantsAdvancedSection } = await import('../../shared/statsSections');
 const app = createApp();
 const get = (qs: string) => app.request(`/v1/stats?${qs}`, { headers: { authorization: 'Bearer good' } });
 
@@ -32,6 +33,24 @@ describe('GET /v1/stats?sections=advanced (advanced_analytics gate)', () => {
     ddb.resetHistory();
     expect((await get('accountId=ALL')).status).toBe(200);
     expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
+  });
+
+  it.each([
+    ['repeated key, advanced last', 'accountId=ALL&sections=x&sections=advanced'],
+    ['repeated key, advanced first', 'accountId=ALL&sections=advanced&sections=x'],
+    ['comma list', 'accountId=ALL&sections=x,advanced'],
+  ])('Free plan cannot get advanced by editing the query: %s (BE-002)', async (_name, qs) => {
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'cancelled' } });
+    expect((await get(qs)).status).toBe(402);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('the gate decides on the same string the handler receives', async () => {
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active' } });
+    await get('accountId=ALL&sections=x&sections=advanced');
+    const received = reached.mock.calls[0][0].queryStringParameters.sections;
+    expect(received).toBe('x,advanced');
+    expect(wantsAdvancedSection(received)).toBe(true);
   });
 
   it('trial and Pro users get the section', async () => {

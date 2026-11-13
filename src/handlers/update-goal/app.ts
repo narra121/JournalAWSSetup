@@ -1,10 +1,10 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
+import { VALID_PERIODS } from '../../shared/goalDefaults';
 
 const GOALS_TABLE = process.env.GOALS_TABLE!;
 
@@ -19,9 +19,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!goalId) {
     log.warn('missing goalId');
@@ -42,18 +39,23 @@ export const handler: ApiHandler = async (event) => {
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
-  try {
-    // Verify goal exists and belongs to user
-    const existing = await ddb.send(new GetCommand({
-      TableName: GOALS_TABLE,
-      Key: { userId, goalId }
-    }));
-
-    if (!existing.Item) {
-      log.warn('goal not found', { goalId });
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Goal not found');
+  // Same checks as create-goal: a bad target or period would break the progress calculation.
+  if (data.target !== undefined && (typeof data.target !== 'number' || !Number.isFinite(data.target))) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'target must be a number');
+  }
+  if (data.period !== undefined && !(VALID_PERIODS as readonly string[]).includes(data.period)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'period must be one of: weekly, monthly');
+  }
+  for (const [field, max] of [['title', 100], ['description', 500]] as const) {
+    if (data[field] !== undefined && (typeof data[field] !== 'string' || data[field].length > max)) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${field} must be text of at most ${max} characters`);
     }
+  }
+  if (data.accountId !== undefined && data.accountId !== null && (typeof data.accountId !== 'string' || data.accountId.length > 100)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId must be text');
+  }
 
+  try {
     const now = new Date().toISOString();
     const updateExpressions: string[] = [];
     const expressionAttributeNames: any = {};
@@ -78,6 +80,8 @@ export const handler: ApiHandler = async (event) => {
     const result = await ddb.send(new UpdateCommand({
       TableName: GOALS_TABLE,
       Key: { userId, goalId },
+      // A goal deleted meanwhile must not be recreated as a stub by the update.
+      ConditionExpression: 'attribute_exists(goalId)',
       UpdateExpression: `SET ${updateExpressions.join(', ')}`,
       ExpressionAttributeNames: expressionAttributeNames,
       ExpressionAttributeValues: expressionAttributeValues,
@@ -88,6 +92,10 @@ export const handler: ApiHandler = async (event) => {
     
     return envelope({ statusCode: 200, data: { goal: result.Attributes }, message: 'Goal updated successfully' });
   } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      log.warn('goal not found', { goalId });
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Goal not found');
+    }
     log.error('failed to update goal', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update goal');
   }

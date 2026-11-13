@@ -37,4 +37,12 @@ describe('get-trade', () => {
     ddb.on(GetCommand).rejects(new Error('boom'));
     expect((await call(event({ sub: 'u1' }, 't1'))).statusCode).toBe(500);
   });
+
+  it('returns image ids as keys, like the list endpoint (BE-095)', async () => {
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', tradeId: 't1', images: [{ id: 'uuid-1', key: 'images/user-1/t1/a.png' }] } });
+    const res = await call(event({ sub: 'u1' }, 't1'));
+    const body = JSON.parse(res.body);
+    expect(body.data.trade.images[0]).toMatchObject({ id: 'images/user-1/t1/a.png', key: 'images/user-1/t1/a.png' });
+  });
 });
+

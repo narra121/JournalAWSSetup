@@ -711,12 +711,7 @@ describe('PnlSequenceAggregator', () => {
     expect(result.maxDrawdown).toBe(30);
   });
 
-  it('computes maxDrawdown without totalCapital (equity curve method)', () => {
-    // pnlValues: [100, -50]
-    // runningPnl goes: 100, 50 -> minRunningPnl stays 0
-    // startingEquity = 0 + 1 = 1
-    // After +100: equity=101, peak=101
-    // After -50: equity=51, dd = (101-51)/101 * 100 ~ 49.5%
+  it('maxDrawdown is null without totalCapital: no invented base for a percentage (BE-036)', () => {
     agg.merge({
       pnlSequence: [100, -50],
       equityCurvePoints: [],
@@ -725,7 +720,7 @@ describe('PnlSequenceAggregator', () => {
     });
 
     const result = agg.getResult({});
-    expect(result.maxDrawdown).toBeCloseTo(49.50, 1);
+    expect(result.maxDrawdown).toBeNull();
   });
 
   it('computes sharpeRatio', () => {

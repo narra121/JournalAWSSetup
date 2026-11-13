@@ -14,10 +14,6 @@ const ssmMock = mockClient(SSMClient);
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -70,24 +66,6 @@ beforeEach(() => {
 });
 
 describe('enhance-text handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const header = btoa(JSON.stringify({ alg: 'RS256' }));
-    const payload = btoa(JSON.stringify({ sub: 'user-1' }));
-    const jwt = `${header}.${payload}.sig`;
-    const res = await handler(makeEvent({ text: 'some text' }, { headers: { authorization: `Bearer ${jwt}` } }), {} as any) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('returns 200 with enhancedText on success', async () => {
@@ -111,7 +89,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Missing body');
+    expect(body.message).toBe('Type or paste some text to improve.');
   });
 
   it('returns 400 when body is invalid JSON', async () => {
@@ -120,7 +98,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Invalid JSON');
+    expect(body.message).toBe('The request body must be valid JSON.');
   });
 
   it('returns 400 when text field is empty', async () => {
@@ -129,7 +107,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Missing or empty text');
+    expect(body.message).toBe('Type or paste some text to improve.');
   });
 
   it('returns 400 when text field is missing', async () => {
@@ -159,7 +137,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('BadGateway');
+    expect(body.errorCode).toBe('BAD_GATEWAY');
   });
 
   it('returns 502 when AI model returns empty response', async () => {
@@ -175,7 +153,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('BadGateway');
+    expect(body.errorCode).toBe('BAD_GATEWAY');
   });
 
   // ── Timeout ─────────────────────────────────────────────────
@@ -189,7 +167,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(504);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('GatewayTimeout');
+    expect(body.errorCode).toBe('GATEWAY_TIMEOUT');
   });
 
   // ── Internal error ──────────────────────────────────────────
@@ -340,7 +318,7 @@ describe('enhance-text handler', () => {
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('BadGateway');
+    expect(body.errorCode).toBe('BAD_GATEWAY');
   });
 
   // ── Missing text field ─────────────────────────────────────
@@ -442,12 +420,34 @@ describe('enhance-text handler', () => {
     expect(fetchCallBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
   });
 
-  it('sends maxOutputTokens: 2048 in generationConfig', async () => {
+  it('allows an output as long as a 10,000-character note (maxOutputTokens 8192)', async () => {
     mockFetchSuccess('Enhanced text.');
     await handler(makeEvent({ text: 'test text' }), {} as any);
 
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(fetchCallBody.generationConfig.maxOutputTokens).toBe(2048);
+    expect(fetchCallBody.generationConfig.maxOutputTokens).toBe(8192);
+  });
+
+  it('returns 502 instead of a cut-off text when the model stopped at the token limit (BE-041)', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: 'Half of the note' }] } }] }),
+    });
+    const res = await handler(makeEvent({ text: 'a long note' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body).data).toBeUndefined();
+  });
+
+  it('accepts a reply with finishReason STOP', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'Done.' }] } }] }),
+    });
+    const res = await handler(makeEvent({ text: 'dun' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.enhancedText).toBe('Done.');
   });
 
   // ── Model fallback ──────────────────────────────────────────

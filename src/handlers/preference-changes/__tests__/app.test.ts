@@ -22,6 +22,8 @@ describe('handlePreferenceChanges (time zone changed → rebuild once)', () => {
       rec('MODIFY', { userId: 'b', timeZone: 'UTC' }, { userId: 'b', timeZone: 'Asia/Tokyo' }, 's2'),
     ] });
     expect(rebuildForUser.mock.calls.map((c) => c[0])).toEqual(['a', 'b']);
+    // A zone change moves hours and days without changing any trade hash, so every day record is rewritten.
+    expect(rebuildForUser.mock.calls.every((c) => c[1]?.force === true)).toBe(true);
     expect(res.batchItemFailures).toEqual([]);
   });
 

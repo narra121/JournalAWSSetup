@@ -70,7 +70,7 @@ export const handler = async (
   }
 };
 
-// Amounts are in the smallest unit (paise, cents) and mirror scripts/stripe/lib.mjs PRICES.
+// Display amounts mirror scripts/stripe/lib.mjs PRICES: INR in whole rupees (19900 paise = 199), USD in cents.
 const PLAN_CONFIG: Record<string, Record<string, { amount: number; name: string; description: string; savings?: string; monthlyEquivalent?: number }>> = {
   inr: {
     monthly: {

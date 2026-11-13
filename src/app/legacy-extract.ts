@@ -1,9 +1,11 @@
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { handler as extractTrades } from '../handlers/extract-trades/app';
+import { defaultsFor, errorBody, normalizeErrorBody } from '../shared/apiError';
 import { ddb } from '../shared/dynamo';
 import { computeEntitlements } from './billing/entitlements';
 import { createQuota } from './billing/quota';
+import { extractUnits } from './billing/extractUnits';
 import { quotaExceededBody } from './billing/responses';
 import { stringifyClaims, type TokenVerifier } from './auth/cognito';
 
@@ -29,7 +31,17 @@ const json = (statusCode: number, body: unknown) => ({
   body: JSON.stringify(body),
 });
 
-/** Function URL entry for `POST /` of the old public extract endpoint: signature-verified JWT + `ai_extract` quota. */
+/** True when the verified token was issued by the prod user pool, whose subscriptions this dev stack cannot see. */
+function fromProdPool(claims: Record<string, string>): boolean {
+  const prodPool = process.env.PROD_USER_POOL_ID;
+  return !!prodPool && !!claims.iss?.endsWith(`/${prodPool}`);
+}
+
+/**
+ * Function URL entry for `POST /` of the old public extract endpoint: signature-verified JWT, plus the `ai_extract`
+ * quota for dev-pool users. Prod-pool callers are not metered: their plan lives in prod, and a dev Free limit would cut
+ * off paying users and hide their usage from prod's /v1/me/entitlements.
+ */
 export const legacyExtract = async (event: any, context?: any) => {
   const header: string | undefined = event?.headers?.authorization || event?.headers?.Authorization;
   const token = header?.replace(/^Bearer\s+/i, '').trim();
@@ -39,21 +51,30 @@ export const legacyExtract = async (event: any, context?: any) => {
     claims = stringifyClaims(await getVerifier().verify(token));
     if (!claims.sub) throw new Error('missing sub');
   } catch {
-    return json(401, { message: 'Unauthorized' });
+    return json(401, errorBody('UNAUTHORIZED', defaultsFor(401).message));
   }
 
   const userId = claims.sub;
-  const sub = (await ddb.send(new GetCommand({ TableName: process.env.SUBSCRIPTIONS_TABLE!, Key: { userId } }))).Item;
-  const entitlements = computeEntitlements(sub);
-  const quota = createQuota(userId, entitlements);
-  const taken = await quota.consume('ai_extract');
-  if (!taken.ok) return json(402, quotaExceededBody('ai_extract', entitlements, taken.resetsAt));
+  let quota: ReturnType<typeof createQuota> | undefined;
+  let units = 1;
+  if (!fromProdPool(claims)) {
+    const sub = (await ddb.send(new GetCommand({ TableName: process.env.SUBSCRIPTIONS_TABLE!, Key: { userId } }))).Item;
+    const entitlements = computeEntitlements(sub);
+    quota = createQuota(userId, entitlements);
+    units = extractUnits(event.body);
+    const taken = await quota.consume('ai_extract', units);
+    if (!taken.ok) return json(402, quotaExceededBody('ai_extract', entitlements, taken.resetsAt));
+  }
 
   const result: any = await extractTrades(
     { ...event, requestContext: { ...event.requestContext, authorizer: { jwt: { claims } } } },
     context,
     () => undefined,
   );
-  if (Number(result?.statusCode) >= 400) await quota.consume('ai_extract', -1);
+  const status = Number(result?.statusCode);
+  if (status >= 400) {
+    await quota?.consume('ai_extract', -units);
+    return json(status, normalizeErrorBody(status, result.body));
+  }
   return result;
 };

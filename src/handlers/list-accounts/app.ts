@@ -4,6 +4,7 @@ import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { queryDailyStats } from '../../shared/dailyStats';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
@@ -34,21 +35,37 @@ export const handler: ApiHandler = async (event) => {
       lastEvaluatedKey = result.LastEvaluatedKey;
     } while (lastEvaluatedKey);
     
-    // Calculate totals
-    const totalBalance = accounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
-    const totalPnl = accounts.reduce((sum, acc) => {
-      const pnl = (acc.balance || 0) - (acc.initialBalance || 0);
-      return sum + pnl;
-    }, 0);
+    // Totals per currency: balances in different currencies must not be added up.
+    const totalsByCurrency = new Map<string, { balance: number; pnl: number }>();
+    for (const acc of accounts) {
+      const currency = String(acc.currency ?? 'UNKNOWN').toUpperCase();
+      const totals = totalsByCurrency.get(currency) ?? { balance: 0, pnl: 0 };
+      totals.balance += acc.balance || 0;
+      totals.pnl += (acc.balance || 0) - (acc.initialBalance || 0);
+      totalsByCurrency.set(currency, totals);
+    }
+    // The single-number totals stay only when they are meaningful, i.e. all accounts share one currency.
+    const single = totalsByCurrency.size <= 1 ? [...totalsByCurrency.values()][0] ?? { balance: 0, pnl: 0 } : null;
+
+    // The counts are summed from DailyStats (one row per account and day), so they trail a trade write by the stream delay.
+    const days = await queryDailyStats(userId, 'ALL', '0000-01-01', '9999-12-31', '#sk, #date, accountId, tradeCount');
+    const tally = new Map<string, { tradeCount: number; lastTradeDate: string | null }>();
+    for (const day of days) {
+      if (!(day.tradeCount > 0)) continue;
+      const t = tally.get(day.accountId) ?? { tradeCount: 0, lastTradeDate: null };
+      t.tradeCount += day.tradeCount;
+      if (!t.lastTradeDate || day.date > t.lastTradeDate) t.lastTradeDate = day.date;
+      tally.set(day.accountId, t);
+    }
 
     log.info('accounts retrieved', { count: accounts.length });
     
     return envelope({
       statusCode: 200,
       data: {
-        accounts,
-        totalBalance,
-        totalPnl
+        accounts: accounts.map((acc) => ({ ...acc, tradeCount: tally.get(acc.accountId)?.tradeCount ?? 0, lastTradeDate: tally.get(acc.accountId)?.lastTradeDate ?? null })),
+        ...(single ? { totalBalance: single.balance, totalPnl: single.pnl } : {}),
+        totalsByCurrency: Object.fromEntries(totalsByCurrency)
       },
       message: 'Accounts retrieved'
     });

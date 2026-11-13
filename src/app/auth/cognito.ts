@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { defaultsFor, errorBody } from '../../shared/apiError';
 import type { AppEnv } from '../types';
 
 export type TokenVerifier = { verify(token: string): Promise<Record<string, unknown>> };
@@ -54,7 +55,7 @@ export function requireUser(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const claims = await verifyBearer(c.req.header('authorization'));
     if (!claims?.sub) {
-      return c.json({ message: 'Unauthorized' }, 401, { 'www-authenticate': 'Bearer' });
+      return c.json(errorBody('UNAUTHORIZED', defaultsFor(401).message), 401, { 'www-authenticate': 'Bearer' });
     }
     applyClaims(c, claims);
     await next();

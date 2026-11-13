@@ -24,10 +24,13 @@ export interface InsightInput {
 
 export type InsightResult =
   | { ok: true; insight: Insight; cached: boolean }
-  | { ok: false; status: 400 | 402 | 422 | 502; code: string; message: string; quota?: { limit: number; resetsAt: string } };
+  | { ok: false; status: 400 | 402 | 409 | 422 | 502; code: string; message: string; quota?: { limit: number; resetsAt: string } };
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_SPAN_DAYS = 366;
+/** A claim is released when the generation ends; this is only how long a crashed one blocks the same inputs. */
+const CLAIM_MS = 120_000;
+const CLAIM_PREFIX = 'INSIGHT-CLAIM#';
 
 export function validatePeriod(from: unknown, to: unknown): string | null {
   if (typeof from !== 'string' || typeof to !== 'string' || !DATE.test(from) || !DATE.test(to)) return 'from and to must be dates (YYYY-MM-DD).';
@@ -55,8 +58,23 @@ export async function generateInsight(deps: InsightDeps, quota: Quota, userId: s
   const cached = await findCached(deps.store, userId, { accountId, from: input.from, to: input.to, metricsHash: computed.hash });
   if (cached) return { ok: true, insight: cached, cached: true };
 
+  // One generation per user and inputs at a time: a double click must not use two units for the same insight.
+  const claimSk = `${CLAIM_PREFIX}${accountId ?? 'ALL'}#${input.from}#${input.to}#${computed.hash}`;
+  const claimed = await deps.store.putIfFree({ userId, sk: claimSk, entity: 'insight-claim', expiresAt: deps.now().getTime() + CLAIM_MS }, deps.now().getTime());
+  if (!claimed) return { ok: false, status: 409, code: 'IN_PROGRESS', message: 'This insight is already being generated. Try again in a moment.' };
+  const release = () => deps.store.delete(userId, [claimSk]).catch(() => undefined);
+  // The request that held the claim before us may have finished (and stored its insight) since the lookup above.
+  const justMade = await findCached(deps.store, userId, { accountId, from: input.from, to: input.to, metricsHash: computed.hash });
+  if (justMade) {
+    await release();
+    return { ok: true, insight: justMade, cached: true };
+  }
+
   const q = await quota.consume('ai_insight');
-  if (!q.ok) return { ok: false, status: 402, code: 'QUOTA_EXCEEDED', message: 'Monthly limit reached for ai_insight.', quota: { limit: q.limit, resetsAt: q.resetsAt } };
+  if (!q.ok) {
+    await release();
+    return { ok: false, status: 402, code: 'QUOTA_EXCEEDED', message: 'Monthly limit reached for ai_insight.', quota: { limit: q.limit, resetsAt: q.resetsAt } };
+  }
 
   try {
     const res = await deps.generate(buildInsightRequest(computed, { period: { from: input.from, to: input.to }, tradeCount }));
@@ -70,8 +88,10 @@ export async function generateInsight(deps: InsightDeps, quota: Quota, userId: s
     const now = deps.now();
     const insight: Insight = { id: timeId(now), createdAt: now.toISOString(), period: { from: input.from, to: input.to }, accountId, summary: body.summary, sections: body.sections, model: res.model, tradeCount, ...(loaded.truncated ? { truncated: true } : {}) };
     await putInsight(deps.store, userId, insight, computed.hash);
+    await release();
     return { ok: true, insight, cached: false };
   } catch (e) {
+    await release();
     await quota.consume('ai_insight', -1).catch(() => undefined);
     if (e instanceof AiUnavailableError) {
       logAiFailure('insights', e, { requestId, userId });

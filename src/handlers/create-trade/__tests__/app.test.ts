@@ -1,16 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('IMAGES_BUCKET', 'test-bucket');
-
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
 
 const { handler } = await import('../app.ts');
 
@@ -104,21 +100,6 @@ beforeEach(() => {
 });
 
 describe('create-trade handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent({ symbol: 'AAPL', side: 'BUY', quantity: 10, openDate: '2024-01-01' }), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('creates a trade and returns 201', async () => {
@@ -583,7 +564,7 @@ describe('create-trade handler', () => {
     const event = makeEvent(validTrade, {
       headers: {
         authorization: `Bearer ${makeJwt('user-1')}`,
-        'Idempotency-Key': 'idem-key-123',
+        'idempotency-key': 'idem-key-123',
       },
     } as any);
     const res = await handler(event, {} as any, () => {}) as any;
@@ -637,26 +618,34 @@ describe('create-trade handler', () => {
     expect(((await handler(makeEvent({ ...validTrade, images: seven }), {} as any, () => {})) as any).statusCode).toBe(400);
   });
 
-  it('returns 500 when QueryCommand fails during idempotency check', async () => {
-    // Mock QueryCommand to reject for idempotency lookup
+  it('rejects a seventh image with the same message as update-trade, before any upload or write', async () => {
+    const seven = Array.from({ length: 7 }, (_, i) => ({ id: `i${i}`, base64Data: 'data:image/png;base64,aGVsbG8=' }));
+    const res = (await handler(makeEvent({ ...validTrade, images: seven }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(body.message).toBe('A trade can have at most 6 images');
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+
+    const six = (await handler(makeEvent({ ...validTrade, images: seven.slice(0, 6) }), {} as any, () => {})) as any;
+    expect(six.statusCode).toBe(201);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(6);
+  });
+
+  it('returns 500 and creates nothing when the idempotency lookup fails (BE-035)', async () => {
     ddbMock.on(QueryCommand).rejects(new Error('DynamoDB query error'));
-    // The handler catches this error and continues to create a new trade,
-    // so DynamoDB PutCommand should still succeed
-    ddbMock.on(PutCommand).resolves({});
 
     const event = makeEvent(validTrade, {
       headers: {
         authorization: `Bearer ${makeJwt('user-1')}`,
-        'Idempotency-Key': 'idem-key-456',
+        'idempotency-key': 'idem-key-456',
       },
     } as any);
     const res = await handler(event, {} as any, () => {}) as any;
 
-    // The handler catches the idempotency lookup failure and falls through to create,
-    // so it should return 201 (graceful degradation) rather than 500
-    expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(res.statusCode).toBe(500);
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
   });
 
   // ── Bulk create errors ──────────────────────────────────────
@@ -723,22 +712,16 @@ describe('create-trade handler', () => {
 
   // ── quantity=0 via bulk import ──────────────────────────────
 
-  it('accepts quantity=0 as a valid value', async () => {
-    // The fix changed falsy checks (which rejected 0) to explicit null/undefined/empty-string checks.
-    // Bulk import path does not use schema validation, so quantity=0 passes the required field check.
+  it('bulk: rejects quantity=0 like the single path does (BE-033)', async () => {
     ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
 
-    const items = [
-      { symbol: 'AAPL', side: 'BUY', quantity: 0, openDate: '2024-06-15', entryPrice: 150, exitPrice: 160, outcome: 'TP' },
-    ];
-    const res = await handler(makeEvent({ items }), {} as any, () => {}) as any;
+    const res = await handler(makeEvent({ items: [{ ...validTrade, quantity: 0 }] }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    expect(body.data.created).toBe(1);
-    // Verify the item was written with quantity=0
-    expect(body.data.items[0].quantity).toBe(0);
+    expect(body.data.created).toBe(0);
+    expect(body.data.errors).toHaveLength(1);
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
   // ── Parallel batches of 10 ────────────────────────────────
@@ -754,7 +737,9 @@ describe('create-trade handler', () => {
       openDate: '2024-06-15',
       entryPrice: 100,
       exitPrice: 110,
+      closeDate: '2024-06-15',
       outcome: 'TP',
+      pnl: 10,
     }));
 
     const res = await handler(makeEvent({ items }), {} as any, () => {}) as any;
@@ -785,5 +770,138 @@ describe('create-trade handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
+  });
+});
+
+// ─── Review fixes ───────────────────────────────────────────────
+
+describe('create-trade: dates, accounts, idempotency, bulk (BE-005, 031, 033-035, 037, 093)', () => {
+  const idem = (key: string) => ({ headers: { authorization: `Bearer ${makeJwt('user-1')}`, 'idempotency-key': key } } as any);
+  const writtenItems = () => ddbMock.commandCalls(PutCommand).map((c) => c.args[0].input.Item!);
+
+  it('400 for an openDate or closeDate that is not a real day (BE-005)', async () => {
+    for (const bad of [{ openDate: '2026-13-01' }, { openDate: 'garbage' }, { closeDate: '2026-02-31T10:00:00Z' }, { openDate: '2026-04-10T25:00:00Z' }]) {
+      const res = (await handler(makeEvent({ ...validTrade, ...bad }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(400);
+    }
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+  });
+
+  it('maps the singular accountId to accountIds instead of storing the trade unassigned (BE-093)', async () => {
+    const res = (await handler(makeEvent({ ...validTrade, accountId: 'acc-9' }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(201);
+    expect(writtenItems()[0].accountId).toBe('acc-9');
+  });
+
+  describe('multi-account create (BE-031)', () => {
+    it('gives the first account the tradeId that owns the screenshots and copies them for the others', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      const res = (await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-2'], images: [{ key: 'images/user-1/upload/a.png' }] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(201);
+      const [first, second] = writtenItems();
+      expect(first.images[0].key).toBe('images/user-1/upload/a.png');
+      expect(second.tradeId).not.toBe(first.tradeId);
+      expect(second.images[0].key).toBe(`images/user-1/${second.tradeId}/a.png`);
+      expect(s3Mock.commandCalls(CopyObjectCommand)[0].args[0].input).toMatchObject({ CopySource: 'test-bucket/images/user-1/upload/a.png', Key: second.images[0].key });
+    });
+
+    it('inline uploads go under the first account\'s tradeId, which an item really has', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-2'], images: [{ id: 'i1', base64Data: 'data:image/png;base64,aGVsbG8=' }] }), {} as any, () => {});
+      const key = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.Key!;
+      expect(key).toBe(`images/user-1/${writtenItems()[0].tradeId}/i1.png`);
+    });
+  });
+
+  describe('idempotent multi-account create (BE-035)', () => {
+    it('after a partial failure the retry creates only the account that is missing', async () => {
+      ddbMock.on(QueryCommand).callsFake((input) =>
+        input.ExpressionAttributeValues[':k'] === 'k1-acc-1' ? { Items: [{ userId: 'user-1', tradeId: 'made', accountId: 'acc-1', images: [] }] } : { Items: [] });
+      const res = (await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-2'] }, idem('k1')), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(201);
+      const items = writtenItems();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ accountId: 'acc-2', idempotencyKey: 'k1-acc-2' });
+      const body = JSON.parse(res.body);
+      expect(body.data.count).toBe(2);
+      expect(body.data.trades.map((t: any) => t.accountId)).toEqual(['acc-1', 'acc-2']);
+    });
+
+    it('when every account exists it answers 200 and writes nothing', async () => {
+      ddbMock.on(QueryCommand).callsFake((input) => ({ Items: [{ userId: 'user-1', tradeId: `t-${input.ExpressionAttributeValues[':k']}`, images: [] }] }));
+      const res = (await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-2'] }, idem('k2')), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).data.count).toBe(2);
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+    });
+
+    it('a listed account is created once', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-1'] }, idem('k3')), {} as any, () => {});
+      expect(writtenItems()).toHaveLength(1);
+    });
+  });
+
+  describe('bulk validation and results (BE-033, BE-034)', () => {
+    it('applies the single-path schema to every item and reports the failing ones by index', async () => {
+      ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+      const manyAccounts = Array.from({ length: 11 }, (_, i) => `acc-${i}`);
+      const res = (await handler(makeEvent({ items: [
+        { ...validTrade, side: 'LONG' },
+        { ...validTrade, quantity: -1 },
+        { ...validTrade, openDate: 'x' },
+        { ...validTrade, outcome: 'WIN' },
+        { ...validTrade, accountIds: manyAccounts },
+        { ...validTrade, symbol: 'OK', idempotencyKey: undefined },
+      ] }), {} as any, () => {})) as any;
+      const body = JSON.parse(res.body);
+      expect(body.data.created).toBe(1);
+      expect(body.data.errors.map((e: any) => e.index).sort()).toEqual([0, 1, 2, 3, 4]);
+      expect(body.data.items[0].symbol).toBe('OK');
+    });
+
+    it('does not list items the table never received', async () => {
+      ddbMock.on(BatchWriteCommand).callsFake((input) => {
+        const keep = input.RequestItems['test-trades'];
+        return { UnprocessedItems: { 'test-trades': keep.filter((r: any) => r.PutRequest.Item.symbol === 'STUCK') } };
+      });
+      vi.useFakeTimers();
+      const pending = handler(makeEvent({ items: [{ ...validTrade, symbol: 'OK' }, { ...validTrade, symbol: 'STUCK' }] }), {} as any, () => {}) as Promise<any>;
+      await vi.runAllTimersAsync();
+      const res = await pending;
+      vi.useRealTimers();
+      const body = JSON.parse(res.body);
+      expect(body.data.created).toBe(1);
+      expect(body.data.items.map((i: any) => i.symbol)).toEqual(['OK']);
+      expect(body.data.errors).toHaveLength(1);
+      expect(body.data.errors[0].message).toBe('Unprocessed after retries');
+    });
+
+    it('a chunk whose write throws is reported as errors while earlier chunks stay in created', async () => {
+      let call = 0;
+      ddbMock.on(BatchWriteCommand).callsFake(() => {
+        call++;
+        if (call === 2) throw new Error('ValidationException');
+        return { UnprocessedItems: {} };
+      });
+      // 30 items = chunks of 25 and 5
+      const items = Array.from({ length: 30 }, (_, i) => ({ ...validTrade, symbol: `S${i}` }));
+      const res = (await handler(makeEvent({ items }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.data.created).toBe(25);
+      expect(body.data.errors).toHaveLength(5);
+      expect(body.data.errors[0].message).toBe('Write failed');
+    });
+
+    it('a failing idempotency lookup is an item error, not a duplicate create', async () => {
+      ddbMock.on(QueryCommand).rejects(new Error('gsi down'));
+      ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+      const res = (await handler(makeEvent({ items: [{ ...validTrade, idempotencyKey: 'x' }] }), {} as any, () => {})) as any;
+      const body = JSON.parse(res.body);
+      expect(body.data.created).toBe(0);
+      expect(body.data.errors).toHaveLength(1);
+      expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    });
   });
 });

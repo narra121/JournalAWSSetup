@@ -136,7 +136,7 @@ describe('admin-login handler', () => {
     expect(ssmCalls).toHaveLength(2);
   });
 
-  it('rate-limits per source IP, not with one global key (an attacker cannot lock the admin out)', async () => {
+  it('rate-limits per source IP first, so one address cannot lock the admin out', async () => {
     const limiter = vi.fn().mockResolvedValue({ allowed: true });
     vi.resetModules();
     vi.doMock('../../auth-rate-limit-wrapper/rateLimit', () => ({ checkRateLimit: limiter }));
@@ -146,6 +146,43 @@ describe('admin-login handler', () => {
     event.requestContext.http.sourceIp = '203.0.113.9';
     await handler(event, {} as any, () => {});
     expect(limiter.mock.calls[0][0]).toMatchObject({ key: 'admin-login:203.0.113.9', limit: 5, windowSeconds: 300 });
+  });
+
+  describe('global attempt limit (BE-026)', () => {
+    it('also counts every attempt in one bucket for all addresses: 50 per hour', async () => {
+      const limiter = vi.fn().mockResolvedValue({ allowed: true });
+      vi.resetModules();
+      vi.doMock('../../auth-rate-limit-wrapper/rateLimit', () => ({ checkRateLimit: limiter }));
+      const { handler } = await import('../app');
+      setupSsm();
+      await handler(makeEvent({ password: ADMIN_PASSWORD }), {} as any, () => {});
+      expect(limiter.mock.calls[1][0]).toEqual({ key: 'admin-login:global', limit: 50, windowSeconds: 3600 });
+    });
+
+    it('answers 429 with the retry time and never checks the password once the global limit is reached', async () => {
+      const limiter = vi.fn().mockImplementation(async ({ key }: { key: string }) =>
+        key === 'admin-login:global' ? { allowed: false, retryAfter: 1800 } : { allowed: true },
+      );
+      vi.resetModules();
+      vi.doMock('../../auth-rate-limit-wrapper/rateLimit', () => ({ checkRateLimit: limiter }));
+      const { handler } = await import('../app');
+      setupSsm();
+
+      const res = (await handler(makeEvent({ password: ADMIN_PASSWORD }), {} as any, () => {})) as any;
+
+      expect(res.statusCode).toBe(429);
+      expect(JSON.parse(res.body)).toMatchObject({ errorCode: 'RATE_LIMITED', error: { retryAfter: 1800 } });
+      expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
+    });
+
+    it('an address already over its own limit does not use up the global budget', async () => {
+      const limiter = vi.fn().mockResolvedValue({ allowed: false, retryAfter: 60 });
+      vi.resetModules();
+      vi.doMock('../../auth-rate-limit-wrapper/rateLimit', () => ({ checkRateLimit: limiter }));
+      const { handler } = await import('../app');
+      await handler(makeEvent({ password: ADMIN_PASSWORD }), {} as any, () => {});
+      expect(limiter).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('refreshes the cached secrets after 15 minutes (rotation takes effect without a restart)', async () => {

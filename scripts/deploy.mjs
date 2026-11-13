@@ -1,8 +1,8 @@
 // Change-set deploy of tradequt-<stage> with a guard on stateful resources.
 // Usage: node scripts/deploy.mjs --stage dev|prod [--dry-run] [--confirm-prod] [--skip-checks] [--skip-backup]
 //          [--param Key=Value ...]      repeatable; overrides one stack parameter (e.g. AlarmEmail, AdminSecretParamName)
-// Prod refuses to run (dry run included) unless AlarmEmail is a real address and the admin secret parameter names
-// are under /tradequt/prod/. The final parameter table is printed before the change set is created.
+// Prod refuses to run (dry run included) unless AlarmEmail is a real address and the admin, Stripe and ad-config SSM
+// parameter names are under /tradequt/prod/. The final parameter table is printed before the change set is created.
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

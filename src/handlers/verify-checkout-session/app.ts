@@ -1,27 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
+import { getStripe } from '../../shared/stripe-config';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
-
-const ssmClient = new SSMClient({});
-let stripe: Stripe | null = null;
-
-async function getStripe(): Promise<Stripe> {
-  if (stripe) return stripe;
-  const result = await ssmClient.send(
-    new GetParameterCommand({ Name: STRIPE_SECRET_KEY_PARAM, WithDecryption: true })
-  );
-  const key = result.Parameter?.Value;
-  if (!key) throw new Error('Stripe secret key not found in SSM');
-  stripe = new Stripe(key);
-  return stripe;
-}
 
 /**
  * Verify a Stripe Checkout Session after redirect.

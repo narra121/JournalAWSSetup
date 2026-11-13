@@ -1,6 +1,7 @@
 import { AdminUserGlobalSignOutCommand, CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
 import { Hono } from 'hono';
 import { exportUserData, purgeUser } from '../../shared/account-data';
+import { resolveCognitoUsername } from '../../shared/cognitoUser';
 import { makeLogger } from '../../shared/logger';
 import type { AppEnv } from '../types';
 
@@ -18,11 +19,13 @@ accountRoutes.get('/auth/export', async (c) => {
 
 accountRoutes.delete('/auth/account', async (c) => {
   const userId = c.get('userId');
-  const result = await purgeUser(userId, makeLogger({ requestId: c.get('requestId'), userId }));
+  const result = await purgeUser(userId, makeLogger({ requestId: c.get('requestId'), userId }), c.get('claims'));
   return c.json({ success: true, message: 'Account deleted', data: result });
 });
 
 accountRoutes.post('/auth/logout-all', async (c) => {
-  await cognito.send(new AdminUserGlobalSignOutCommand({ UserPoolId: process.env.USER_POOL_ID!, Username: c.get('userId') }));
-  return c.json({ success: true, message: 'Signed out everywhere', data: null });
+  const Username = await resolveCognitoUsername(process.env.USER_POOL_ID!, c.get('userId'), c.get('claims'));
+  await cognito.send(new AdminUserGlobalSignOutCommand({ UserPoolId: process.env.USER_POOL_ID!, Username }));
+  // Revokes refresh tokens only: tokens already issued are verified offline and work until they expire (about 1 hour).
+  return c.json({ success: true, message: 'Other devices are signed out. Access already granted ends within an hour.', data: null });
 });

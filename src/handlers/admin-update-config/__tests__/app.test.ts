@@ -30,6 +30,13 @@ describe('admin-update-config', () => {
     expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
   });
 
+  it.each([['{"placements": [}'], ['not json'], ['{a:1}']])('rejects a value that is not valid JSON (%s) before it reaches SSM (BE-069)', async (value) => {
+    const res = await call({ name: '/tradequt/dev/adConfig', value });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).message).toContain('valid JSON');
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+
   it('400 for missing body, invalid JSON and missing fields', async () => {
     expect((await call()).statusCode).toBe(400);
     expect((await call('{oops')).statusCode).toBe(400);

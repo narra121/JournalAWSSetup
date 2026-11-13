@@ -174,6 +174,27 @@ describe('manage-stripe-subscription handler', () => {
     expect(mockSubscriptionsRetrieve).toHaveBeenCalledWith('sub_test123');
   });
 
+  // ── GET stores the same status as the webhook (BE-017) ──
+
+  it.each([
+    ['unpaid', 'unpaid'],
+    ['trialing', 'active'],
+    ['past_due', 'past_due'],
+    ['canceled', 'cancelled'],
+    ['incomplete_expired', 'cancelled'],
+  ])('GET maps Stripe status %s to %s like the webhook, so the two writers never flip the row', async (stripeStatus, expected) => {
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    ddbMock.on(UpdateCommand).resolves({});
+    mockSubscriptionsRetrieve.mockResolvedValue(makeStripeSubscription({ status: stripeStatus }));
+
+    const res = await handler(makeEvent('GET')) as any;
+
+    expect(JSON.parse(res.body).data.subscription.status).toBe(expected);
+    const written = ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input.ExpressionAttributeValues![':status']);
+    // The stored row already says active, so an unchanged status is not written again.
+    expect(written).toEqual(expected === 'active' ? [] : [expected]);
+  });
+
   // ── 4. GET — returns trial info when status='trial' with trialEnd ──
 
   it('GET returns trial info when status=trial with trialEnd', async () => {
@@ -326,7 +347,7 @@ describe('manage-stripe-subscription handler', () => {
 
     expect(res.statusCode).toBe(405);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(body.errorCode).toBe('METHOD_NOT_ALLOWED');
     expect(body.message).toContain('Method not allowed');
   });
 

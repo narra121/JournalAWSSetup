@@ -44,6 +44,13 @@ export function hourOf(openDate: string, tz?: string | null): number | null {
   return isUtc(tz) ? new Date(ms).getUTCHours() : wall(ms, tz!).h;
 }
 
+/** True for a real calendar day in YYYY-MM-DD form; false for "2026-13-01", "2026-02-30" or text. */
+export function isCalendarDay(day: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const d = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(day);
+}
+
 /** Weekday (0 = Sunday) of a calendar day string. */
 export const weekdayOf = (date: string): number => new Date(`${date}T00:00:00Z`).getUTCDay();
 
@@ -68,6 +75,16 @@ export function dayRangeUtc(date: string, tz?: string | null): { start: string; 
   const nextGuess = nextMidnightUtc - offsetMs(nextMidnightUtc, tz!);
   const nextStart = nextMidnightUtc - offsetMs(nextGuess, tz!);
   return { start: new Date(start).toISOString(), end: new Date(nextStart - 1).toISOString() };
+}
+
+/**
+ * Bounds for querying the openDate index for a local day. Same as dayRangeUtc, but west of UTC the start is lowered to
+ * the bare date so date-only openDate values (which sort before the instant of local midnight) are found too. The range
+ * can then include neighbouring-day rows: callers keep only rows with `dayOf(openDate, tz) === date`.
+ */
+export function dayQueryRange(date: string, tz?: string | null): { start: string; end: string } {
+  const { start, end } = dayRangeUtc(date, tz);
+  return { start: start < date ? start : date, end };
 }
 
 /** The user's `timeZone` preference (IANA name) or null when none is set. */

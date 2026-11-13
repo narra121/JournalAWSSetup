@@ -1,4 +1,4 @@
-import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 const cognito = new CognitoIdentityProviderClient({});
 
@@ -23,12 +23,18 @@ export const handler = async (event: any) => {
           Limit: 10,
         }));
 
-        // Find a native (non-federated) user with this email
-        const nativeUser = existing.Users?.find(u =>
+        const natives = (existing.Users ?? []).filter(u =>
           u.UserStatus !== 'EXTERNAL_PROVIDER' &&
           !u.Username?.startsWith('google_') &&
           !u.Username?.startsWith('Google_')
         );
+
+        // An unconfirmed sign-up has not proven it owns the address, so linking to it would give the Google owner's journal
+        // to whoever typed that password. It holds no data: remove it and let the Google user be created on its own.
+        for (const pending of natives.filter(u => u.UserStatus === 'UNCONFIRMED')) {
+          await cognito.send(new AdminDeleteUserCommand({ UserPoolId: USER_POOL_ID, Username: pending.Username }));
+        }
+        const nativeUser = natives.find(u => u.UserStatus === 'CONFIRMED');
 
         if (nativeUser?.Username) {
           // Extract the Google provider sub from the external provider username
@@ -62,5 +68,19 @@ export const handler = async (event: any) => {
 
   // Email/password sign-up (PreSignUp_SignUp) is never auto-confirmed: without the confirmation code the sign-up has
   // proven no ownership of the address, even when a Google account with the same email exists.
+  // It is refused when a confirmed or Google account already owns the address (clients call Cognito SignUp directly,
+  // so this is where the former /auth/signup existence check lives). TradeFlow src/lib/auth/authService.ts matches the
+  // message text `USER_EXISTS` in Cognito's UserLambdaValidationException.
+  if (event.triggerSource === 'PreSignUp_SignUp' && email && USER_POOL_ID) {
+    const safeEmail = email.replace(/"/g, '\\"');
+    const existing = await cognito.send(new ListUsersCommand({
+      UserPoolId: USER_POOL_ID,
+      Filter: `email = "${safeEmail}"`,
+      Limit: 10,
+    }));
+    if (existing.Users?.some(u => u.UserStatus === 'CONFIRMED' || u.UserStatus === 'EXTERNAL_PROVIDER')) {
+      throw new Error('USER_EXISTS');
+    }
+  }
   return event;
 };

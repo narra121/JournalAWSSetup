@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
 vi.stubEnv('SAVED_OPTIONS_TABLE', 'test-saved-options');
-
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
 
 // Must import handler after env stubs
 const { handler } = await import('../app.ts');
@@ -64,28 +60,25 @@ const validOptions = {
 
 // --- Tests ------------------------------------------------------------------
 
+/** What UpdateItem would answer: the stored item with the SET attributes applied. */
+const stored = (existing: Record<string, any> = {}) => (input: any) => {
+  const names = input.ExpressionAttributeNames as Record<string, string>;
+  const values = input.ExpressionAttributeValues as Record<string, any>;
+  const attrs: Record<string, any> = { userId: 'user-1', ...existing };
+  for (const [n, field] of Object.entries(names)) {
+    if (n.startsWith('#c')) attrs[field] = values[`:v${n.slice(2)}`];
+  }
+  attrs.updatedAt = values[':now'];
+  attrs.createdAt = existing.createdAt ?? values[':now'];
+  return { Attributes: attrs };
+};
+
 beforeEach(() => {
   ddbMock.reset();
-  ddbMock.on(GetCommand).resolves({ Item: undefined });
-  ddbMock.on(PutCommand).resolves({});
+  ddbMock.on(UpdateCommand).callsFake(stored());
 });
 
 describe('update-saved-options handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    const res = await handler(makeEvent(validOptions), {} as any, () => {}) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // -- Success ---------------------------------------------------------------
 
   it('updates saved options and returns 200', async () => {
@@ -99,9 +92,7 @@ describe('update-saved-options handler', () => {
     expect(body.data.sessions).toEqual(['London']);
     expect(body.data.updatedAt).toBeDefined();
 
-    // Verify PutCommand was called
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls).toHaveLength(1);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
   });
 
   // -- Auth ------------------------------------------------------------------
@@ -189,57 +180,42 @@ describe('update-saved-options handler', () => {
     expect(body.data.symbols).toEqual(['AAPL', 'MSFT']);
   });
 
-  // -- Read-merge-write (partial update) ------------------------------------
+  // -- Partial update (BE-098) -----------------------------------------------
 
-  it('merges partial update with existing data (read-merge-write)', async () => {
-    // Mock GetCommand to return existing saved options
-    const existingOptions = {
-      userId: 'user-1',
-      symbols: ['TSLA', 'GOOG'],
-      strategies: ['Scalping'],
-      sessions: ['Tokyo'],
-      marketConditions: ['Ranging'],
-      newsEvents: ['CPI'],
-      mistakes: ['Overtrading'],
-      lessons: ['Be patient'],
-      timeframes: ['15m'],
-      updatedAt: '2024-01-01T00:00:00.000Z',
-    };
-    ddbMock.on(GetCommand).resolves({ Item: existingOptions });
+  it('writes only the categories that were sent, so the others cannot be overwritten with an older copy', async () => {
+    const existingOptions = { symbols: ['TSLA', 'GOOG'], strategies: ['Scalping'], createdAt: '2024-01-01T00:00:00.000Z' };
+    ddbMock.on(UpdateCommand).callsFake(stored(existingOptions));
 
-    // Send partial update — only updating symbols
-    const partialPayload = { symbols: ['AAPL', 'MSFT'] };
-    const res = await handler(makeEvent(partialPayload), {} as any, () => {}) as any;
+    const res = await handler(makeEvent({ tags: ['swing'] }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-
-    // Updated field should have new value
-    expect(body.data.symbols).toEqual(['AAPL', 'MSFT']);
-
-    // Non-updated fields should retain existing values (merged from GetCommand result)
+    expect(body.data.tags).toEqual(['swing']);
+    // untouched categories keep what is stored, missing ones are empty lists
+    expect(body.data.symbols).toEqual(['TSLA', 'GOOG']);
     expect(body.data.strategies).toEqual(['Scalping']);
-    expect(body.data.sessions).toEqual(['Tokyo']);
-    expect(body.data.marketConditions).toEqual(['Ranging']);
-    expect(body.data.newsEvents).toEqual(['CPI']);
-    expect(body.data.mistakes).toEqual(['Overtrading']);
-    expect(body.data.lessons).toEqual(['Be patient']);
-    expect(body.data.timeframes).toEqual(['15m']);
+    expect(body.data.sessions).toEqual([]);
 
-    // Verify PutCommand was called with merged data
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls).toHaveLength(1);
-    const putItem = putCalls[0].args[0].input.Item as any;
-    expect(putItem.symbols).toEqual(['AAPL', 'MSFT']);
-    expect(putItem.strategies).toEqual(['Scalping']);
-    expect(putItem.sessions).toEqual(['Tokyo']);
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input as any;
+    expect(Object.values(input.ExpressionAttributeNames)).toEqual(expect.arrayContaining(['tags', 'updatedAt', 'createdAt']));
+    expect(Object.values(input.ExpressionAttributeNames)).not.toContain('symbols');
+    expect(input.UpdateExpression).toContain('if_not_exists(#createdAt, :now)');
+    expect(input.Key).toEqual({ userId: 'user-1' });
+  });
+
+  it('caps a category at 500 entries of 200 characters', async () => {
+    const tooMany = await handler(makeEvent({ symbols: Array.from({ length: 501 }, (_, i) => `S${i}`) }), {} as any, () => {}) as any;
+    expect(tooMany.statusCode).toBe(400);
+    const tooLong = await handler(makeEvent({ mistakes: ['x'.repeat(201)] }), {} as any, () => {}) as any;
+    expect(tooLong.statusCode).toBe(400);
+    const edge = await handler(makeEvent({ symbols: Array.from({ length: 500 }, (_, i) => `S${i}`), mistakes: ['x'.repeat(200)] }), {} as any, () => {}) as any;
+    expect(edge.statusCode).toBe(200);
   });
 
   // -- DynamoDB error --------------------------------------------------------
 
   it('returns 500 when DynamoDB write fails', async () => {
-    ddbMock.on(PutCommand).rejects(new Error('DynamoDB write error'));
+    ddbMock.on(UpdateCommand).rejects(new Error('DynamoDB write error'));
 
     const res = await handler(makeEvent(validOptions), {} as any, () => {}) as any;
 

@@ -53,36 +53,20 @@ function computeStreaks(pnlValues: number[]): { consecutiveWins: number; consecu
   return { consecutiveWins: maxWins, consecutiveLosses: maxLosses };
 }
 
-function computeMaxDrawdown(pnlValues: number[], totalCapital?: number): number {
-  if (pnlValues.length === 0) return 0;
+/**
+ * Largest fall from a peak of the equity curve, as a percentage of the starting capital. Without a starting capital
+ * there is nothing to measure a percentage against, so the result is null (never a made-up base).
+ */
+function computeMaxDrawdown(pnlValues: number[], totalCapital?: number): number | null {
+  if (!(totalCapital && totalCapital > 0)) return null;
   let maxDrawdown = 0;
-
-  if (totalCapital && totalCapital > 0) {
-    let peak = totalCapital;
-    let equity = totalCapital;
-    for (const pnl of pnlValues) {
-      equity += pnl;
-      if (equity > peak) peak = equity;
-      const dd = peak > 0 ? ((peak - equity) / totalCapital) * 100 : 0;
-      if (dd > maxDrawdown) maxDrawdown = dd;
-    }
-  } else {
-    // Equity curve method (matches frontend lines 146-165)
-    let runningPnl = 0;
-    let minRunningPnl = 0;
-    for (const pnl of pnlValues) {
-      runningPnl += pnl;
-      if (runningPnl < minRunningPnl) minRunningPnl = runningPnl;
-    }
-    const startingEquity = (minRunningPnl < 0 ? -minRunningPnl : 0) + 1;
-    let peakEquity = startingEquity;
-    let equity = startingEquity;
-    for (const pnl of pnlValues) {
-      equity += pnl;
-      if (equity > peakEquity) peakEquity = equity;
-      const dd = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
-      if (dd > maxDrawdown) maxDrawdown = dd;
-    }
+  let peak = totalCapital;
+  let equity = totalCapital;
+  for (const pnl of pnlValues) {
+    equity += pnl;
+    if (equity > peak) peak = equity;
+    const dd = ((peak - equity) / totalCapital) * 100;
+    if (dd > maxDrawdown) maxDrawdown = dd;
   }
   return maxDrawdown;
 }
@@ -98,15 +82,20 @@ function computeSharpeRatio(pnlValues: number[]): number {
 
 export class PnlSequenceAggregator implements AggregationProcessor {
   readonly name = 'pnlSequence';
-  private allPnls: number[] = [];
+  /** Per-trade P&Ls with the time of the matching equity point (null when the record carries none). */
+  private seq: Array<{ pnl: number; at: number | null }> = [];
   private allEquityPoints: Array<{ pnl: number; symbol: string; dateTime: string }> = [];
   private dailyPnlMap: Map<string, number> = new Map();
   private recordDates: Set<string> = new Set();
 
   merge(record: Record<string, any>): void {
-    const seq = record.pnlSequence || [];
-    this.allPnls.push(...seq);
-    this.allEquityPoints.push(...(record.equityCurvePoints || []));
+    const seq: number[] = record.pnlSequence || [];
+    const points: Array<{ pnl: number; symbol: string; dateTime: string }> = record.equityCurvePoints || [];
+    seq.forEach((pnl, i) => {
+      const at = points.length === seq.length ? Date.parse(points[i].dateTime) : NaN;
+      this.seq.push({ pnl, at: Number.isNaN(at) ? null : at });
+    });
+    this.allEquityPoints.push(...points);
 
     // Accumulate per-date totalPnl for dailyPnl array
     const date = record.date as string;
@@ -117,9 +106,13 @@ export class PnlSequenceAggregator implements AggregationProcessor {
   }
 
   getResult(context: AggregationContext) {
-    const { consecutiveWins, consecutiveLosses } = computeStreaks(this.allPnls);
-    const maxDrawdown = computeMaxDrawdown(this.allPnls, context.totalCapital);
-    const sharpeRatio = computeSharpeRatio(this.allPnls);
+    // Records are merged day by day and account by account; with several accounts a day's trades interleave in time,
+    // so streaks and drawdown need the trades in time order. Without a time on every trade the merge order stays.
+    const ordered = this.seq.every((e) => e.at !== null) ? [...this.seq].sort((a, b) => a.at! - b.at!) : this.seq;
+    const allPnls = ordered.map((e) => e.pnl);
+    const { consecutiveWins, consecutiveLosses } = computeStreaks(allPnls);
+    const maxDrawdown = computeMaxDrawdown(allPnls, context.totalCapital);
+    const sharpeRatio = computeSharpeRatio(allPnls);
 
     // Build dailyPnl (always included)
     const sortedDates = [...this.recordDates].sort();
@@ -154,7 +147,7 @@ export class PnlSequenceAggregator implements AggregationProcessor {
   }
 
   reset(): void {
-    this.allPnls = [];
+    this.seq = [];
     this.allEquityPoints = [];
     this.dailyPnlMap = new Map();
     this.recordDates = new Set();

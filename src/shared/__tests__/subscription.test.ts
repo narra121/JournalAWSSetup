@@ -140,7 +140,7 @@ describe('checkSubscription', () => {
     expect(result!.statusCode).toBe(503);
     const body = JSON.parse(result!.body as string);
     expect(body.success).toBe(false);
-    expect(body.message).toBe('Service temporarily unavailable');
+    expect(body.message).toBe("We couldn't check your subscription right now. Please try again in a moment.");
   });
 
   // ── Additional edge cases ──────────────────────────────────────
@@ -266,15 +266,43 @@ describe('getSubscriptionTier', () => {
     expect(result.status).toBe('cancellation_requested');
   });
 
-  it('returns free_with_ads for past_due subscription', async () => {
+  it('returns paid for past_due subscription: computeEntitlements gives it Pro, so no ads (BE-025)', async () => {
     ddbMock.on(GetCommand).resolves({
       Item: { userId: 'user-1', status: 'past_due' },
     });
 
     const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('paid');
+    expect(result.showAds).toBe(false);
+    expect(result.status).toBe('past_due');
+  });
+
+  it('returns free_with_ads for an expired admin grant that is still status active (BE-025)', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'active', source: 'admin_grant', periodEnd: new Date(Date.now() - 86400000).toISOString() },
+    });
+
+    const result = await getSubscriptionTier('user-1');
     expect(result.tier).toBe('free_with_ads');
     expect(result.showAds).toBe(true);
-    expect(result.status).toBe('past_due');
+  });
+
+  it('returns paid for a running admin grant', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'active', source: 'admin_grant', periodEnd: new Date(Date.now() + 86400000).toISOString() },
+    });
+
+    expect((await getSubscriptionTier('user-1')).tier).toBe('paid');
+  });
+
+  it('returns free_with_ads for an unpaid subscription', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', status: 'unpaid' },
+    });
+
+    const result = await getSubscriptionTier('user-1');
+    expect(result.tier).toBe('free_with_ads');
+    expect(result.showAds).toBe(true);
   });
 
   it('returns free_with_ads for paused subscription', async () => {

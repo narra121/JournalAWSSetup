@@ -1,7 +1,10 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { computeDailyRecord } from '../../shared/stats-aggregator';
-import { dayOf, getUserTimeZone } from '../../shared/timezone';
+import { dayOf, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
+import { calcPnL } from '../../shared/utils/pnl';
+import { batchWritePutAll, batchWriteDeleteAll } from '../../shared/batchWrite';
+import { STATS_DIRTY_PK } from '../../shared/statsDirty';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TRADES_TABLE = process.env.TRADES_TABLE!;
@@ -9,38 +12,49 @@ const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 
 const WARN_THRESHOLD = 1000;
+const BALANCE_ATTEMPTS = 3;
+
+const isValidAccount = (accountId: any) => !!accountId && accountId !== '-1' && accountId !== -1;
 
 // ---------------------------------------------------------------------------
-// Step 1: Find users with recent daily-stats changes (last 24 h)
+// Step 1: Users flagged by update-stats since their last rebuild
 // ---------------------------------------------------------------------------
-async function getRecentlyChangedUserIds(): Promise<string[]> {
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const userIds = new Set<string>();
+async function getDirtyUsers(): Promise<{ userId: string; dirtyAt: string }[]> {
+  const users: { userId: string; dirtyAt: string }[] = [];
   let lastEvaluatedKey: any = undefined;
 
   do {
-    const resp: any = await ddb.send(new ScanCommand({
+    const resp: any = await ddb.send(new QueryCommand({
       TableName: DAILY_STATS_TABLE,
+      KeyConditionExpression: 'userId = :pk',
+      ExpressionAttributeValues: { ':pk': STATS_DIRTY_PK },
       ExclusiveStartKey: lastEvaluatedKey,
-      ProjectionExpression: 'userId',
-      FilterExpression: 'lastUpdated >= :cutoff',
-      ExpressionAttributeValues: { ':cutoff': cutoff },
     }));
-    for (const item of resp.Items || []) {
-      userIds.add(item.userId);
-    }
+    for (const item of resp.Items || []) users.push({ userId: item.sk, dirtyAt: item.dirtyAt });
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
 
-  return [...userIds];
+  return users;
+}
+
+/** Removes the flag unless update-stats set it again after it was read (that change needs another rebuild). */
+async function clearDirty(userId: string, dirtyAt: string): Promise<void> {
+  try {
+    await ddb.send(new DeleteCommand({
+      TableName: DAILY_STATS_TABLE,
+      Key: { userId: STATS_DIRTY_PK, sk: userId },
+      ConditionExpression: 'dirtyAt = :seen',
+      ExpressionAttributeValues: { ':seen': dirtyAt },
+    }));
+  } catch (e: any) {
+    if (e.name !== 'ConditionalCheckFailedException') throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Rebuild stats for a single user (trades query + stats + balances + daily stats)
+// Step 2: Rebuild stats for a single user (trades query + balances + daily stats)
 // ---------------------------------------------------------------------------
-export async function rebuildForUser(userId: string): Promise<void> {
-  const timeZone = await getUserTimeZone(userId).catch(() => null);
-  // Fetch all trades for this user
+async function loadTrades(userId: string): Promise<any[]> {
   let lastEvaluatedKey: any = undefined;
   const trades: any[] = [];
   do {
@@ -48,131 +62,164 @@ export async function rebuildForUser(userId: string): Promise<void> {
       TableName: TRADES_TABLE,
       KeyConditionExpression: 'userId = :u',
       ExpressionAttributeValues: { ':u': userId },
-      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition,brokenRuleIds,mistakes,lessons,deletedAt',
+      ProjectionExpression: '#u,#t,symbol,side,entryPrice,exitPrice,quantity,accountId,pnl,openDate,closeDate,setupType,tradingSession,outcome,riskRewardRatio,stopLoss,takeProfit,tags,marketCondition,brokenRuleIds,mistakes,lessons,deletedAt,assetClass,contractMultiplier,updatedAt,fees,importSource',
       ExpressionAttributeNames: { '#u': 'userId', '#t': 'tradeId' },
       ExclusiveStartKey: lastEvaluatedKey,
     }));
     trades.push(...(resp.Items || []).filter((t: any) => !t.deletedAt));
     lastEvaluatedKey = resp.LastEvaluatedKey;
   } while (lastEvaluatedKey);
+  return trades;
+}
 
-  const accountPnL: Record<string, number> = {};
+async function loadAccounts(userId: string): Promise<any[]> {
+  let lastEvaluatedKey: any = undefined;
+  const accounts: any[] = [];
+  do {
+    const resp: any = await ddb.send(new QueryCommand({
+      TableName: ACCOUNTS_TABLE,
+      KeyConditionExpression: 'userId = :u',
+      ExpressionAttributeValues: { ':u': userId },
+      ProjectionExpression: 'accountId, initialBalance, balance, updatedAt',
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+    accounts.push(...(resp.Items || []));
+    lastEvaluatedKey = resp.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
+  return accounts;
+}
 
+/**
+ * Sets every account's balance to initialBalance + the P&L of its live trades. A write only lands if the account is
+ * unchanged since `accounts` was read (a stream ADD or an edit in between bumps updatedAt); returns how many did not.
+ */
+async function updateBalances(userId: string, accounts: any[], trades: any[]): Promise<number> {
+  const accountPnL = new Map<string, number>();
   for (const t of trades) {
-    const accountId = t.accountId;
-    if (!accountId || accountId === '-1' || accountId === -1) continue;
-
-    // Use stored pnl if available, fallback to calculation from prices
-    const pnl = (t.pnl != null && typeof t.pnl === 'number')
-      ? t.pnl
-      : (t.entryPrice != null && t.exitPrice != null && t.quantity != null)
-        ? (t.side === 'BUY' ? (t.exitPrice - t.entryPrice) * t.quantity : (t.entryPrice - t.exitPrice) * t.quantity)
-        : null;
-    if (pnl != null) {
-      accountPnL[accountId] = (accountPnL[accountId] || 0) + pnl;
-    }
+    if (!isValidAccount(t.accountId)) continue;
+    const pnl = calcPnL(t);
+    if (pnl != null) accountPnL.set(t.accountId, (accountPnL.get(t.accountId) || 0) + pnl);
   }
 
-  // Update account balances = initialBalance + totalPnL from trades
-  for (const [accountId, totalPnL] of Object.entries(accountPnL)) {
+  let conflicts = 0;
+  for (const account of accounts) {
+    const newBalance = Math.round(((account.initialBalance || 0) + (accountPnL.get(account.accountId) || 0)) * 100) / 100;
+    if (account.balance === newBalance) continue;
     try {
-      const accountResp = await ddb.send(new GetCommand({
-        TableName: ACCOUNTS_TABLE,
-        Key: { userId, accountId },
-        ProjectionExpression: 'initialBalance',
-      }));
-      if (!accountResp.Item) continue;
-
-      const initialBalance = accountResp.Item.initialBalance || 0;
-      const newBalance = Math.round((initialBalance + totalPnL) * 100) / 100;
-
       await ddb.send(new UpdateCommand({
         TableName: ACCOUNTS_TABLE,
-        Key: { userId, accountId },
+        Key: { userId, accountId: account.accountId },
         UpdateExpression: 'SET #balance = :balance, #updatedAt = :updatedAt',
+        ConditionExpression: account.updatedAt === undefined ? 'attribute_not_exists(#updatedAt)' : '#updatedAt = :seen',
         ExpressionAttributeNames: { '#balance': 'balance', '#updatedAt': 'updatedAt' },
-        ExpressionAttributeValues: { ':balance': newBalance, ':updatedAt': new Date().toISOString() },
+        ExpressionAttributeValues: {
+          ':balance': newBalance,
+          ':updatedAt': new Date().toISOString(),
+          ...(account.updatedAt === undefined ? {} : { ':seen': account.updatedAt }),
+        },
       }));
-    } catch (e) {
-      console.error(`Failed to update balance for account ${accountId}`, e);
+    } catch (e: any) {
+      if (e.name === 'ConditionalCheckFailedException') conflicts++;
+      else console.error(`Failed to update balance for account ${account.accountId}`, e);
     }
+  }
+  return conflicts;
+}
+
+/**
+ * Rebuilds a user's balances and daily stats from their trades. Daily records whose tradeHash is unchanged are left
+ * alone; `force` rewrites them all (needed when the time zone changed, which moves hours and days but not the hash).
+ */
+export async function rebuildForUser(userId: string, opts: { force?: boolean } = {}): Promise<void> {
+  const timeZone = await getUserTimeZone(userId).catch(() => null);
+
+  let trades: any[] = [];
+  for (let attempt = 1; attempt <= BALANCE_ATTEMPTS; attempt++) {
+    const accounts = await loadAccounts(userId);
+    trades = await loadTrades(userId);
+    if ((await updateBalances(userId, accounts, trades)) === 0) break;
+    if (attempt === BALANCE_ATTEMPTS) console.warn(`rebuild-stats-job: balances of ${userId} kept changing; the next rebuild corrects them`);
   }
 
   // --- Rebuild DailyStatsTable ---
-  // Group trades by (userId, accountId, date)
+  // Group trades by (accountId, date)
   const dailyGroups = new Map<string, any[]>();
   for (const t of trades) {
     const accountId = t.accountId;
-    if (!accountId || accountId === '-1' || accountId === -1) continue;
+    if (!isValidAccount(accountId)) continue;
     const date = dayOf(t.openDate, timeZone);
-    if (!date) continue;
+    if (!date || !isCalendarDay(date)) continue;
     const key = `${accountId}#${date}`;
     const group = dailyGroups.get(key);
     if (group) { group.push(t); } else { dailyGroups.set(key, [t]); }
   }
 
-  // Compute and write daily records
-  const newSkSet = new Set<string>();
-  for (const [key, groupTrades] of dailyGroups) {
-    const [accountId, date] = key.split('#');
-    const record = computeDailyRecord(userId, accountId, date, groupTrades, timeZone);
-    if (record) {
-      newSkSet.add(record.sk);
-      await ddb.send(new PutCommand({ TableName: DAILY_STATS_TABLE, Item: record }));
-    }
-  }
-
-  // Orphan cleanup: delete daily stats records that no longer have trades
+  const storedHashes = new Map<string, string | undefined>();
   let dailyLastKey: any = undefined;
   do {
     const queryResp: any = await ddb.send(new QueryCommand({
       TableName: DAILY_STATS_TABLE,
       KeyConditionExpression: 'userId = :uid',
       ExpressionAttributeValues: { ':uid': userId },
-      ProjectionExpression: 'userId, sk',
+      ProjectionExpression: 'userId, sk, tradeHash',
       ExclusiveStartKey: dailyLastKey,
     }));
-    const existingItems = queryResp.Items || [];
-    for (const item of existingItems) {
-      if (!newSkSet.has(item.sk)) {
-        await ddb.send(new DeleteCommand({
-          TableName: DAILY_STATS_TABLE,
-          Key: { userId: item.userId, sk: item.sk },
-        }));
-      }
-    }
+    for (const item of queryResp.Items || []) storedHashes.set(item.sk, item.tradeHash);
     dailyLastKey = queryResp.LastEvaluatedKey;
   } while (dailyLastKey);
+
+  const records: any[] = [];
+  for (const [key, groupTrades] of dailyGroups) {
+    const [accountId, date] = key.split('#');
+    const record = computeDailyRecord(userId, accountId, date, groupTrades, timeZone);
+    if (record) records.push(record);
+  }
+
+  await batchWritePutAll({
+    ddb,
+    tableName: DAILY_STATS_TABLE,
+    items: records.filter((r) => opts.force || storedHashes.get(r.sk) !== r.tradeHash),
+  });
+
+  // Orphan cleanup: delete daily stats records that no longer have trades
+  const liveSks = new Set(records.map((r) => r.sk));
+  await batchWriteDeleteAll({
+    ddb,
+    tableName: DAILY_STATS_TABLE,
+    keys: [...storedHashes.keys()].filter((sk) => !liveSks.has(sk)).map((sk) => ({ userId, sk })),
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-// Periodic job: rebuild stats, account balances, and daily stats for users
-// with recent changes (last 24 hours).
+// Periodic job: rebuild stats, account balances, and daily stats for the users
+// update-stats flagged as changed since their last rebuild.
 export const handler = async () => {
   console.log('rebuild-stats-job started', { timestamp: new Date().toISOString() });
 
-  // Find users with recent daily-stats changes
-  const recentUserIds = await getRecentlyChangedUserIds();
+  const dirtyUsers = await getDirtyUsers();
 
-  if (recentUserIds.length === 0) {
+  if (dirtyUsers.length === 0) {
     return { rebuiltUsers: 0, skipped: 'no recent changes' };
   }
 
   // Warn if unusually high — but process ALL users, never skip
-  if (recentUserIds.length > WARN_THRESHOLD) {
-    console.warn(`rebuild-stats-job: ${recentUserIds.length} users need rebuilding (above ${WARN_THRESHOLD} threshold)`);
+  if (dirtyUsers.length > WARN_THRESHOLD) {
+    console.warn(`rebuild-stats-job: ${dirtyUsers.length} users need rebuilding (above ${WARN_THRESHOLD} threshold)`);
   }
 
   // Process 5 users concurrently — each user's rebuild is independent (different partition key)
   const CONCURRENT_USERS = 5;
   const allErrors: Error[] = [];
-  for (let i = 0; i < recentUserIds.length; i += CONCURRENT_USERS) {
-    const batch = recentUserIds.slice(i, i + CONCURRENT_USERS);
+  for (let i = 0; i < dirtyUsers.length; i += CONCURRENT_USERS) {
+    const batch = dirtyUsers.slice(i, i + CONCURRENT_USERS);
     const results = await Promise.allSettled(
-      batch.map(userId => rebuildForUser(userId))
+      batch.map(async ({ userId, dirtyAt }) => {
+        await rebuildForUser(userId);
+        await clearDirty(userId, dirtyAt);
+      })
     );
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -181,10 +228,10 @@ export const handler = async () => {
     }
   }
 
-  // Re-throw the first error so callers (and tests) see the failure
+  // Re-throw the first error so callers (and tests) see the failure; failed users stay flagged for the next run
   if (allErrors.length > 0) {
     throw allErrors[0];
   }
 
-  return { rebuiltUsers: recentUserIds.length };
+  return { rebuiltUsers: dirtyUsers.length };
 };

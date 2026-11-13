@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { makeLogger } from '../logger.ts';
 import type { Logger } from '../logger.ts';
 
@@ -20,6 +20,10 @@ function getAllLogEntries(): Array<Record<string, any>> {
 beforeEach(() => {
   vi.stubEnv('LOG_LEVEL', 'debug');
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  logSpy.mockRestore();
 });
 
 // ─── Tests ─────────────────────────────────────────────────────

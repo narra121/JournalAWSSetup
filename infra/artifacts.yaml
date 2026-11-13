@@ -19,6 +19,23 @@ Resources:
         IgnorePublicAcls: true
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
+      # Zip keys are content hashes (web/<stage>/<sha256>.zip): the current object of a key is never expired, only
+      # superseded versions of the same key (re-uploads of identical bytes). templates/ copies are only read while a change set is created.
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: ExpireTemplateCopies
+            Status: Enabled
+            Prefix: templates/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: RemoveExpiredDeleteMarkers
+            Status: Enabled
+            ExpiredObjectDeleteMarker: true
 
   CodeBucketPolicy:
     Type: AWS::S3::BucketPolicy

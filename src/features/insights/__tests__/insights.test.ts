@@ -7,6 +7,7 @@ import { buildInsightRequest, INSIGHT_SYSTEM, promptMetricIds } from '../prompt'
 import { insightsApp } from '../routes';
 import { generateInsight } from '../service';
 import { validateInsight } from '../validate';
+import { listInsights, putInsight, type Insight } from '../store';
 
 const at = (day: string, hhmm: string) => `${day}T${hhmm}:00.000Z`;
 
@@ -121,6 +122,24 @@ describe('validateInsight', () => {
     expect(cited.every((id) => c.tradeIds.has(id))).toBe(true);
   });
 
+  it('eight model sections that are all patterns still end with a strength, a leak and an action (BE-049)', () => {
+    const patterns = Array.from({ length: 8 }, (_, i) => ({ kind: 'pattern', title: `Pattern ${i}`, body: `body ${i}`, metricRef: 'netPnl' }));
+    const v = validateInsight({ summary: 'S', sections: patterns }, c);
+    const kinds = v.sections.map((s) => s.kind);
+    expect(v.sections).toHaveLength(8);
+    for (const required of ['strength', 'leak', 'action']) expect(kinds.filter((k) => k === required)).toHaveLength(1);
+    // the earliest patterns are kept, the surplus ones are dropped from the end
+    expect(v.sections.filter((s) => s.kind === 'pattern').map((s) => s.title)).toEqual(['Pattern 0', 'Pattern 1', 'Pattern 2', 'Pattern 3', 'Pattern 4']);
+  });
+
+  it('a model answer that already has all three kinds is not reshuffled', () => {
+    const sections = [
+      ...Array.from({ length: 5 }, (_, i) => ({ kind: 'pattern', title: `P${i}`, body: 'b' })),
+      { kind: 'strength', title: 'S', body: 'b' }, { kind: 'leak', title: 'L', body: 'b' }, { kind: 'action', title: 'A', body: 'b' },
+    ];
+    expect(validateInsight({ summary: 'S', sections }, c).sections.map((s) => s.title)).toEqual(['P0', 'P1', 'P2', 'P3', 'P4', 'S', 'L', 'A']);
+  });
+
   it('clamps lengths and survives garbage', () => {
     const v = validateInsight({ summary: 'x'.repeat(900), sections: [{ kind: 'leak', title: 't'.repeat(200), body: 'b'.repeat(2000), metricRef: 'netPnl' }] }, c);
     expect(v.summary).toHaveLength(400);
@@ -181,6 +200,48 @@ describe('generateInsight', () => {
     expect(second.ok && first.ok && second.insight.id === first.insight.id).toBe(true);
     expect(generate).toHaveBeenCalledTimes(1);
     expect(q.calls).toHaveLength(1);
+  });
+
+  describe('one generation at a time for the same inputs (BE-109)', () => {
+    const input = { from: '2026-10-01', to: '2026-10-31' };
+
+    it('a double click uses one unit and one Gemini call: the second request is a 409, or the finished insight', async () => {
+      const { deps, generate, q, store } = setup();
+      const results = await Promise.all([generateInsight(deps, q.quota, 'u1', input), generateInsight(deps, q.quota, 'u1', input)]);
+      expect(results.every((r) => r.ok || (r.status === 409 && r.code === 'IN_PROGRESS'))).toBe(true);
+      expect(results.filter((r) => r.ok && !r.cached)).toHaveLength(1);
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(q.used.ai_insight).toBe(1);
+      expect([...store.items.values()].some((i) => i.sk.startsWith('INSIGHT-CLAIM#'))).toBe(false);
+    });
+
+    it('the claim is released when the quota is exhausted and when Gemini fails, so a retry can run', async () => {
+      const full = setup({}, { ai_insight: 0 });
+      expect(await generateInsight(full.deps, full.q.quota, 'u1', input)).toMatchObject({ ok: false, status: 402 });
+      expect([...full.store.items.values()]).toHaveLength(0);
+
+      const down = setup({ generate: vi.fn().mockRejectedValue(new AiUnavailableError('down', 'm', 503)) });
+      expect(await generateInsight(down.deps, down.q.quota, 'u1', input)).toMatchObject({ ok: false, status: 502 });
+      expect([...down.store.items.values()]).toHaveLength(0);
+      expect(down.q.used.ai_insight).toBe(0);
+    });
+
+    it('a claim left by a crashed run blocks only until it expires', async () => {
+      const { deps, store, q, generate } = setup({}, { ai_insight: 5 });
+      const base = await generateInsight(deps, q.quota, 'u1', input); // learn the hash through the stored insight
+      expect(base.ok).toBe(true);
+      const hash = [...store.items.values()].find((i) => i.entity === 'insight')!.metricsHash as string;
+      // a different period with the same metrics hash is not blocked by this claim key, so use the real key shape
+      const sk = `INSIGHT-CLAIM#ALL#${input.from}#${input.to}#${hash}`;
+      store.items.clear();
+      await store.putIfFree({ userId: 'u1', sk, entity: 'insight-claim', expiresAt: deps.now().getTime() + 60_000 }, deps.now().getTime());
+      expect(await generateInsight(deps, q.quota, 'u1', input)).toMatchObject({ ok: false, status: 409 });
+      store.items.clear();
+      await store.putIfFree({ userId: 'u1', sk, entity: 'insight-claim', expiresAt: deps.now().getTime() - 1 }, deps.now().getTime() - 5);
+      const later = await generateInsight(deps, q.quota, 'u1', input);
+      expect(later.ok).toBe(true);
+      expect(generate).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('422 below five trades, no quota used', async () => {
@@ -267,3 +328,57 @@ describe('insights routes', () => {
     expect(await res.json()).toMatchObject({ success: false, errorCode: 'QUOTA_EXCEEDED', error: { code: 'QUOTA_EXCEEDED', feature: 'ai_insight', limit: 0, resetsAt: '2026-12-01T00:00:00.000Z' } });
   });
 });
+
+describe('listInsights with an account filter (X-008)', () => {
+  const insight = (n: number, accountId: string | null): Insight => ({
+    id: `2026110${n}T000000000Z_0000000${n}`, createdAt: '2026-11-0' + n, period: { from: '2026-10-01', to: '2026-10-31' }, accountId, summary: `s${n}`, sections: [], model: 'm', tradeCount: 1,
+  });
+  const seed = async (accounts: (string | null)[]) => {
+    const store = memoryStore();
+    for (const [i, a] of accounts.entries()) await putInsight(store, 'u1', insight(i + 1, a), `h${i}`);
+    return store;
+  };
+
+  it('limit 1 for acc1 returns the newest acc1 insight even when a newer one belongs to another account', async () => {
+    const store = await seed(['acc1', null, 'other', 'other']); // newest first: 4 other, 3 other, 2 ALL, 1 acc1
+    const r = await listInsights(store, 'u1', { accountId: 'acc1', limit: 1 });
+    expect(r).not.toBe('invalid');
+    expect((r as any).insights.map((i: Insight) => i.summary)).toEqual(['s1']);
+    expect((r as any).nextCursor).toBeNull();
+  });
+
+  it('pages through matches with a cursor that continues after the last one handed out', async () => {
+    const store = await seed(['a', 'x', 'a', 'x', 'x', 'a', 'x']); // newest first: x a x x a x a
+    const first = (await listInsights(store, 'u1', { accountId: 'a', limit: 2 })) as any;
+    expect(first.insights.map((i: Insight) => i.summary)).toEqual(['s6', 's3']);
+    expect(first.nextCursor).not.toBeNull();
+    const second = (await listInsights(store, 'u1', { accountId: 'a', limit: 2, cursor: first.nextCursor })) as any;
+    expect(second.insights.map((i: Insight) => i.summary)).toEqual(['s1']);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('a cursor is still bound to the user and the unfiltered list is unchanged', async () => {
+    const store = await seed(['a', 'b']);
+    expect(await listInsights(store, 'u1', { accountId: 'a', limit: 1, cursor: 'garbage' })).toBe('invalid');
+    const all = (await listInsights(store, 'u1', { limit: 5 })) as any;
+    expect(all.insights.map((i: Insight) => i.summary)).toEqual(['s2', 's1']);
+  });
+
+  it('stops after a bounded number of pages and hands back a cursor to continue', async () => {
+    const store = memoryStore();
+    for (let i = 0; i < 250; i++) await putInsight(store, 'u1', { ...insight(1, 'x'), id: `20261101T${String(i).padStart(6, '0')}000Z_${String(i).padStart(8, '0')}`.slice(0, 25) + '', summary: `n${i}` } as Insight, 'h');
+    const r = (await listInsights(store, 'u1', { accountId: 'nobody', limit: 1 })) as any;
+    expect(r.insights).toEqual([]);
+    expect(r.nextCursor).not.toBeNull();
+  });
+});
+
+describe('groupMany scales (BE-110)', () => {
+  it('5000 trades of one asset class and side compute in well under a second', () => {
+    const many = Array.from({ length: 5000 }, (_, i) => trade({ id: `t${i}`, pnl: i % 3 === 0 ? -10 : 20, openDate: at('2026-10-05', '04:00'), assetClass: 'stock', side: 'BUY' }));
+    const t0 = performance.now();
+    computeInsightInputs(many, new Map());
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
+});
+

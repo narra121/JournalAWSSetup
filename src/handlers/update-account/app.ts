@@ -5,7 +5,6 @@ import { UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
@@ -16,7 +15,6 @@ const accountUpdateSchema = {
     broker: { type: 'string', minLength: 1, maxLength: 100 },
     type: { type: 'string', enum: ['prop_challenge', 'prop_funded', 'personal', 'demo'] },
     status: { type: 'string', enum: ['active', 'breached', 'passed', 'withdrawn', 'inactive'] },
-    balance: { type: 'number' },
     initialBalance: { type: 'number' },
     currency: { type: 'string', minLength: 3, maxLength: 3 },
     notes: { type: ['string', 'null'], maxLength: 1000 }
@@ -34,9 +32,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!accountId) {
     log.warn('missing accountId');
@@ -66,18 +61,8 @@ export const handler: ApiHandler = async (event) => {
   }
 
   try {
-    // Verify account exists and belongs to user
-    const existing = await ddb.send(new GetCommand({
-      TableName: ACCOUNTS_TABLE,
-      Key: { userId, accountId }
-    }));
-
-    if (!existing.Item) {
-      log.warn('account not found', { accountId });
-      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
-    }
-
-    const ALLOWED_FIELDS = ['name', 'broker', 'type', 'status', 'balance', 'initialBalance', 'currency', 'notes'];
+    // `balance` is maintained from the trades and is never taken from the client; a changed initialBalance moves it by the difference.
+    const ALLOWED_FIELDS = ['name', 'broker', 'type', 'status', 'initialBalance', 'currency', 'notes'];
 
     const now = new Date().toISOString();
     const updateExpressions: string[] = [];
@@ -107,6 +92,28 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No valid fields to update');
     }
 
+    // The condition also makes a missing account a 404 instead of letting UpdateItem create a stub item.
+    let condition = 'attribute_exists(accountId)';
+    let addExpression = '';
+    if (data.initialBalance !== undefined) {
+      const existing = await ddb.send(new GetCommand({ TableName: ACCOUNTS_TABLE, Key: { userId, accountId }, ProjectionExpression: 'initialBalance' }));
+      if (!existing.Item) {
+        log.warn('account not found', { accountId });
+        return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
+      }
+      const previous = existing.Item.initialBalance;
+      expressionAttributeNames['#balance'] = 'balance';
+      const initial = Object.keys(expressionAttributeNames).find((alias) => expressionAttributeNames[alias] === 'initialBalance')!;
+      expressionAttributeValues[':delta'] = Math.round((data.initialBalance - (typeof previous === 'number' ? previous : 0)) * 100) / 100;
+      addExpression = ' ADD #balance :delta';
+      if (typeof previous === 'number') {
+        condition += ` AND ${initial} = :previous`;
+        expressionAttributeValues[':previous'] = previous;
+      } else {
+        condition += ` AND attribute_not_exists(${initial})`;
+      }
+    }
+
     updateExpressions.push(`#updatedAt = :updatedAt`);
     expressionAttributeNames['#updatedAt'] = 'updatedAt';
     expressionAttributeValues[':updatedAt'] = now;
@@ -114,16 +121,24 @@ export const handler: ApiHandler = async (event) => {
     const result = await ddb.send(new UpdateCommand({
       TableName: ACCOUNTS_TABLE,
       Key: { userId, accountId },
-      UpdateExpression: `SET ${updateExpressions.join(', ')}`,
+      UpdateExpression: `SET ${updateExpressions.join(', ')}${addExpression}`,
+      ConditionExpression: condition,
       ExpressionAttributeNames: expressionAttributeNames,
       ExpressionAttributeValues: expressionAttributeValues,
-      ReturnValues: 'ALL_NEW'
+      ReturnValues: 'ALL_NEW',
+      ReturnValuesOnConditionCheckFailure: 'ALL_OLD'
     }));
 
     log.info('account updated', { accountId });
     
     return envelope({ statusCode: 200, data: { account: result.Attributes }, message: 'Account updated successfully' });
   } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      // ALL_OLD carries the stored account: when there is one, its initial balance changed between the read and the write.
+      if (error.Item) return envelope({ statusCode: 409, error: { message: 'This account was changed by another request. Reload it and try again.' } });
+      log.warn('account not found', { accountId });
+      return errorResponse(404, ErrorCodes.NOT_FOUND, 'Account not found');
+    }
     log.error('failed to update account', { error: error.message });
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update account');
   }

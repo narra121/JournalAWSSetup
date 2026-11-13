@@ -2,6 +2,7 @@ import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { cognitoFailure } from '../../shared/cognitoErrors';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
@@ -50,7 +51,7 @@ export const handler: ApiHandler = async (event) => {
       try {
         const { email } = JSON.parse(event.body!);
         const resendRl = await checkRateLimit({ key: `resend:${email}`, limit: 3, windowSeconds: 900 });
-        if (!resendRl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts');
+        if (!resendRl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: resendRl.retryAfter });
         await client.send(new ResendConfirmationCodeCommand({ ClientId: CLIENT_ID, Username: email }));
         return envelope({
           statusCode: 200,
@@ -60,10 +61,10 @@ export const handler: ApiHandler = async (event) => {
       } catch (resendError: any) {
         console.error('Failed to resend confirmation code', { error: resendError.message });
         // If resend fails, return the original error
-        return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please login or reset your password.');
+        return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please log in or reset your password.');
       }
     }
 
-    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, e?.message || 'Signup failed');
+    return cognitoFailure(e, 'signup');
   }
 };

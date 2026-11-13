@@ -748,69 +748,61 @@ describe('update-stats stream handler', () => {
 
   // -- Symbol sync into SavedOptions -----------------------------------------
 
-  it('syncs new symbol into SavedOptions on INSERT', async () => {
-    const trade = makeTrade({ symbol: 'TSLA' });
+  describe('saved symbols (BE-098)', () => {
+    const optionUpdates = () => ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-saved-options').map((c) => c.args[0].input);
+    const stub = (trade: any) => {
+      ddbMock.on(QueryCommand).resolves({ Items: [trade], LastEvaluatedKey: undefined });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
+    };
 
-    ddbMock.on(QueryCommand).resolves({ Items: [trade], LastEvaluatedKey: undefined });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
-    ddbMock.on(GetCommand).resolves({ Item: { symbols: ['AAPL'] } });
+    it('appends a new symbol with one conditional update (no read-modify-write)', async () => {
+      const trade = makeTrade({ symbol: 'TSLA' });
+      stub(trade);
+      await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-sync')]), {} as any, () => {});
 
-    const event = makeStreamEvent([
-      makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-sync'),
-    ]);
+      const updates = optionUpdates();
+      expect(updates).toHaveLength(1);
+      expect(updates[0].Key).toEqual({ userId: 'user-1' });
+      expect(updates[0].UpdateExpression).toContain('list_append(if_not_exists(#symbols, :empty), :one)');
+      expect(updates[0].ConditionExpression).toBe('attribute_not_exists(#symbols) OR (NOT contains(#symbols, :symbol) AND size(#symbols) < :max)');
+      expect(updates[0].ExpressionAttributeValues).toMatchObject({ ':one': ['TSLA'], ':symbol': 'TSLA', ':max': 500 });
+      expect(ddbMock.commandCalls(GetCommand).filter((c) => c.args[0].input.TableName === 'test-saved-options')).toHaveLength(0);
+    });
 
-    await handler(event, {} as any, () => {});
+    it('a symbol that is already saved (or a full list) fails the condition quietly and does not fail the batch', async () => {
+      const trade = makeTrade({ symbol: 'AAPL' });
+      stub(trade);
+      ddbMock.on(UpdateCommand, { TableName: 'test-saved-options' }).rejects(Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-dup')]), {} as any, () => {})) as any;
+      expect(res.batchItemFailures).toEqual([]);
+      expect(err).not.toHaveBeenCalledWith(expect.stringContaining('Failed to sync symbol'), expect.anything());
+      err.mockRestore();
+    });
 
-    // Should have called UpdateCommand on saved-options table with merged symbols
-    const optionUpdates = ddbMock
-      .commandCalls(UpdateCommand)
-      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
-    expect(optionUpdates).toHaveLength(1);
-    expect(optionUpdates[0].args[0].input.ExpressionAttributeValues![':symbols']).toEqual(['AAPL', 'TSLA']);
-  });
+    it('another failure is logged and still does not fail the batch', async () => {
+      const trade = makeTrade({ symbol: 'AAPL' });
+      stub(trade);
+      ddbMock.on(UpdateCommand, { TableName: 'test-saved-options' }).rejects(new Error('throttled'));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-err')]), {} as any, () => {})) as any;
+      expect(res.batchItemFailures).toEqual([]);
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('Failed to sync symbol for user user-1'), expect.any(Error));
+      err.mockRestore();
+    });
 
-  it('skips symbol sync when symbol already exists in SavedOptions', async () => {
-    const trade = makeTrade({ symbol: 'AAPL' });
-
-    ddbMock.on(QueryCommand).resolves({ Items: [trade], LastEvaluatedKey: undefined });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [trade] } });
-    ddbMock.on(GetCommand).resolves({ Item: { symbols: ['AAPL', 'MSFT'] } });
-
-    const event = makeStreamEvent([
-      makeStreamRecord('INSERT', trade, undefined, 'evt-symbol-dup'),
-    ]);
-
-    await handler(event, {} as any, () => {});
-
-    // No UpdateCommand on saved-options since symbol already present
-    const optionUpdates = ddbMock
-      .commandCalls(UpdateCommand)
-      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
-    expect(optionUpdates).toHaveLength(0);
-  });
-
-  it('syncs symbol on MODIFY but not on REMOVE', async () => {
-    const oldTrade = makeTrade({ symbol: 'AAPL' });
-    const newTrade = makeTrade({ symbol: 'GOOG' });
-    const removedTrade = makeTrade({ symbol: 'NFLX' });
-
-    ddbMock.on(QueryCommand).resolves({ Items: [newTrade], LastEvaluatedKey: undefined });
-    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [newTrade] } });
-    ddbMock.on(GetCommand).resolves({ Item: { symbols: [] } });
-
-    const event = makeStreamEvent([
-      makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-sym'),
-      makeStreamRecord('REMOVE', undefined, removedTrade, 'evt-remove-sym'),
-    ]);
-
-    await handler(event, {} as any, () => {});
-
-    // Only GOOG should be synced (from MODIFY), not NFLX (from REMOVE)
-    const optionUpdates = ddbMock
-      .commandCalls(UpdateCommand)
-      .filter((c) => c.args[0].input.TableName === 'test-saved-options');
-    expect(optionUpdates).toHaveLength(1);
-    expect(optionUpdates[0].args[0].input.ExpressionAttributeValues![':symbols']).toEqual(['GOOG']);
+    it('syncs the symbol of a MODIFY but not of a REMOVE, once per distinct symbol', async () => {
+      const oldTrade = makeTrade({ symbol: 'AAPL' });
+      const newTrade = makeTrade({ symbol: 'GOOG' });
+      const removedTrade = makeTrade({ symbol: 'NFLX' });
+      stub(newTrade);
+      await handler(makeStreamEvent([
+        makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-sym'),
+        makeStreamRecord('MODIFY', newTrade, oldTrade, 'evt-modify-sym-2'),
+        makeStreamRecord('REMOVE', undefined, removedTrade, 'evt-remove-sym'),
+      ]), {} as any, () => {});
+      expect(optionUpdates().map((u) => (u.ExpressionAttributeValues as any)[':symbol'])).toEqual(['GOOG']);
+    });
   });
 
   // -- Reports batch item failure for single tuple failure -------------------
@@ -928,5 +920,148 @@ describe('update-stats stream handler', () => {
       .commandCalls(PutCommand)
       .filter((c) => c.args[0].input.TableName === 'test-daily-stats');
     expect(dailyStatsPuts).toHaveLength(0);
+  });
+});
+
+describe('account balance with failed records and retries (BE-004)', () => {
+  const t = (id: string, day: string, extra: Record<string, any> = {}) =>
+    makeTrade({ tradeId: id, openDate: `${day}T09:30:00Z`, side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 1, ...extra }); // +10
+
+  const balanceDeltas = () =>
+    ddbMock.commandCalls(UpdateCommand)
+      .filter((c) => c.args[0].input.TableName === 'test-accounts')
+      .map((c) => [c.args[0].input.Key!.accountId, c.args[0].input.ExpressionAttributeValues![':delta']]);
+
+  /** The day query for `failDay` throws, every other day returns its trade. */
+  const stubDays = (trades: any[], failDay?: string) => {
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).callsFake((input: any) => {
+      const start: string = input.ExpressionAttributeValues[':start'];
+      if (failDay && start === failDay) throw new Error('throttled');
+      return { Items: trades.filter((x) => x.openDate.startsWith(start)).map((x) => ({ userId: x.userId, tradeId: x.tradeId })) };
+    });
+    ddbMock.on(BatchGetCommand).callsFake((input: any) => {
+      const keys = input.RequestItems['test-trades'].Keys.map((k: any) => k.tradeId);
+      return { Responses: { 'test-trades': trades.filter((x) => keys.includes(x.tradeId)) } };
+    });
+  };
+
+  it('does not add the balance of the failed record or of any record after it; the redelivery adds each exactly once', async () => {
+    const a = t('a', '2026-04-06');
+    const b = t('b', '2026-04-07');
+    const c = t('c', '2026-04-08');
+    const all = [a, b, c];
+    const batch = [
+      makeStreamRecord('INSERT', a, undefined, 'seq-1'),
+      makeStreamRecord('INSERT', b, undefined, 'seq-2'),
+      makeStreamRecord('INSERT', c, undefined, 'seq-3'),
+    ];
+
+    // First delivery: the 2026-04-07 day write fails.
+    stubDays(all, '2026-04-07');
+    const first = (await handler(makeStreamEvent(batch), {} as any, () => {})) as any;
+    expect(first.batchItemFailures).toEqual([{ itemIdentifier: 'seq-2' }]);
+    // Only record 1 (before the first failure) is applied; records 2 and 3 come back with the redelivery.
+    expect(balanceDeltas()).toEqual([['acc-1', 10]]);
+
+    // Redelivery starts at the lowest failed record: [seq-2, seq-3], and now succeeds.
+    ddbMock.resetHistory();
+    stubDays(all);
+    const retry = (await handler(makeStreamEvent(batch.slice(1)), {} as any, () => {})) as any;
+    expect(retry.batchItemFailures).toEqual([]);
+    expect(balanceDeltas()).toEqual([['acc-1', 20]]);
+    // 10 (first run) + 20 (retry) = 30 = the three trades, each applied once.
+  });
+
+  it('a clean batch applies every delta once', async () => {
+    const a = t('a', '2026-04-06');
+    const b = t('b', '2026-04-07', { accountId: 'acc-2' });
+    stubDays([a, b]);
+    const res = (await handler(makeStreamEvent([
+      makeStreamRecord('INSERT', a, undefined, 'seq-1'),
+      makeStreamRecord('INSERT', b, undefined, 'seq-2'),
+    ]), {} as any, () => {})) as any;
+    expect(res.batchItemFailures).toEqual([]);
+    expect(balanceDeltas().sort()).toEqual([['acc-1', 10], ['acc-2', 10]]);
+  });
+
+  it('a failure on the first record applies no delta at all', async () => {
+    const a = t('a', '2026-04-06');
+    const b = t('b', '2026-04-07');
+    stubDays([a, b], '2026-04-06');
+    const res = (await handler(makeStreamEvent([
+      makeStreamRecord('INSERT', a, undefined, 'seq-1'),
+      makeStreamRecord('INSERT', b, undefined, 'seq-2'),
+    ]), {} as any, () => {})) as any;
+    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'seq-1' }]);
+    expect(balanceDeltas()).toEqual([]);
+  });
+});
+
+describe('index query and invalid dates (BE-096, BE-027, BE-005)', () => {
+  it('follows LastEvaluatedKey of the date index so later trades of a big day are included (BE-096)', async () => {
+    const t1 = makeTrade({ tradeId: 't1' });
+    const t2 = makeTrade({ tradeId: 't2' });
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' })
+      .resolvesOnce({ Items: [{ userId: 'user-1', tradeId: 't1' }], LastEvaluatedKey: { userId: 'user-1', tradeId: 't1', openDate: 'x' } })
+      .resolvesOnce({ Items: [{ userId: 'user-1', tradeId: 't2' }] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [t1, t2] } });
+    await handler(makeStreamEvent([makeStreamRecord('INSERT', t1, undefined, 'seq-1')]), {} as any, () => {});
+    const gsiCalls = ddbMock.commandCalls(QueryCommand).filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi');
+    expect(gsiCalls).toHaveLength(2);
+    expect(gsiCalls[1].args[0].input.ExclusiveStartKey).toEqual({ userId: 'user-1', tradeId: 't1', openDate: 'x' });
+    const put = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats')!.args[0].input.Item!;
+    expect(put.tradeCount).toBe(2);
+  });
+
+  it('west of UTC the day query also reaches date-only openDate values (BE-027)', async () => {
+    ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'America/New_York' } });
+    const dateOnly = makeTrade({ tradeId: 'd', openDate: '2026-04-10' });
+    ddbMock.on(QueryCommand).resolves({ Items: [dateOnly] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [dateOnly] } });
+    await handler(makeStreamEvent([makeStreamRecord('INSERT', dateOnly, undefined, 'seq-d')]), {} as any, () => {});
+    const q = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.IndexName === 'trades-by-date-gsi')!.args[0].input;
+    expect(q.ExpressionAttributeValues).toMatchObject({ ':start': '2026-04-10', ':end': '2026-04-11T03:59:59.999Z' });
+    const put = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === 'test-daily-stats')!.args[0].input.Item!;
+    expect(put).toMatchObject({ sk: 'acc-1#2026-04-10', tradeCount: 1 });
+  });
+
+  it('a trade with a date that is not a real day gets no day record and no failure (BE-005)', async () => {
+    for (const openDate of ['2026-13-01', '2026-02-30T10:00:00Z', 'garbage']) {
+      ddbMock.resetHistory();
+      const bad = makeTrade({ tradeId: 'bad', openDate });
+      ddbMock.on(QueryCommand).resolves({ Items: [bad] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [bad] } });
+      const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', bad, undefined, 'seq-bad')]), {} as any, () => {})) as any;
+      expect(res.batchItemFailures).toEqual([]);
+      expect(ddbMock.commandCalls(PutCommand).filter((c) => c.args[0].input.TableName === 'test-daily-stats')).toHaveLength(0);
+    }
+  });
+});
+
+describe('dirty flag for the rebuild job (BE-009)', () => {
+  it('flags each affected user once, in the #dirty partition of the daily stats table', async () => {
+    const a = makeTrade({ tradeId: 'a' });
+    const b = makeTrade({ tradeId: 'b', accountId: 'acc-2' });
+    const c = makeTrade({ tradeId: 'c', userId: 'user-2' });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [] } });
+    await handler(makeStreamEvent([
+      makeStreamRecord('INSERT', a, undefined, 's1'),
+      makeStreamRecord('INSERT', b, undefined, 's2'),
+      makeStreamRecord('INSERT', c, undefined, 's3'),
+    ]), {} as any, () => {});
+    const flags = ddbMock.commandCalls(UpdateCommand)
+      .filter((x) => x.args[0].input.TableName === 'test-daily-stats')
+      .map((x) => x.args[0].input.Key);
+    expect(flags).toEqual([{ userId: '#dirty', sk: 'user-1' }, { userId: '#dirty', sk: 'user-2' }]);
+  });
+
+  it('a failing flag write does not fail the batch', async () => {
+    const a = makeTrade({ tradeId: 'a' });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [] } });
+    ddbMock.on(UpdateCommand, { TableName: 'test-daily-stats' }).rejects(new Error('throttled'));
+    const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', a, undefined, 's1')]), {} as any, () => {})) as any;
+    expect(res.batchItemFailures).toEqual([]);
   });
 });

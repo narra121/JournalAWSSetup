@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, BatchGetCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
@@ -680,4 +680,61 @@ describe('list-trades handler', () => {
     expect(body.data.trades.map((t: any) => t.tradeId)).toEqual(['a']);
     expect(body.data.pagination.limit).toBe(50);
   });
+
+  describe('order and day bounds (X-014, newest first)', () => {
+    const list = (q: Record<string, string>) => handler(makeEvent({ queryStringParameters: { accountId: 'ALL', ...q } }), {} as any, () => {}) as any;
+    const indexQuery = () => ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+
+    it('walks the date index newest first, so limit=1 is the latest trade and a ceiling keeps the newest', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await list({ startDate: '2026-01-01', endDate: '2026-12-31', limit: '1' });
+      expect(indexQuery().ScanIndexForward).toBe(false);
+    });
+
+    it('returns the newest records first within a page', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'new' }, { userId: 'user-1', tradeId: 'old' }] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [
+        { userId: 'user-1', tradeId: 'old', accountId: 'a', openDate: '2026-01-01T00:00:00Z' },
+        { userId: 'user-1', tradeId: 'new', accountId: 'a', openDate: '2026-06-01T00:00:00Z' },
+      ] } });
+      const res = await list({ startDate: '2026-01-01', endDate: '2026-12-31' });
+      expect(JSON.parse(res.body).data.trades.map((t: any) => t.tradeId)).toEqual(['new', 'old']);
+    });
+
+    it('bare dates are days in the user time zone: a New York evening trade belongs to its day', async () => {
+      vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'America/New_York' } });
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await list({ startDate: '2026-11-12', endDate: '2026-11-12' });
+      // 20:30 on 12 Nov in New York is 01:30Z on 13 Nov: inside this range
+      expect(indexQuery().ExpressionAttributeValues).toMatchObject({ ':start': '2026-11-12', ':end': '2026-11-13T04:59:59.999Z' });
+      vi.stubEnv('USER_PREFERENCES_TABLE', '');
+    });
+
+    it('an IST early-morning trade on 1 Jan is in the new year', async () => {
+      vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
+      ddbMock.on(GetCommand, { TableName: 'test-prefs' }).resolves({ Item: { timeZone: 'Asia/Kolkata' } });
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await list({ startDate: '2027-01-01', endDate: '2027-12-31' });
+      expect(indexQuery().ExpressionAttributeValues).toMatchObject({ ':start': '2026-12-31T18:30:00.000Z', ':end': '2027-12-31T18:29:59.999Z' });
+      vi.stubEnv('USER_PREFERENCES_TABLE', '');
+    });
+
+    it('instants are used exactly as sent, and no preference means UTC days', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await list({ startDate: '2026-11-12T05:00:00.000Z', endDate: '2026-11-13T04:59:59.999Z' });
+      expect(indexQuery().ExpressionAttributeValues).toMatchObject({ ':start': '2026-11-12T05:00:00.000Z', ':end': '2026-11-13T04:59:59.999Z' });
+      ddbMock.resetHistory();
+      await list({ startDate: '2026-11-12', endDate: '2026-11-12' });
+      expect(indexQuery().ExpressionAttributeValues).toMatchObject({ ':start': '2026-11-12', ':end': '2026-11-12T23:59:59.999Z' });
+    });
+
+    it('400 for a bare date that is not a real day', async () => {
+      for (const q of [{ startDate: '2026-13-01', endDate: '2026-12-31' }, { startDate: '2026-01-01', endDate: '2026-02-30' }, { startDate: 'garbage!!!', endDate: '2026-12-31' }]) {
+        expect((await list(q)).statusCode).toBe(400);
+      }
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+    });
+  });
 });
+

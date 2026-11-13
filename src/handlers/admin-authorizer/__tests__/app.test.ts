@@ -105,14 +105,31 @@ describe('admin-authorizer handler', () => {
 
   // ── 8. Denies when SSM call fails ──
 
-  it('denies when SSM call fails', async () => {
+  it('logs and rethrows when the SSM call fails, so the caller answers 500 instead of "no permission" (BE-081)', async () => {
     _clearSecretCache();
     ssmMock.reset();
     ssmMock.on(GetParameterCommand).rejects(new Error('SSM unavailable'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const token = signToken(TEST_SECRET);
-    const res = await handler(makeEvent(`Bearer ${token}`));
-    expect(res).toEqual({ isAuthorized: false });
+    await expect(handler(makeEvent(`Bearer ${token}`))).rejects.toThrow('SSM unavailable');
+    expect(spy.mock.calls.some((c) => c[0].includes('admin_authorizer_error') && c[0].includes('SSM unavailable'))).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('logs and rethrows when the secret parameter is missing', async () => {
+    _clearSecretCache();
+    ssmMock.reset();
+    ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: '' } });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(handler(makeEvent(`Bearer ${signToken(TEST_SECRET)}`))).rejects.toThrow('Admin JWT secret not found');
+    spy.mockRestore();
+  });
+
+  it('denies a token signed with another HMAC algorithm even with the right secret (HS256 only)', async () => {
+    const token = signToken(TEST_SECRET, { algorithm: 'HS384' });
+    expect(await handler(makeEvent(`Bearer ${token}`))).toEqual({ isAuthorized: false });
   });
 
   // ── 9. Denies token with wrong role ──

@@ -2,6 +2,7 @@ import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from '@aws-sdk/
 import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { batchWriteDeleteAll } from './batchWrite';
+import { resolveCognitoUsername } from './cognitoUser';
 import { ddb } from './dynamo';
 import type { Logger } from './logger';
 import { getStripe } from './stripe-config';
@@ -50,12 +51,12 @@ async function queryAll(table: string, userId: string, projection?: string): Pro
   return items;
 }
 
-async function listKeys(bucket: string, prefix: string, keep: (key: string) => boolean = () => true): Promise<string[]> {
+async function listKeys(bucket: string, prefix: string): Promise<string[]> {
   const keys: string[] = [];
   let token: string | undefined;
   do {
     const res = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
-    for (const o of res.Contents ?? []) if (o.Key && keep(o.Key)) keys.push(o.Key);
+    for (const o of res.Contents ?? []) if (o.Key) keys.push(o.Key);
     token = res.IsTruncated ? res.NextContinuationToken : undefined;
   } while (token);
   return keys;
@@ -115,6 +116,21 @@ export async function exportUserData(userId: string, email?: string): Promise<Us
   };
 }
 
+/** Report keys are `errors/<userId>/<date>/...`; the 365-day retention of the older `errors/<date>/<userId>/` layout bounds this sweep. */
+const LEGACY_REPORT_DAYS = 366;
+
+async function legacyReportKeys(bucket: string, userId: string): Promise<string[]> {
+  const days = Array.from({ length: LEGACY_REPORT_DAYS }, (_, i) => new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10));
+  const keys: string[] = [];
+  for (let i = 0; i < days.length; i += 25) {
+    const batch = await Promise.all(days.slice(i, i + 25).map((day) => listKeys(bucket, `errors/${day}/${userId}/`)));
+    keys.push(...batch.flat());
+  }
+  return keys;
+}
+
+const stripeMissing = (err: any) => err?.code === 'resource_missing' || /No such (subscription|customer)/i.test(err?.message ?? '');
+
 export interface PurgeResult {
   deleted: Record<string, number>;
   images: number;
@@ -123,10 +139,17 @@ export interface PurgeResult {
 }
 
 /**
- * Deletes everything held for a user: cancels the Stripe subscription, removes every table item, the screenshots and
- * the error reports, and deletes the Cognito user last, so a failed run can be repeated by the same signed-in user.
+ * Deletes everything held for a user: cancels the Stripe subscription and deletes the Stripe customer, removes every
+ * table item, the screenshots and the error reports, and deletes the Cognito user last, so a failed run can be repeated
+ * by the same signed-in user. Pass the caller's `claims` when `userId` is the signed-in user (see resolveCognitoUsername).
  */
-export async function purgeUser(userId: string, log?: Logger): Promise<PurgeResult> {
+export async function purgeUser(userId: string, log?: Logger, claims?: Record<string, unknown>): Promise<PurgeResult> {
+  // Resolved first so a lookup failure cannot leave a half-purged account; a user missing from the pool has nothing to delete there.
+  const username = await resolveCognitoUsername(process.env.USER_POOL_ID!, userId, claims).catch((err) => {
+    if (err?.name === 'UserNotFoundException') return null;
+    throw err;
+  });
+
   let stripeSubscriptionCancelled = false;
   const sub = (await ddb.send(new GetCommand({ TableName: process.env.SUBSCRIPTIONS_TABLE!, Key: { userId } }))).Item;
   if (sub?.stripeSubscriptionId) {
@@ -135,7 +158,14 @@ export async function purgeUser(userId: string, log?: Logger): Promise<PurgeResu
       stripeSubscriptionCancelled = true;
     } catch (err: any) {
       // An already-cancelled or missing subscription is fine; anything else stops the purge before data is removed.
-      if (err?.code !== 'resource_missing' && !/No such subscription/i.test(err?.message ?? '')) throw err;
+      if (!stripeMissing(err)) throw err;
+    }
+  }
+  if (sub?.stripeCustomerId) {
+    try {
+      await (await getStripe()).customers.del(sub.stripeCustomerId);
+    } catch (err: any) {
+      if (!stripeMissing(err)) throw err;
     }
   }
 
@@ -153,9 +183,11 @@ export async function purgeUser(userId: string, log?: Logger): Promise<PurgeResu
   const imageKeys = await listKeys(process.env.IMAGES_BUCKET!, `images/${userId}/`);
   await deleteKeys(process.env.IMAGES_BUCKET!, imageKeys);
   const reportBucket = process.env.ERROR_REPORTS_BUCKET;
-  const reportKeys = reportBucket ? await listKeys(reportBucket, 'errors/', (k) => k.split('/')[2] === userId) : [];
+  const reportKeys = reportBucket
+    ? [...(await listKeys(reportBucket, `errors/${userId}/`)), ...(await legacyReportKeys(reportBucket, userId))]
+    : [];
   if (reportBucket) await deleteKeys(reportBucket, reportKeys);
 
-  await cognito.send(new AdminDeleteUserCommand({ UserPoolId: process.env.USER_POOL_ID!, Username: userId }));
+  if (username) await cognito.send(new AdminDeleteUserCommand({ UserPoolId: process.env.USER_POOL_ID!, Username: username }));
   return { deleted, images: imageKeys.length, errorReports: reportKeys.length, stripeSubscriptionCancelled };
 }

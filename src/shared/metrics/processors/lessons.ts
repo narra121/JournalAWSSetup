@@ -1,4 +1,5 @@
 import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext } from '../types';
+import { dict } from '../dict';
 
 /**
  * Lessons: tracks which lessons were learned per trade.
@@ -7,13 +8,13 @@ import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext 
  */
 export class LessonsProcessor implements MetricProcessor {
   readonly name = 'lessons';
-  private distribution: Record<string, number> = {};
+  private distribution: Record<string, number> = dict();
 
   processTrade(trade: TradeRecord): void {
     const lessons = trade.lessons;
     if (!Array.isArray(lessons)) return;
     for (const lesson of lessons) {
-      if (!lesson) continue;
+      if (!lesson || typeof lesson !== 'string') continue;
       this.distribution[lesson] = (this.distribution[lesson] || 0) + 1;
     }
   }
@@ -23,13 +24,13 @@ export class LessonsProcessor implements MetricProcessor {
   }
 
   reset(): void {
-    this.distribution = {};
+    this.distribution = dict();
   }
 }
 
 export class LessonsAggregator implements AggregationProcessor {
   readonly name = 'lessons';
-  private distribution: Record<string, number> = {};
+  private distribution: Record<string, number> = dict();
 
   merge(record: Record<string, any>): void {
     const counts = record.lessonsDistribution || {};
@@ -43,6 +44,6 @@ export class LessonsAggregator implements AggregationProcessor {
   }
 
   reset(): void {
-    this.distribution = {};
+    this.distribution = dict();
   }
 }

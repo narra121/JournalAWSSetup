@@ -118,4 +118,91 @@ describe('gemini client', () => {
       { type: 'end', model: 'gemini-2.5-flash', usage: { promptTokens: 5, outputTokens: 2 }, finishReason: 'STOP' },
     ]);
   });
+
+  describe('one deadline and cancellation (BE-050, BE-048)', () => {
+    const req = (extra: Record<string, unknown> = {}) => ({ system: 's', contents: [], temperature: 0, maxOutputTokens: 10, ...extra });
+
+    it('the fallback model gets only what is left of the deadline', async () => {
+      vi.useFakeTimers();
+      const timeouts: number[] = [];
+      const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => { timeouts.push(ms); return new AbortController().signal; });
+      const f = vi.fn().mockImplementationOnce(async () => { vi.advanceTimersByTime(30_000); return fail(503); }).mockResolvedValueOnce(okJson({ candidates: [{ content: { parts: [{ text: 'x' }] } }] }));
+      await generate(req({ timeoutMs: 50_000 }), f as any);
+      spy.mockRestore();
+      vi.useRealTimers();
+      expect(timeouts).toEqual([50_000, 20_000]);
+    });
+
+    it('a call without timeoutMs gets a 50 s deadline, below the Web Function timeout (BE-012)', async () => {
+      const timeouts: number[] = [];
+      const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => { timeouts.push(ms); return new AbortController().signal; });
+      const ok = () => okJson({ candidates: [{ content: { parts: [{ text: 'x' }] } }] });
+      await generate(req(), vi.fn().mockResolvedValue(ok()) as any);
+      const sse = vi.fn().mockResolvedValue({ ok: true, status: 200, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"candidates":[{"content":{"parts":[{"text":"x"}]}}]}\n\n')); c.close(); } }) } as unknown as Response);
+      for await (const _ of stream(req(), sse as any)) { /* drain */ }
+      spy.mockRestore();
+      expect(timeouts).toHaveLength(2);
+      expect(timeouts.every((ms) => ms <= 50_000 && ms > 49_000)).toBe(true);
+    });
+
+    it('no fallback when less than 10 s of the deadline is left', async () => {
+      vi.useFakeTimers();
+      const f = vi.fn().mockImplementationOnce(async () => { vi.advanceTimersByTime(45_000); return fail(503); }).mockResolvedValue(okJson({ candidates: [{ content: { parts: [{ text: 'x' }] } }] }));
+      const err = await generate(req({ timeoutMs: 50_000 }), f as any).catch((e) => e);
+      vi.useRealTimers();
+      expect(f).toHaveBeenCalledTimes(1);
+      expect(err).toBeInstanceOf(AiUnavailableError);
+      expect(err).toMatchObject({ model: 'gemini-2.5-flash', status: 503 });
+    });
+
+    it('the caller signal reaches fetch, and an aborted call stops without trying the fallback', async () => {
+      const ctrl = new AbortController();
+      const f = vi.fn().mockImplementationOnce(async (_url: string, init: any) => {
+        ctrl.abort();
+        expect(init.signal.aborted).toBe(true);
+        throw new Error('aborted');
+      });
+      const err = await generate(req({ signal: ctrl.signal }), f as any).catch((e) => e);
+      expect(err).toBeInstanceOf(AiUnavailableError);
+      expect(f).toHaveBeenCalledTimes(1);
+    });
+
+    it('stream() passes the signal too', async () => {
+      const ctrl = new AbortController();
+      const f = vi.fn().mockImplementation(async () => ({ ok: true, status: 200, body: new ReadableStream({ start(c) { c.close(); } }) }) as unknown as Response);
+      const it = stream(req({ signal: ctrl.signal }), f as any);
+      await it.next();
+      expect((f.mock.calls[0][1] as any).signal).not.toBe(ctrl.signal);
+      ctrl.abort();
+      expect((f.mock.calls[0][1] as any).signal.aborted).toBe(true);
+    });
+  });
+
+  describe('stream() with an empty first model (BE-047)', () => {
+    const sse = (text?: string) => {
+      const wire = text ? `data: {"candidates":[{"content":{"parts":[{"text":"${text}"}]},"finishReason":"STOP"}]}\r\n\r\n` : 'data: {"candidates":[{"finishReason":"SAFETY"}]}\r\n\r\n';
+      const bytes = new TextEncoder().encode(wire);
+      return { ok: true, status: 200, body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+    };
+    const collect = async (f: any) => {
+      const out = [];
+      for await (const ch of stream({ system: 's', contents: [], temperature: 0, maxOutputTokens: 10 }, f)) out.push(ch);
+      return out;
+    };
+
+    it('falls back to the next model when the first yields no text before it ends', async () => {
+      const f = vi.fn().mockResolvedValueOnce(sse()).mockResolvedValueOnce(sse('Hi'));
+      const out = await collect(f);
+      expect(f).toHaveBeenCalledTimes(2);
+      expect(out.map((c) => c.type)).toEqual(['text', 'end']);
+      expect(out[1]).toMatchObject({ model: 'gemini-2.5-flash-lite' });
+    });
+
+    it('when the last model is empty too the stream ends without text (the caller handles it)', async () => {
+      const f = vi.fn().mockResolvedValueOnce(sse()).mockResolvedValueOnce(sse());
+      const out = await collect(f);
+      expect(out.map((c) => c.type)).toEqual(['end']);
+    });
+  });
 });
+

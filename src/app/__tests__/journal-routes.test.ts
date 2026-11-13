@@ -59,6 +59,21 @@ describe('PUT /v1/journal/days/{date}', () => {
     expect((await put('2026-11-11', { plan: 5 })).status).toBe(400);
   });
 
+  it('rejects impossible calendar days instead of storing a note no day shows (BE-059)', async () => {
+    for (const date of ['2026-02-30', '2026-02-29', '2026-04-31', '2026-06-31']) {
+      expect((await put(date, { plan: 'x' })).status).toBe(400);
+    }
+    expect((await put('2028-02-29', { plan: 'x' })).status).toBe(200);
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(1);
+  });
+
+  it('caps accountId at 100 characters with a 400, not a DynamoDB 500 (BE-059)', async () => {
+    expect((await put('2026-11-11', { accountId: 'a'.repeat(100), plan: 'x' })).status).toBe(200);
+    const res = await put('2026-11-11', { accountId: 'a'.repeat(1100), plan: 'x' });
+    expect(res.status).toBe(400);
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(1);
+  });
+
   it('requires authentication', async () => {
     setTokenVerifier({ verify: async () => Promise.reject(new Error('bad')) });
     expect((await put('2026-11-11', { plan: 'x' })).status).toBe(401);

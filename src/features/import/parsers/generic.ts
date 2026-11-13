@@ -23,6 +23,9 @@ const ALIASES: Record<CanonicalField, string[]> = {
   takeProfit: ['take profit', 'tp', 't p', 'target'],
 };
 
+/** Headers of the `pnl` column that already hold the net result (after charges); the others are gross. */
+const NET_PNL_HEADERS = new Set(['net p l', 'net pnl', 'realized p l']);
+
 function suggest(headers: string[]): Partial<Record<CanonicalField, string>> {
   const normed = headers.map(normHeader);
   const out: Partial<Record<CanonicalField, string>> = {};
@@ -79,10 +82,13 @@ function parseGeneric(t: Tabular, ctx: ParseContext): ParserOutput {
 
   if (hasClosed) {
     const trades: ClosedTrade[] = [];
+    const rowSeq = new Map<string, number>();
     for (const r of data) {
       if (r.every((c) => c === '')) continue;
       const side = parseSide(cell(r, 'side'));
-      const qty = num(cell(r, 'quantity'));
+      // A side column gives the direction, so a signed quantity (SELL -100) is its size.
+      const rawQty = num(cell(r, 'quantity'));
+      const qty = rawQty == null ? null : Math.abs(rawQty);
       const entry = num(cell(r, 'entryPrice'));
       const exit = num(cell(r, 'exitPrice'));
       const open = when(r, 'openTime');
@@ -96,10 +102,22 @@ function parseGeneric(t: Tabular, ctx: ParseContext): ParserOutput {
       const tp = num(cell(r, 'takeProfit'));
       const pnl = num(cell(r, 'pnl'));
       const fees = num(cell(r, 'fees'));
+      // The importer takes grossProfit as gross and subtracts the fees: a net column is turned back into gross first.
+      const isNet = idx('pnl') >= 0 && NET_PNL_HEADERS.has(normed[idx('pnl')]);
+      const grossProfit = pnl == null ? undefined : isNet ? pnl + Math.abs(fees ?? 0) : pnl;
+      // Without an id column, rows that differ only in exit price or close time (a position closed in parts) stay distinct;
+      // identical rows get a counter so a repeated export still matches row for row.
+      let externalId = cell(r, 'tradeId');
+      if (!externalId) {
+        const k = `row:${symbol}:${open}:${side}:${qty}:${entry}:${exit}:${close}`;
+        const n = (rowSeq.get(k) ?? 0) + 1;
+        rowSeq.set(k, n);
+        externalId = n === 1 ? k : `${k}#${n}`;
+      }
       trades.push({
         ...parseIndianSymbol(symbol), side, quantity: qty, entryPrice: entry, exitPrice: exit, openTime: open, closeTime: close,
-        externalId: cell(r, 'tradeId') || `row:${symbol}:${open}:${side}:${qty}:${entry}`,
-        grossProfit: pnl ?? undefined, fees: fees != null ? Math.abs(fees) : undefined,
+        externalId,
+        grossProfit, fees: fees != null ? Math.abs(fees) : undefined,
         stopLoss: sl && sl > 0 ? sl : null, takeProfit: tp && tp > 0 ? tp : null,
       });
     }
@@ -111,7 +129,8 @@ function parseGeneric(t: Tabular, ctx: ParseContext): ParserOutput {
   for (const r of data) {
     if (r.every((c) => c === '')) continue;
     const side = parseSide(cell(r, 'side'));
-    const qty = num(cell(r, 'quantity'));
+    const rawQty = num(cell(r, 'quantity'));
+    const qty = rawQty == null ? null : Math.abs(rawQty);
     const price = num(cell(r, 'price'));
     const time = when(r, 'time');
     const symbol = cell(r, 'symbol').trim().toUpperCase();

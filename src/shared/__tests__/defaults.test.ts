@@ -7,7 +7,7 @@ describe('DEFAULT_USER_PREFERENCES', () => {
   it('has expected top-level properties', () => {
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('darkMode');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('currency');
-    expect(DEFAULT_USER_PREFERENCES).toHaveProperty('timezone');
+    expect(DEFAULT_USER_PREFERENCES).toHaveProperty('timeZone');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('notifications');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('carryForwardGoalsRules');
   });
@@ -20,8 +20,9 @@ describe('DEFAULT_USER_PREFERENCES', () => {
     expect(DEFAULT_USER_PREFERENCES.currency).toBe('USD');
   });
 
-  it('defaults timezone to UTC', () => {
-    expect(DEFAULT_USER_PREFERENCES.timezone).toBe('UTC');
+  it('defaults timeZone to UTC, under the key stats and preference-changes read (no legacy `timezone`)', () => {
+    expect(DEFAULT_USER_PREFERENCES.timeZone).toBe('UTC');
+    expect(DEFAULT_USER_PREFERENCES).not.toHaveProperty('timezone');
   });
 
   it('defaults carryForwardGoalsRules to true', () => {

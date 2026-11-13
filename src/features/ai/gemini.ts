@@ -6,6 +6,10 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 export const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 const RETRYABLE = new Set([429, 500, 503, 404]);
 const KEY_TTL_MS = 3_600_000;
+/** After a failed first model, the fallback is only tried when at least this much of the deadline is left. */
+const MIN_FALLBACK_MS = 10_000;
+/** Overall deadline of a call that sets no `timeoutMs`: below CloudFront's 60 s origin timeout and the Web Function's 58 s (template.yaml `TimeoutSeconds`). */
+const DEFAULT_DEADLINE_MS = 50_000;
 
 /** `model` and `status` are those of the last failed attempt (status 0 = network error/timeout); undefined for config errors. */
 export class AiUnavailableError extends Error {
@@ -40,7 +44,10 @@ export interface GeminiRequest {
   maxOutputTokens: number;
   /** Gemini Schema object (OpenAPI subset); sets responseMimeType application/json */
   responseSchema?: unknown;
+  /** One deadline for the whole call, fallback model included (default `DEFAULT_DEADLINE_MS`). */
   timeoutMs?: number;
+  /** Aborts the call as well, e.g. when the client that asked for it has gone. */
+  signal?: AbortSignal;
 }
 
 export interface GeminiUsage {
@@ -67,17 +74,27 @@ const textOf = (data: any): string =>
 
 type FetchLike = typeof fetch;
 
+/** Signal for one attempt: the time left of the overall deadline, plus the caller's own signal. */
+function attemptSignal(req: GeminiRequest, left: number): AbortSignal {
+  const timeout = AbortSignal.timeout(left);
+  return req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
+}
+
 export async function generate(req: GeminiRequest, fetchImpl: FetchLike = fetch): Promise<{ text: string; model: string; usage: GeminiUsage }> {
   const key = await getGeminiKey();
   let lastErr = '';
   let lastModel: string | undefined;
   let lastStatus: number | undefined;
+  const deadline = Date.now() + (req.timeoutMs ?? DEFAULT_DEADLINE_MS);
   for (const model of GEMINI_MODELS) {
+    const left = deadline - Date.now();
+    if (req.signal?.aborted) throw new AiUnavailableError('Request aborted', lastModel, lastStatus);
+    if (lastModel !== undefined && left < MIN_FALLBACK_MS) break;
     const res = await fetchImpl(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify(buildBody(req)),
-      signal: AbortSignal.timeout(req.timeoutMs ?? 60_000),
+      signal: attemptSignal(req, left),
     }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as Response);
     if (!res.ok) {
       lastErr = `${model} ${res.status} ${(await res.text()).slice(0, 200)}`;
@@ -110,12 +127,16 @@ export async function* stream(req: GeminiRequest, fetchImpl: FetchLike = fetch):
   let lastErr = '';
   let lastModel: string | undefined;
   let lastStatus: number | undefined;
+  const deadline = Date.now() + (req.timeoutMs ?? DEFAULT_DEADLINE_MS);
   for (const model of GEMINI_MODELS) {
+    const left = deadline - Date.now();
+    if (req.signal?.aborted) throw new AiUnavailableError('Request aborted', lastModel, lastStatus);
+    if (lastModel !== undefined && left < MIN_FALLBACK_MS) break;
     const res = await fetchImpl(`${GEMINI_API_BASE}/models/${model}:streamGenerateContent?alt=sse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify(buildBody(req)),
-      signal: AbortSignal.timeout(req.timeoutMs ?? 90_000),
+      signal: attemptSignal(req, left),
     }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message, body: null }) as unknown as Response);
     if (!res.ok || !res.body) {
       lastErr = `${model} ${res.status} ${(await res.text()).slice(0, 200)}`;
@@ -128,6 +149,7 @@ export async function* stream(req: GeminiRequest, fetchImpl: FetchLike = fetch):
     const decoder = new TextDecoder();
     let usage: GeminiUsage = { promptTokens: 0, outputTokens: 0 };
     let finishReason: string | undefined;
+    let sawText = false;
     const reader = res.body.getReader();
     const handle = function* (events: { data: string }[]) {
       for (const ev of events) {
@@ -140,7 +162,10 @@ export async function* stream(req: GeminiRequest, fetchImpl: FetchLike = fetch):
         if (data.usageMetadata) usage = usageOf(data.usageMetadata);
         finishReason = data?.candidates?.[0]?.finishReason ?? finishReason;
         const t = textOf(data);
-        if (t) yield { type: 'text' as const, text: t };
+        if (t) {
+          sawText = true;
+          yield { type: 'text' as const, text: t };
+        }
       }
     };
     for (;;) {
@@ -149,6 +174,13 @@ export async function* stream(req: GeminiRequest, fetchImpl: FetchLike = fetch):
       yield* handle(parser.push(decoder.decode(value, { stream: true })));
     }
     yield* handle(parser.end());
+    // A 200 with no text (a safety block, an empty candidate) is a failure like in generate(): nothing was forwarded, so the next model may answer.
+    if (!sawText && model !== GEMINI_MODELS[GEMINI_MODELS.length - 1]) {
+      lastErr = `${model} empty response (${finishReason ?? 'no candidate'})`;
+      lastModel = model;
+      lastStatus = 200;
+      continue;
+    }
     yield { type: 'end', model, usage, finishReason };
     return;
   }

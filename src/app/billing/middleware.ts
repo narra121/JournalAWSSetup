@@ -1,6 +1,7 @@
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { ddb } from '../../shared/dynamo';
+import { wantsAdvancedSection } from '../../shared/statsSections';
 import type { AppEnv, QuotaFeature } from '../types';
 import { computeEntitlements } from './entitlements';
 import { createQuota } from './quota';
@@ -20,20 +21,21 @@ export function withEntitlements(): MiddlewareHandler<AppEnv> {
   };
 }
 
-/** Consumes one unit before the handler and refunds it when the handler answers with status >= 400. */
-export function metered(feature: QuotaFeature): MiddlewareHandler<AppEnv> {
+/** Consumes `units(c)` units (default 1) before the handler and refunds them when the handler answers with status >= 400. */
+export function metered(feature: QuotaFeature, units?: (c: Context<AppEnv>) => Promise<number>): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const taken = await c.get('quota').consume(feature);
+    const n = units ? await units(c) : 1;
+    const taken = await c.get('quota').consume(feature, n);
     if (!taken.ok) return quotaExceeded(c, feature, c.get('entitlements'), taken.resetsAt);
     await next();
-    if (c.res.status >= 400) await c.get('quota').consume(feature, -1);
+    if (c.res.status >= 400) await c.get('quota').consume(feature, -n);
   };
 }
 
 /** `GET /stats?sections=advanced` needs the advanced-analytics feature; the default response is open to every plan. */
 export function advancedAnalyticsGate(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    if ((c.req.query('sections') ?? '').split(',').includes('advanced')) {
+    if (wantsAdvancedSection(c.req.queries('sections')?.join(','))) {
       await withEntitlements()(c, async () => undefined);
       const entitlements = c.get('entitlements');
       if (!entitlements.features.advanced_analytics) return planRequired(c, 'advanced_analytics', entitlements);

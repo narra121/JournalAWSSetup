@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { S3Client } from '@aws-sdk/client-s3';
 
 vi.stubEnv('USER_POOL_ID', 'us-east-1_t');
 vi.stubEnv('USER_POOL_CLIENT_ID', 'c');
@@ -14,7 +15,11 @@ const app = createApp();
 const post = (body: unknown) =>
   app.request('/v1/uploads/images', { method: 'POST', headers: { authorization: 'Bearer good', 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
 
+const list = vi.spyOn(S3Client.prototype, 'send');
+const recent = (n: number, ageMs = 1000) => Array.from({ length: n }, (_, i) => ({ Key: `images/u1/upload/${i}.png`, LastModified: new Date(Date.now() - ageMs) }));
+
 beforeEach(() => {
+  list.mockReset().mockResolvedValue({ Contents: [], IsTruncated: false } as never);
   signer.mockReset().mockResolvedValue('https://images-bucket.s3.amazonaws.com/signed');
   setTokenVerifier({ verify: async () => ({ sub: 'u1' }) });
 });
@@ -54,5 +59,23 @@ describe('POST /v1/uploads/images', () => {
   it('requires authentication', async () => {
     setTokenVerifier({ verify: async () => Promise.reject(new Error('bad')) });
     expect((await post({ contentType: 'image/png', size: 10 })).status).toBe(401);
+  });
+
+  it('refuses the 101st screenshot of a rolling day with a 429 and signs nothing (BE-057)', async () => {
+    list.mockResolvedValue({ Contents: recent(100), IsTruncated: false } as never);
+    const res = await post({ contentType: 'image/png', size: 100 });
+    expect(res.status).toBe(429);
+    expect((await res.json()).errorCode).toBe('RATE_LIMITED');
+    expect(signer).not.toHaveBeenCalled();
+    expect(list.mock.calls[0][0].input).toMatchObject({ Bucket: 'images-bucket', Prefix: 'images/u1/upload/' });
+  });
+
+  it('counts only the last 24 hours, across pages', async () => {
+    list
+      .mockResolvedValueOnce({ Contents: [...recent(60), ...recent(500, 3 * 24 * 3600 * 1000)], IsTruncated: true, NextContinuationToken: 't2' } as never)
+      .mockResolvedValueOnce({ Contents: recent(39), IsTruncated: false } as never);
+    expect((await post({ contentType: 'image/png', size: 100 })).status).toBe(200);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list.mock.calls[1][0].input).toMatchObject({ ContinuationToken: 't2' });
   });
 });

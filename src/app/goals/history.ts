@@ -1,5 +1,8 @@
 import { Hono } from 'hono';
-import { handler as goalsProgress } from '../../handlers/get-goals-progress/app';
+import { DAILY_STATS_PROJECTION, periodProgress, queryGoals, queryRules } from '../../handlers/get-goals-progress/app';
+import { errorBody } from '../../shared/apiError';
+import { queryDailyStats } from '../../shared/dailyStats';
+import { dayOf, getUserTimeZone } from '../../shared/timezone';
 import type { AppEnv } from '../types';
 
 export const goalsHistoryRoutes = new Hono<AppEnv>();
@@ -33,41 +36,57 @@ export function periodWindows(period: 'week' | 'month', count: number, now: Date
   return windows;
 }
 
+const PERIOD_KEY = /^(week#\d{4}-\d{2}-\d{2}|month#\d{4}-\d{2})$/;
+const DAY_MS = 86_400_000;
+
 /**
- * GET /v1/goals/history?period=week|month&count=8[&accountId=ALL][&weekStart=mon|sun]
+ * GET /v1/goals/history?period=week|month&count=8[&accountId=ALL][&weekStart=mon|sun][&totalCapital=N][&before=<periodKey>]
  * Per period, the goal results and rule compliance exactly as /v1/goals/progress computes them for that period.
+ * Periods are calendar weeks / months in the user's time zone; without `before` the last one is the period that holds
+ * today, with it the last one is the period just before `before` (the one on screen). The DailyStats range, the
+ * goals and the rules are each read once for all periods.
  */
 goalsHistoryRoutes.get('/history', async (c) => {
-  const period = c.req.query('period') === 'month' ? 'month' : 'week';
+  const before = c.req.query('before');
+  if (before !== undefined && !PERIOD_KEY.test(before)) return c.json(errorBody('VALIDATION_ERROR', 'before must look like week#2026-11-09 or month#2026-11.'), 400);
+  const period = before ? (before.startsWith('month#') ? 'month' : 'week') : c.req.query('period') === 'month' ? 'month' : 'week';
   const parsed = parseInt(c.req.query('count') ?? '8', 10);
   const count = Number.isFinite(parsed) ? Math.min(12, Math.max(1, parsed)) : 8;
   const accountId = c.req.query('accountId') || 'ALL';
   const weekStart = c.req.query('weekStart') === 'sun' ? 'sun' : 'mon';
-  const claims = c.get('claims') ?? { sub: c.get('userId') };
+  const capital = c.req.query('totalCapital') ? parseFloat(c.req.query('totalCapital')!) : undefined;
+  const totalCapital = capital !== undefined && Number.isFinite(capital) ? capital : undefined;
+  const userId = c.get('userId');
 
-  const windows = periodWindows(period, count, new Date(), weekStart);
-  const periods = await Promise.all(
-    windows.map(async (w) => {
-      const res: any = await goalsProgress(
-        {
-          requestContext: { requestId: c.get('requestId'), authorizer: { jwt: { claims } } },
-          queryStringParameters: {
-            accountId,
-            startDate: w.startDate,
-            endDate: w.endDate,
-            period: period === 'month' ? 'monthly' : 'weekly',
-            periodKey: w.periodKey,
-          },
-        } as any,
-        {} as any,
-        () => undefined,
-      );
-      const body = JSON.parse(res.body);
-      if (res.statusCode >= 400) throw new Error(body.message || 'goals progress failed');
-      const { goalProgress, ruleCompliance } = body.data;
-      return { ...w, goals: goalProgress, rules: ruleCompliance };
-    }),
-  );
+  let anchor: Date;
+  if (before) {
+    const first = Date.parse(`${before.startsWith('month#') ? `${before.slice(6)}-01` : before.slice(5)}T12:00:00Z`);
+    if (Number.isNaN(first)) return c.json(errorBody('VALIDATION_ERROR', 'before must be a real period.'), 400);
+    anchor = new Date(first - DAY_MS);
+  } else {
+    const timeZone = await getUserTimeZone(userId).catch(() => null);
+    anchor = new Date(`${dayOf(new Date().toISOString(), timeZone)}T12:00:00Z`);
+  }
+
+  const windows = periodWindows(period, count, anchor, weekStart);
+  const [records, goals, rules] = await Promise.all([
+    queryDailyStats(userId, accountId, windows[0].startDate, windows[windows.length - 1].endDate, DAILY_STATS_PROJECTION),
+    queryGoals(userId),
+    queryRules(userId),
+  ]);
+  const periods = windows.map((w) => {
+    const prefix = `${w.periodKey}#`;
+    const { goalProgress, ruleCompliance } = periodProgress(
+      records.filter((r) => r.date >= w.startDate && r.date <= w.endDate),
+      goals.filter((g) => String(g.goalId).startsWith(prefix)),
+      rules.filter((r) => String(r.ruleId).startsWith(prefix)),
+      rules,
+      period === 'month' ? 'monthly' : 'weekly',
+      accountId,
+      totalCapital,
+    );
+    return { ...w, goals: goalProgress, rules: ruleCompliance };
+  });
 
   return c.json({ success: true, message: 'Success', data: { period, accountId, periods } });
 });

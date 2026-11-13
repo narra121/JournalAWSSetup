@@ -2,6 +2,7 @@ import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
+import { resolveCognitoUsername } from '../../shared/cognitoUser';
 
 const cognito = new CognitoIdentityProviderClient({});
 const USER_POOL_ID = process.env.USER_POOL_ID!;
@@ -42,7 +43,7 @@ export const handler: ApiHandler = async (event) => {
 
     await cognito.send(new AdminUpdateUserAttributesCommand({
       UserPoolId: USER_POOL_ID,
-      Username: userId,
+      Username: await resolveCognitoUsername(USER_POOL_ID, userId),
       UserAttributes: attributes,
     }));
 

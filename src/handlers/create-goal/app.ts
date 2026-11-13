@@ -5,7 +5,6 @@ import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 import { GOAL_TYPE_CONFIG, VALID_GOAL_TYPES, VALID_PERIODS } from '../../shared/goalDefaults';
 import type { GoalType } from '../../shared/goalDefaults';
 
@@ -21,9 +20,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!event.body) {
     log.warn('missing body');

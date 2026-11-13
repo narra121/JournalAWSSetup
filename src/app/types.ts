@@ -1,6 +1,6 @@
 // Shared Hono app contract (CONTRACT §3). Extend additively only — src/features/** codes against this.
 
-export type QuotaFeature = 'ai_extract' | 'ai_insight' | 'ai_chat' | 'broker_import';
+export type QuotaFeature = 'ai_extract' | 'ai_insight' | 'ai_chat' | 'broker_import' | 'ai_enhance';
 
 export type GatedFeature = 'advanced_analytics' | 'tax_report' | 'unlimited_accounts' | 'auto_sync';
 

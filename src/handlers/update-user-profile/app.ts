@@ -2,7 +2,8 @@ import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
-import { getUserId } from '../../shared/auth';
+import { getClaims, getUserId } from '../../shared/auth';
+import { resolveCognitoUsername } from '../../shared/cognitoUser';
 
 const USER_POOL_ID = process.env.USER_POOL_ID!;
 const cognito = new CognitoIdentityProviderClient({});
@@ -32,39 +33,32 @@ export const handler: ApiHandler = async (event) => {
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Body must be a JSON object');
 
-  // Validate name if provided
-  if (data.name !== undefined && typeof data.name !== 'string') {
+  // Only the name can change here: an e-mail change needs a code the pool sends and no endpoint confirms.
+  if (data.name === undefined) {
+    log.warn('no fields to update');
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No fields to update');
+  }
+  if (typeof data.name !== 'string') {
     log.warn('invalid name type');
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name must be a string');
   }
-
-  // Validate email if provided
-  if (data.email !== undefined) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (typeof data.email !== 'string' || !emailRegex.test(data.email)) {
-      log.warn('invalid email format');
-      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid email format');
-    }
+  if (!data.name.trim()) {
+    log.warn('empty name');
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'name cannot be empty');
   }
 
   try {
-    // Update Cognito user attributes using Admin API (works with userId/sub, no access token needed)
-    if (data.name || data.email) {
-      const attributes = [];
-      if (data.name) attributes.push({ Name: 'name', Value: data.name });
-      if (data.email) attributes.push({ Name: 'email', Value: data.email });
-
-      try {
-        await cognito.send(new AdminUpdateUserAttributesCommand({
-          UserPoolId: USER_POOL_ID,
-          Username: userId,
-          UserAttributes: attributes,
-        }));
-        log.info('cognito attributes updated');
-      } catch (cognitoError: any) {
-        log.warn('failed to update cognito', { error: cognitoError.message });
-        return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update profile attributes');
-      }
+    // Admin API with the Cognito username: a sub is accepted there only for local users.
+    try {
+      await cognito.send(new AdminUpdateUserAttributesCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: await resolveCognitoUsername(USER_POOL_ID, userId, getClaims(event)),
+        UserAttributes: [{ Name: 'name', Value: data.name }],
+      }));
+      log.info('cognito attributes updated');
+    } catch (cognitoError: any) {
+      log.warn('failed to update cognito', { error: cognitoError.message });
+      return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update profile attributes');
     }
 
     log.info('profile updated');

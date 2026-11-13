@@ -1,31 +1,14 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { makeLogger } from '../../shared/logger';
-import { normalizePotentialKey } from '../../shared/s3';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
+import { loadFullRecords } from '../../shared/tradeRecords';
+import { presentTrade } from '../../shared/presentTrade';
+import { dayQueryRange, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
-const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
-const s3 = new S3Client({});
-
-/** Loads full records for index rows (BatchGet in chunks of 100, retrying unprocessed keys); returns them by tradeId. */
-async function loadFullRecords(userId: string, keyRows: Record<string, any>[]): Promise<Map<string, any>> {
-  const found = new Map<string, any>();
-  for (let i = 0; i < keyRows.length; i += 100) {
-    let keys: Record<string, any>[] = keyRows.slice(i, i + 100).map((r) => ({ userId, tradeId: r.tradeId }));
-    for (let attempt = 0; keys.length > 0 && attempt < 4; attempt++) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 50 * Math.pow(2, attempt)));
-      const res = await ddb.send(new BatchGetCommand({ RequestItems: { [TRADES_TABLE]: { Keys: keys } } }));
-      for (const it of res.Responses?.[TRADES_TABLE] ?? []) found.set(it.tradeId, it);
-      keys = (res.UnprocessedKeys?.[TRADES_TABLE]?.Keys as Record<string, any>[] | undefined) ?? [];
-    }
-    if (keys.length > 0) throw new Error('Could not load all trade records');
-  }
-  return found;
-}
 
 export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
@@ -73,7 +56,14 @@ export const handler: ApiHandler = async (event) => {
       }
     }
 
-    const inclusiveEnd = endDate.length === 10 ? endDate + 'T23:59:59.999Z' : endDate;
+    // A bare date is a calendar day in the user's time zone (the day statistics and the app use); an ISO instant is used as it is.
+    const isDay = (v: string) => v.length === 10;
+    if ((isDay(startDate) && !isCalendarDay(startDate)) || (isDay(endDate) && !isCalendarDay(endDate))) {
+      return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'startDate and endDate must be dates (YYYY-MM-DD) or ISO instants');
+    }
+    const timeZone = isDay(startDate) || isDay(endDate) ? await getUserTimeZone(userId).catch(() => null) : null;
+    const rangeStart = isDay(startDate) ? dayQueryRange(startDate, timeZone).start : startDate;
+    const inclusiveEnd = isDay(endDate) ? dayQueryRange(endDate, timeZone).end : endDate;
     const matches = (it: any) =>
       !it.deletedAt && (!shouldFilterByAccount || it.accountId === accountId) && (!importBatchId || it.importBatchId === importBatchId);
 
@@ -89,8 +79,10 @@ export const handler: ApiHandler = async (event) => {
         TableName: TRADES_TABLE,
         IndexName: 'trades-by-date-gsi',
         KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-        ExpressionAttributeValues: { ':u': userId, ':start': startDate, ':end': inclusiveEnd },
+        ExpressionAttributeValues: { ':u': userId, ':start': rangeStart, ':end': inclusiveEnd },
         ExpressionAttributeNames: { '#od': 'openDate' },
+        // Newest first: a page limit (or a client that stops at a ceiling) keeps the most recent trades.
+        ScanIndexForward: false,
         Limit: Math.max(limit * 2, 50),
         ExclusiveStartKey: pageKey,
       }));
@@ -124,31 +116,14 @@ export const handler: ApiHandler = async (event) => {
       hasMore,
     });
     
-    // Presign image keys (short-lived) if present
-  if (items.length) {
-      await Promise.all(items.map(async (it: any) => {
-    if (it.achievedRiskRewardRatio === undefined) it.achievedRiskRewardRatio = null;
-        // Remove accountIds field (legacy) - each trade has only one accountId
-        if (it.accountIds) delete it.accountIds;
-        if (Array.isArray(it.images)) {
-          it.images = it.images.map((im: any) => {
-            const keyCandidate = im.key || normalizePotentialKey(im.url, IMAGES_BUCKET);
-            if (keyCandidate) {
-              // Return image ID instead of signed URL
-              return { ...im, id: keyCandidate, key: keyCandidate };
-            }
-            return { ...im, id: im.id || im.key || '' };
-          });
-        }
-      }));
-    }
+    const presented = items.map(presentTrade);
     const nextCursor = hasMore ? Buffer.from(JSON.stringify(lastConsumed)).toString('base64') : null;
 
     log.info('Trades listed', { count: items.length, hasMore });
     return envelope({
       statusCode: 200,
       data: {
-        trades: items,
+        trades: presented,
         pagination: {
           nextCursor,
           hasMore,

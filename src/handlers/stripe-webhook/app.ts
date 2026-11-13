@@ -1,94 +1,66 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { ddb } from '../../shared/dynamo';
+import { ErrorCodes, envelope, errorResponse } from '../../shared/validation';
 import { getUserEmail, paymentFailedMail, sendEmail } from '../../shared/email';
+import { getStripe, readParam } from '../../shared/stripe-config';
+import { subscriptionStatus } from '../../shared/stripe-status';
 
-const ssmClient = new SSMClient({});
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const STRIPE_WEBHOOK_SECRET_PARAM = process.env.STRIPE_WEBHOOK_SECRET_PARAM!;
-const STRIPE_SECRET_KEY_PARAM = process.env.STRIPE_SECRET_KEY_PARAM!;
-
-// Cache SSM parameters in module scope
-let cachedWebhookSecret: string | null = null;
-let cachedStripeSecretKey: string | null = null;
-let stripeClient: Stripe | null = null;
-
-async function getSSMParameter(name: string): Promise<string> {
-  const response = await ssmClient.send(
-    new GetParameterCommand({ Name: name, WithDecryption: true })
-  );
-  return response.Parameter?.Value || '';
-}
 
 async function getWebhookSecret(): Promise<string> {
-  if (!cachedWebhookSecret) {
-    cachedWebhookSecret = await getSSMParameter(STRIPE_WEBHOOK_SECRET_PARAM);
-  }
-  return cachedWebhookSecret;
-}
-
-async function getStripeClient(): Promise<Stripe> {
-  if (!stripeClient) {
-    if (!cachedStripeSecretKey) {
-      cachedStripeSecretKey = await getSSMParameter(STRIPE_SECRET_KEY_PARAM);
-    }
-    stripeClient = new Stripe(cachedStripeSecretKey);
-  }
-  return stripeClient;
+  const secret = await readParam(process.env.STRIPE_WEBHOOK_SECRET_PARAM!);
+  if (!secret) throw new Error('Stripe webhook secret not found in SSM');
+  return secret;
 }
 
 function unixToISO(unix: number): string {
   return new Date(unix * 1000).toISOString();
 }
 
-/** Maps Stripe subscription statuses onto the statuses stored in the Subscriptions table. */
-export function normalizeStatus(stripeStatus: string): string {
-  switch (stripeStatus) {
-    case 'active':
-    case 'trialing':
-      return 'active';
-    case 'past_due':
-    case 'unpaid':
-      return 'past_due';
-    case 'canceled':
-    case 'incomplete_expired':
-      return 'cancelled';
-    case 'paused':
-      return 'paused';
-    default:
-      return stripeStatus;
-  }
-}
-
 /** Condition that rejects an event older than the last one applied (Stripe delivers out of order and retries). */
 const FRESH_EVENT = 'attribute_not_exists(lastStripeEventAt) OR lastStripeEventAt <= :eventAt';
 
-/** Runs an update guarded by FRESH_EVENT; a stale event is acknowledged without changing anything. */
+/**
+ * Runs an update guarded by FRESH_EVENT; a stale event is acknowledged without changing anything and returns false.
+ * Unless `upsert` is set the row must exist, so a late event cannot recreate the row of a deleted user. With
+ * `subscriptionId` only that subscription's events apply, unless the row has no subscription yet or is cancelled.
+ */
 async function applyFresh(
   eventAt: string,
   update: { UpdateExpression: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues: Record<string, any>; ConditionExpression?: string },
   userId: string,
-  label: string
-): Promise<void> {
+  label: string,
+  guard: { upsert?: boolean; subscriptionId?: string } = {}
+): Promise<boolean> {
+  const conditions = [`(${FRESH_EVENT})`];
+  if (update.ConditionExpression) conditions.unshift(`(${update.ConditionExpression})`);
+  if (!guard.upsert) conditions.push('attribute_exists(userId)');
+  const names: Record<string, string> = { ...update.ExpressionAttributeNames };
+  const values: Record<string, any> = { ...update.ExpressionAttributeValues, ':eventAt': eventAt };
+  if (guard.subscriptionId) {
+    conditions.push('(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :eventSubId OR #rowStatus = :cancelled)');
+    names['#rowStatus'] = 'status';
+    values[':eventSubId'] = guard.subscriptionId;
+    values[':cancelled'] = 'cancelled';
+  }
   try {
     await ddb.send(
       new UpdateCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Key: { userId },
         UpdateExpression: update.UpdateExpression.replace(/^SET /, 'SET lastStripeEventAt = :eventAt, '),
-        ConditionExpression: update.ConditionExpression
-          ? `(${update.ConditionExpression}) AND (${FRESH_EVENT})`
-          : FRESH_EVENT,
-        ExpressionAttributeNames: update.ExpressionAttributeNames,
-        ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ':eventAt': eventAt },
+        ConditionExpression: conditions.join(' AND '),
+        ExpressionAttributeNames: Object.keys(names).length ? names : undefined,
+        ExpressionAttributeValues: values,
       })
     );
+    return true;
   } catch (err: any) {
     if (err.name === 'ConditionalCheckFailedException') {
-      console.log(`${label}: stale or duplicate event skipped`, { userId });
-      return;
+      console.log(`${label}: stale, duplicate or other-subscription event skipped`, { userId });
+      return false;
     }
     throw err;
   }
@@ -145,7 +117,7 @@ async function handleCheckoutSessionCompleted(
         ':amount': amount,
         ':subId': subscriptionId,
         ':custId': customerId,
-        ':status': 'active',
+        ':status': subscriptionStatus(subscription),
         ':planId': priceId,
         ':currentStart': currentStart,
         ':currentEnd': currentEnd,
@@ -155,7 +127,8 @@ async function handleCheckoutSessionCompleted(
       },
     },
     userId,
-    'checkout.session.completed'
+    'checkout.session.completed',
+    { upsert: true }
   );
 
   console.log('checkout.session.completed processed', {
@@ -201,9 +174,9 @@ async function handleInvoicePaid(
     eventAt,
     {
       UpdateExpression:
-        'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt, lastInvoiceId = :invoiceId',
+        'SET paidCount = if_not_exists(paidCount, :zero) + :inc, currentStart = :currentStart, currentEnd = :currentEnd, chargeAt = :chargeAt, #status = :status, updatedAt = :updatedAt, lastInvoiceId = :invoiceId REMOVE #src, periodEnd',
       ConditionExpression: 'attribute_not_exists(lastInvoiceId) OR lastInvoiceId <> :invoiceId',
-      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeNames: { '#status': 'status', '#src': 'source' },
       ExpressionAttributeValues: {
         ':zero': 0,
         ':inc': 1,
@@ -216,7 +189,8 @@ async function handleInvoicePaid(
       },
     },
     userId,
-    'invoice.paid'
+    'invoice.paid',
+    { subscriptionId }
   );
 
   console.log('invoice.paid processed', { userId, subscriptionId, invoiceId });
@@ -243,7 +217,7 @@ async function handleInvoicePaymentFailed(
     return;
   }
 
-  await applyFresh(
+  const applied = await applyFresh(
     eventAt,
     {
       UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
@@ -254,8 +228,10 @@ async function handleInvoicePaymentFailed(
       },
     },
     userId,
-    'invoice.payment_failed'
+    'invoice.payment_failed',
+    { subscriptionId }
   );
+  if (!applied) return;
 
   console.log('invoice.payment_failed processed', { userId, subscriptionId });
   await notifyPaymentFailed(userId);
@@ -270,7 +246,7 @@ async function notifyPaymentFailed(userId: string): Promise<void> {
         TableName: SUBSCRIPTIONS_TABLE,
         Key: { userId },
         UpdateExpression: 'SET paymentFailedEmailOn = :d',
-        ConditionExpression: 'attribute_not_exists(paymentFailedEmailOn) OR paymentFailedEmailOn <> :d',
+        ConditionExpression: 'attribute_exists(userId) AND (attribute_not_exists(paymentFailedEmailOn) OR paymentFailedEmailOn <> :d)',
         ExpressionAttributeValues: { ':d': today },
       })
     );
@@ -283,20 +259,20 @@ async function notifyPaymentFailed(userId: string): Promise<void> {
 
 /** Handles both customer.subscription.created and customer.subscription.updated. */
 async function handleSubscriptionChanged(
-  subscription: Stripe.Subscription,
+  eventSubscription: Stripe.Subscription,
+  stripe: Stripe,
   eventAt: string,
   label: string
 ): Promise<void> {
-  const userId = subscription.metadata?.userId;
+  const userId = eventSubscription.metadata?.userId;
   if (!userId) {
     console.warn(`${label}: no userId in metadata`);
     return;
   }
 
-  // One status decision: pause wins, then cancel-at-period-end, otherwise Stripe's normalised status.
-  let status = normalizeStatus(subscription.status);
-  if (subscription.pause_collection) status = 'paused';
-  else if (subscription.cancel_at_period_end) status = 'cancellation_requested';
+  // Events of one second arrive in any order and each carries its own snapshot, so write Stripe's current state.
+  const subscription = await stripe.subscriptions.retrieve(eventSubscription.id);
+  const status = subscriptionStatus(subscription);
 
   const currentPriceId = subscription.items.data[0]?.price.id;
   const updates = [
@@ -332,12 +308,13 @@ async function handleSubscriptionChanged(
   await applyFresh(
     eventAt,
     {
-      UpdateExpression: `SET ${updates.join(', ')}`,
-      ExpressionAttributeNames: { '#status': 'status', ...(currentPriceId ? { '#interval': 'interval' } : {}) },
+      UpdateExpression: `SET ${updates.join(', ')} REMOVE #src, periodEnd`,
+      ExpressionAttributeNames: { '#status': 'status', '#src': 'source', ...(currentPriceId ? { '#interval': 'interval' } : {}) },
       ExpressionAttributeValues: values,
     },
     userId,
-    label
+    label,
+    { subscriptionId: subscription.id }
   );
 
   console.log(`${label} processed`, {
@@ -372,7 +349,8 @@ async function handleSubscriptionDeleted(
       },
     },
     userId,
-    'customer.subscription.deleted'
+    'customer.subscription.deleted',
+    { subscriptionId: subscription.id }
   );
 
   console.log('customer.subscription.deleted processed', {
@@ -401,20 +379,13 @@ export const handler = async (
 
     if (!signature) {
       console.error('Missing stripe-signature header');
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          data: null,
-          error: { code: 'MISSING_SIGNATURE', message: 'Missing stripe-signature header' },
-          meta: null,
-        }),
-      };
+      return errorResponse(400, ErrorCodes.MISSING_SIGNATURE, 'Missing stripe-signature header');
     }
 
     // Fetch secrets and construct Stripe event
     const [webhookSecret, stripe] = await Promise.all([
       getWebhookSecret(),
-      getStripeClient(),
+      getStripe(),
     ]);
 
     let stripeEvent: Stripe.Event;
@@ -422,14 +393,7 @@ export const handler = async (
       stripeEvent = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
     } catch (err: any) {
       console.error('Webhook signature verification failed', { error: err.message });
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          data: null,
-          error: { code: 'INVALID_SIGNATURE', message: 'Webhook signature verification failed' },
-          meta: null,
-        }),
-      };
+      return errorResponse(400, ErrorCodes.INVALID_SIGNATURE, 'Webhook signature verification failed');
     }
 
     console.log('Processing Stripe event', {
@@ -462,7 +426,7 @@ export const handler = async (
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const subscription = stripeEvent.data.object as Stripe.Subscription;
-        await handleSubscriptionChanged(subscription, eventAt, stripeEvent.type);
+        await handleSubscriptionChanged(subscription, stripe, eventAt, stripeEvent.type);
         break;
       }
 
@@ -476,23 +440,9 @@ export const handler = async (
         console.log('Unhandled Stripe event type', { type: stripeEvent.type });
     }
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        data: { message: 'Webhook processed successfully' },
-        error: null,
-        meta: null,
-      }),
-    };
+    return envelope({ statusCode: 200, data: { message: 'Webhook processed successfully' }, message: 'Webhook processed successfully' });
   } catch (error: any) {
     console.error('stripe_webhook_failed', { error: error.message });
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        data: null,
-        error: { code: 'WEBHOOK_PROCESSING_FAILED', message: 'Failed to process webhook' },
-        meta: null,
-      }),
-    };
+    return errorResponse(500, ErrorCodes.WEBHOOK_PROCESSING_FAILED, 'Failed to process webhook');
   }
 };

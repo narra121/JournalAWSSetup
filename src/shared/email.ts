@@ -1,9 +1,8 @@
-import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { findCognitoUserBySub } from './cognitoUser';
 
 const ses = new SESClient({});
-const cognito = new CognitoIdentityProviderClient({});
 const ssm = new SSMClient({});
 
 let poolId: string | undefined;
@@ -18,13 +17,8 @@ async function userPoolId(): Promise<string> {
 
 /** The user's e-mail address from Cognito, or null when the user no longer exists or has none. */
 export async function getUserEmail(userId: string): Promise<string | null> {
-  try {
-    const res = await cognito.send(new AdminGetUserCommand({ UserPoolId: await userPoolId(), Username: userId }));
-    return res.UserAttributes?.find((a) => a.Name === 'email')?.Value ?? null;
-  } catch (err: any) {
-    if (err.name === 'UserNotFoundException') return null;
-    throw err;
-  }
+  const user = await findCognitoUserBySub(await userPoolId(), userId);
+  return user?.Attributes?.find((a) => a.Name === 'email')?.Value ?? null;
 }
 
 export interface Mail {
@@ -97,12 +91,15 @@ export function paymentFailedMail(to: string): Mail {
   };
 }
 
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 export function weeklyReportMail(to: string, summary: string): Mail {
   const url = `${appUrl()}/app/insights`;
   return {
     to,
     subject: 'Your TradeQut weekly report is ready',
     text: `${summary}\n\nRead the full report: ${url}\n\nYou can turn these emails off in Settings: ${appUrl()}/app/settings#notifications`,
-    html: layout(`<h2>Your weekly report is ready</h2><p>${summary}</p><p><a href="${url}">Read the full report</a></p>`, optionalFooter()),
+    html: layout(`<h2>Your weekly report is ready</h2><p>${escapeHtml(summary)}</p><p><a href="${url}">Read the full report</a></p>`, optionalFooter()),
   };
 }

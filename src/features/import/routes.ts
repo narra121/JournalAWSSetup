@@ -51,23 +51,6 @@ export function importApp(deps: ImportDeps = defaultImportDeps): Hono<AppEnv> {
     const res = parseImport({ source: source as SourceId | 'auto', fileName, contentBase64, utcOffsetMinutes: utcOffsetMinutes as number | undefined, mapping: cleanMapping });
     const { fileHash, ...out } = res;
 
-    if (res.trades.length > 0) {
-      const now = deps.now();
-      const claim = await deps.store.get(userId, `IMPORT#${fileHash}`);
-      const claimed = claim && typeof claim.expiresAt === 'string' && Date.parse(claim.expiresAt) > now.getTime();
-      if (!claimed) {
-        const q = await c.get('quota').consume('broker_import');
-        if (!q.ok) return quotaFail(c, 'broker_import', q);
-        await deps.store.put({
-          userId,
-          sk: `IMPORT#${fileHash}`,
-          entity: 'import-claim',
-          expiresAt: new Date(now.getTime() + REPARSE_WINDOW_MS).toISOString(),
-          ttl: Math.floor(now.getTime() / 1000) + 3600,
-        });
-      }
-    }
-
     let duplicates: number | undefined;
     if (typeof accountId === 'string' && res.trades.length) {
       try {
@@ -84,6 +67,24 @@ export function importApp(deps: ImportDeps = defaultImportDeps): Hono<AppEnv> {
         out.warnings.push('Could not check for trades that were already imported; duplicates are still skipped when saving.');
       }
     }
+    // A file whose trades are all already in the account has nothing to save, so it does not use up an import.
+    if (res.trades.some((t) => !t.duplicate)) {
+      const now = deps.now();
+      const claim = await deps.store.get(userId, `IMPORT#${fileHash}`);
+      const claimed = claim && typeof claim.expiresAt === 'string' && Date.parse(claim.expiresAt) > now.getTime();
+      if (!claimed) {
+        const q = await c.get('quota').consume('broker_import');
+        if (!q.ok) return quotaFail(c, 'broker_import', q);
+        await deps.store.put({
+          userId,
+          sk: `IMPORT#${fileHash}`,
+          entity: 'import-claim',
+          expiresAt: new Date(now.getTime() + REPARSE_WINDOW_MS).toISOString(),
+          ttl: Math.floor(now.getTime() / 1000) + 3600,
+        });
+      }
+    }
+
     return ok(c, { ...out, ...(duplicates != null ? { duplicates } : {}) });
   });
 

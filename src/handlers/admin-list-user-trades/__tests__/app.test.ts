@@ -264,6 +264,103 @@ describe('admin-list-user-trades handler', () => {
     expect(body.data.pagination.limit).toBe(100);
   });
 
+  describe('paging (BE-071)', () => {
+    const key = (i: number) => ({ userId: 'user-1', tradeId: `t${i}`, openDate: `2024-03-${String(i).padStart(2, '0')}T10:00:00Z` });
+    const full = (i: number, accountId = 'acc-1') => ({ ...key(i), symbol: `S${i}`, accountId, images: [] });
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, n) => from + n);
+    const decode = (c: string) => JSON.parse(Buffer.from(c, 'base64').toString('utf-8'));
+    const event = (extra: Record<string, string> = {}) =>
+      makeEvent({ queryStringParameters: { accountId: 'acc-1', startDate: '2024-01-01', endDate: '2024-12-31', ...extra } as any });
+
+    it('continues after the last trade RETURNED, so trimmed trades are not skipped', async () => {
+      // 8 matching trades read in one index page, limit 5: the cursor must point at t5, not at the end of the page (t8)
+      ddbMock.on(QueryCommand).resolves({ Items: range(1, 8).map(key), LastEvaluatedKey: key(8) });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': range(1, 8).map((i) => full(i)) } });
+
+      const res = (await handler(event({ limit: '5' }), {} as any, () => {})) as any;
+      const body = JSON.parse(res.body);
+
+      expect(body.data.trades.map((t: any) => t.tradeId)).toEqual(['t1', 't2', 't3', 't4', 't5']);
+      expect(body.data.pagination.hasMore).toBe(true);
+      expect(decode(body.data.pagination.nextCursor)).toEqual(key(5));
+    });
+
+    it('trims the ALL path to the limit as well', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: range(1, 8).map(key), LastEvaluatedKey: key(8) });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': range(1, 8).map((i) => full(i)) } });
+
+      const res = (await handler(event({ accountId: 'ALL', limit: '5' }), {} as any, () => {})) as any;
+      const body = JSON.parse(res.body);
+
+      expect(body.data.trades).toHaveLength(5);
+      expect(decode(body.data.pagination.nextCursor)).toEqual(key(5));
+      expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.Limit).toBe(5);
+    });
+
+    it('reads three index pages per requested trade only when filtering by one account', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      await handler(event({ limit: '10' }), {} as any, () => {});
+      expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.Limit).toBe(30);
+    });
+
+    it('fills the page from the next index page, and the cursor still follows the last returned trade', async () => {
+      ddbMock
+        .on(QueryCommand)
+        .resolvesOnce({ Items: [key(1), key(2)], LastEvaluatedKey: key(2) })
+        .resolvesOnce({ Items: range(3, 6).map(key), LastEvaluatedKey: key(6) });
+      ddbMock.on(BatchGetCommand).callsFake((input) => ({
+        Responses: { 'test-trades': input.RequestItems['test-trades'].Keys.map((k: any) => full(Number(k.tradeId.slice(1)), Number(k.tradeId.slice(1)) === 1 ? 'other' : 'acc-1')) },
+      }));
+
+      const res = (await handler(event({ limit: '3' }), {} as any, () => {})) as any;
+      const body = JSON.parse(res.body);
+
+      expect(body.data.trades.map((t: any) => t.tradeId)).toEqual(['t2', 't3', 't4']);
+      expect(ddbMock.commandCalls(QueryCommand)[1].args[0].input.ExclusiveStartKey).toEqual(key(2));
+      expect(decode(body.data.pagination.nextCursor)).toEqual(key(4));
+    });
+
+    it('retries unprocessed BatchGet keys in the fill pages too, and fails instead of dropping them silently', async () => {
+      ddbMock
+        .on(QueryCommand)
+        .resolvesOnce({ Items: [key(1)], LastEvaluatedKey: key(1) })
+        .resolvesOnce({ Items: [key(2)] });
+      ddbMock
+        .on(BatchGetCommand)
+        .resolvesOnce({ Responses: { 'test-trades': [full(1)] } })
+        .resolvesOnce({ Responses: { 'test-trades': [] }, UnprocessedKeys: { 'test-trades': { Keys: [{ userId: 'user-1', tradeId: 't2' }] } } })
+        .resolves({ Responses: { 'test-trades': [full(2)] } });
+
+      const res = (await handler(event({ limit: '5' }), {} as any, () => {})) as any;
+
+      expect(JSON.parse(res.body).data.trades.map((t: any) => t.tradeId)).toEqual(['t1', 't2']);
+    });
+
+    it('answers 500 when keys stay unprocessed after the retries', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [key(1)] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [] }, UnprocessedKeys: { 'test-trades': { Keys: [{ userId: 'user-1', tradeId: 't1' }] } } });
+
+      const res = (await handler(event(), {} as any, () => {})) as any;
+
+      expect(res.statusCode).toBe(500);
+    });
+
+    it.each([['abc'], [''], ['NaN']])('limit=%s falls back to 50 instead of sending Limit NaN', async (limit) => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      const res = (await handler(event({ limit }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).data.pagination.limit).toBe(50);
+      expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.Limit).toBe(150);
+    });
+
+    it('skips soft-deleted trades', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [key(1), key(2)] });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [full(1), { ...full(2), deletedAt: '2024-04-01T00:00:00Z' }] } });
+      const res = (await handler(event(), {} as any, () => {})) as any;
+      expect(JSON.parse(res.body).data.trades.map((t: any) => t.tradeId)).toEqual(['t1']);
+    });
+  });
+
   it('defaults limit to 50 when not provided', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 

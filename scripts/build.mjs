@@ -27,12 +27,15 @@ for (const [name, { entry }] of Object.entries(targets)) {
     platform: 'node',
     target: 'node24',
     format: 'cjs',
+    // The AWS SDK v3 stays bundled on purpose: the Web Function runtime does not document a provided SDK version to pin to.
+    minify: true,
     sourcemap: 'linked',
     legalComments: 'none',
     logLevel: 'warning',
     banner: { js: 'globalThis.__bundle="' + name + '";' },
   });
-  const files = ['index.js', 'index.js.map'].map((f) => ({ name: f, data: readFileSync(join(dirname(outfile), f)) }));
+  // The map stays in dist/ for local stack traces; Lambda never reads it (no --enable-source-maps), so it is not shipped.
+  const files = ['index.js'].map((f) => ({ name: f, data: readFileSync(join(dirname(outfile), f)) }));
   const zipped = zip(files);
   const sha256 = createHash('sha256').update(zipped).digest('hex');
   const zipPath = join(dist, `${name}.zip`);

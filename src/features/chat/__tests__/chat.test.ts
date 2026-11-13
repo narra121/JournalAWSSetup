@@ -4,7 +4,7 @@ import { SseParser } from '../../ai/sse';
 import { fakeQuota, memoryStore, post, trade, tradeSource, withUser } from '../../__tests__/helpers';
 import type { TradeRow } from '../../trades-repo';
 import { buildChatContext, chatPeriod, selectTrades } from '../context';
-import { chatApp, citedTradeIds, type ChatDeps } from '../routes';
+import { __resetChatContextCache, chatApp, citedTradeIds, type ChatDeps } from '../routes';
 
 const trades: TradeRow[] = [
   trade({ id: 'real1', pnl: 500, openDate: '2026-11-02T04:00:00.000Z', symbol: 'BANKNIFTY', setupType: 'Breakout' }),
@@ -20,6 +20,7 @@ async function readSse(res: Response): Promise<Ev[]> {
 }
 
 function setup(opts: { chunks?: (string | Error)[]; limits?: Record<string, number> } = {}) {
+  __resetChatContextCache();
   const chunks = opts.chunks ?? ['Your best trade ', 'was [#real1]. ', 'Also [#fake9] and ', '[#real2].'];
   const stream = vi.fn(async function* () {
     for (const c of chunks) {
@@ -189,6 +190,111 @@ describe('POST /sessions/:id/messages', () => {
     const res = await post(app, `/sessions/${id}/messages`, { content: 'more' });
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ errorCode: 'SESSION_FULL' });
+  });
+});
+
+describe('empty replies, cancellation and the session counter', () => {
+  const sessionOf = (store: ReturnType<typeof memoryStore>, id: string) => [...store.items.values()].find((i) => i.sk === `CHAT#${id}`)!;
+
+  it('a reply with no text (blocked or empty) refunds the unit and sends an error, not done (BE-047)', async () => {
+    const { app, q, store } = setup({ chunks: [] });
+    const id = await newSession(app);
+    const events = await readSse(await post(app, `/sessions/${id}/messages`, { content: 'Why do I lose on Mondays?' }));
+    expect(events.map((e) => e.event)).toEqual(['error']);
+    expect(events[0].data.code).toBe('AI_UNAVAILABLE');
+    expect(q.used.ai_chat).toBe(0);
+    expect(sessionOf(store, id).messageCount).toBe(1); // only the user's message is stored
+  });
+
+  it('the model call gets a signal that fires when the client cancels (BE-048)', async () => {
+    const { app, stream } = setup();
+    const id = await newSession(app);
+    const ctrl = new AbortController();
+    const res = await app.request(`/sessions/${id}/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'Which setup lost me the most money?' }), signal: ctrl.signal,
+    });
+    await res.text();
+    const req = (stream.mock.calls[0] as any[])[0];
+    expect(req.signal).toBeInstanceOf(AbortSignal);
+    expect(req.signal.aborted).toBe(false);
+    const reader = (await app.request(`/sessions/${id}/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'Which symbol lost me the most?' }),
+    })).body!.getReader();
+    await reader.cancel();
+    expect(((stream.mock.calls[1] as any[])[0]).signal.aborted).toBe(true);
+  });
+
+  it('two messages posted at once cannot both pass the 100-message cap (BE-108)', async () => {
+    const { app, store } = setup();
+    const id = await newSession(app);
+    sessionOf(store, id).messageCount = 98;
+    const [a, b] = await Promise.all([
+      post(app, `/sessions/${id}/messages`, { content: 'Which setup lost me the most money?' }),
+      post(app, `/sessions/${id}/messages`, { content: 'Which symbol lost me the most money?' }),
+    ]);
+    await Promise.all([a.text(), b.text()]);
+    expect([a.status, b.status].sort()).toEqual([200, 422]);
+    expect(sessionOf(store, id).messageCount).toBe(100);
+  });
+
+  it('a refused advice message does not take the session over its counter and is rate limited per minute (BE-108)', async () => {
+    const { deps, store, q } = setup();
+    let allowed = 2;
+    const app = withUser(chatApp({ ...deps, refusalAllowed: async () => allowed-- > 0 }), 'u1', q.quota);
+    const id = await newSession(app);
+    for (let i = 0; i < 2; i++) expect((await post(app, `/sessions/${id}/messages`, { content: 'Which stock should I buy for intraday?' })).status).toBe(200);
+    const limited = await post(app, `/sessions/${id}/messages`, { content: 'Which stock should I buy for intraday?' });
+    expect(limited.status).toBe(429);
+    expect(((await limited.json()) as any).error.retryAfter).toBe(60);
+    expect(q.used.ai_chat ?? 0).toBe(0);
+    expect(sessionOf(store, id).messageCount).toBe(4);
+  });
+
+  it('a full session is refused without keeping the quota unit', async () => {
+    const { app, store, q } = setup();
+    const id = await newSession(app);
+    sessionOf(store, id).messageCount = 100;
+    const res = await post(app, `/sessions/${id}/messages`, { content: 'hi there' });
+    expect(res.status).toBe(422);
+    expect(q.used.ai_chat ?? 0).toBe(0);
+  });
+});
+
+describe('the loaded period is reused between messages (BE-056)', () => {
+  it('loads trades and rules once for a conversation within a minute, per user and period', async () => {
+    const { deps, store, q } = setup();
+    const load = vi.spyOn(deps.trades, 'loadTrades');
+    const rules = vi.spyOn(deps.trades, 'loadRuleTexts');
+    const app = withUser(chatApp(deps), 'u1', q.quota);
+    const id = await newSession(app);
+    for (const content of ['Which setup lost me the most money?', 'And which symbol?', 'What about Mondays?']) await post(app, `/sessions/${id}/messages`, { content }).then((r) => r.text());
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(rules).toHaveBeenCalledTimes(1);
+    expect(store.items.size).toBe(7);
+
+    const other = withUser(chatApp(deps), 'u2', q.quota);
+    const id2 = await newSession(other);
+    await post(other, `/sessions/${id2}/messages`, { content: 'Which setup lost me the most money?' }).then((r) => r.text());
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads after the minute has passed', async () => {
+    const { deps, q } = setup();
+    const load = vi.spyOn(deps.trades, 'loadTrades');
+    let t = Date.parse('2026-11-11T10:00:00Z');
+    const app = withUser(chatApp({ ...deps, now: () => new Date(t) }), 'u1', q.quota);
+    const id = await newSession(app);
+    await post(app, `/sessions/${id}/messages`, { content: 'Which setup lost me the most money?' }).then((r) => r.text());
+    t += 61_000;
+    await post(app, `/sessions/${id}/messages`, { content: 'And which symbol?' }).then((r) => r.text());
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('the chat computes only the base metrics (no breakdowns or findings)', () => {
+    const ctx = buildChatContext('how am I doing', trades, new Map(), null, { from: '2026-11-01', to: '2026-11-11' });
+    const data = JSON.parse(ctx.text.replace('DATA (JSON):\n', ''));
+    expect(Object.keys(data.metrics)).toContain('netPnl');
+    expect(Object.keys(data.metrics).some((k) => k.includes('.net') || k.startsWith('mistake'))).toBe(false);
   });
 });
 

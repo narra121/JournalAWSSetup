@@ -79,6 +79,19 @@ export async function runLifecycleEmails(now: Date = new Date()): Promise<Lifecy
   return result;
 }
 
+/** Insight generation is ~10 s per user; serial runs of 60+ users hit the Event Function's 600 s timeout and starve the later users. */
+const WEEKLY_CONCURRENCY = 8;
+
+/** Runs `fn` over `items` with at most `limit` in flight, starting them in list order. */
+async function forEachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]);
+    }),
+  );
+}
+
 export interface WeeklyDeps {
   generate: (userId: string, entitlements: ReturnType<typeof computeEntitlements>, range: { from: string; to: string }) => Promise<{ ok: boolean; cached?: boolean; summary?: string }>;
 }
@@ -97,26 +110,26 @@ export async function runWeeklyReports(deps: WeeklyDeps, now: Date = new Date())
   const result: WeeklyResult = { generated: 0, skipped: 0, failed: 0 };
   const to = new Date(now.getTime() - DAY).toISOString().slice(0, 10);
   const from = new Date(now.getTime() - 7 * DAY).toISOString().slice(0, 10);
-  for (const sub of await scanSubscriptions()) {
+  await forEachLimited(await scanSubscriptions(), WEEKLY_CONCURRENCY, async (sub) => {
     const entitlements = computeEntitlements(sub, now);
-    if (entitlements.plan === 'free') continue;
+    if (entitlements.plan === 'free') return;
     try {
       const prefs = (await ddb.send(new GetCommand({ TableName: process.env.USER_PREFERENCES_TABLE!, Key: { userId: sub.userId } }))).Item;
       if (prefs?.notifications?.weeklyReport === false) {
         result.skipped++;
-        continue;
+        return;
       }
       const res = await deps.generate(sub.userId, entitlements, { from, to });
       if (!res.ok || res.cached) {
         result.skipped++;
-        continue;
+        return;
       }
       if (await mailUser(sub.userId, (addr) => weeklyReportMail(addr, res.summary ?? 'Your latest insights are ready.'))) result.generated++;
     } catch (err: any) {
       result.failed++;
       console.error(JSON.stringify({ msg: 'weekly_report_failed', userId: sub.userId, error: err.message }));
     }
-  }
+  });
   return result;
 }
 

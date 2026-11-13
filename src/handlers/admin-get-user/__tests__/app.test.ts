@@ -3,8 +3,9 @@ import { mockClient } from 'aws-sdk-client-mock';
 import {
   CognitoIdentityProviderClient,
   AdminGetUserCommand,
+  ListUsersCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
-import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchGetCommand, DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // ─── Env (must be before any module-scope reads) ──────────────
@@ -49,6 +50,7 @@ const TEST_USER_ID = 'user-abc-123';
 const TEST_DATE = new Date('2026-01-15T10:30:00Z');
 
 function setupCognito() {
+  cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_999' }] });
   cognitoMock.on(AdminGetUserCommand).resolves({
     Username: TEST_USER_ID,
     UserAttributes: [
@@ -64,13 +66,22 @@ function setupCognito() {
 }
 
 function setupDynamo() {
-  ddbMock.on(QueryCommand, { TableName: 'test-trades' }).resolves({
+  // newest first from the date index (keys only), then the full records, plus a separate live-trade count
+  ddbMock.on(QueryCommand, { TableName: 'test-trades', IndexName: 'trades-by-date-gsi' }).resolves({
     Items: [
-      { tradeId: 'trade-1', symbol: 'AAPL', pnl: 150 },
-      { tradeId: 'trade-2', symbol: 'MSFT', pnl: -50 },
+      { userId: TEST_USER_ID, tradeId: 'trade-2', openDate: '2026-01-02' },
+      { userId: TEST_USER_ID, tradeId: 'trade-1', openDate: '2026-01-01' },
     ],
-    Count: 2,
   });
+  ddbMock.on(BatchGetCommand).resolves({
+    Responses: {
+      'test-trades': [
+        { tradeId: 'trade-1', symbol: 'AAPL', pnl: 150 },
+        { tradeId: 'trade-2', symbol: 'MSFT', pnl: -50 },
+      ],
+    },
+  });
+  ddbMock.on(QueryCommand, { TableName: 'test-trades', Select: 'COUNT' }).resolves({ Count: 2 });
 
   ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({
     Items: [{ accountId: 'acc-1', name: 'Main Account' }],
@@ -145,7 +156,7 @@ describe('admin-get-user handler', () => {
     expect(data.accounts).toHaveLength(1);
     expect(data.accounts[0].accountId).toBe('acc-1');
 
-    expect(data.recentTrades).toHaveLength(2);
+    expect(data.recentTrades.map((t: any) => t.tradeId)).toEqual(['trade-2', 'trade-1']);
     expect(data.tradeCount).toBe(2);
 
     expect(data.goals).toHaveLength(1);
@@ -158,38 +169,78 @@ describe('admin-get-user handler', () => {
     expect(data.preferences).toEqual({ userId: TEST_USER_ID, theme: 'dark', currency: 'USD' });
   });
 
-  it('sends AdminGetUserCommand with correct UserPoolId and Username', async () => {
+  it('sends AdminGetUserCommand with the pool username found by sub, not the sub (BE-003)', async () => {
     const handler = await getHandler();
     setupCognito();
     setupDynamo();
 
     await handler(makeEvent(TEST_USER_ID), {} as any, () => {});
 
+    expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input).toMatchObject({
+      UserPoolId: 'us-east-1_TestPool',
+      Filter: `sub = "${TEST_USER_ID}"`,
+    });
     const cognitoCalls = cognitoMock.commandCalls(AdminGetUserCommand);
     expect(cognitoCalls).toHaveLength(1);
     expect(cognitoCalls[0].args[0].input).toEqual({
       UserPoolId: 'us-east-1_TestPool',
-      Username: TEST_USER_ID,
+      Username: 'Google_999',
     });
   });
 
-  it('queries trades with Limit 20 and ScanIndexForward false', async () => {
-    const handler = await getHandler();
-    setupCognito();
-    setupDynamo();
+  describe('trades (BE-072)', () => {
+    it('lists the newest trades from the date index, newest first, and counts them separately', async () => {
+      const handler = await getHandler();
+      setupCognito();
+      setupDynamo();
 
-    await handler(makeEvent(TEST_USER_ID), {} as any, () => {});
+      await handler(makeEvent(TEST_USER_ID), {} as any, () => {});
 
-    const tradeCalls = ddbMock.commandCalls(QueryCommand).filter(
-      (c) => c.args[0].input.TableName === 'test-trades',
-    );
-    expect(tradeCalls).toHaveLength(1);
-    expect(tradeCalls[0].args[0].input.Limit).toBe(20);
-    expect(tradeCalls[0].args[0].input.ScanIndexForward).toBe(false);
+      const tradeCalls = ddbMock.commandCalls(QueryCommand).filter((c) => c.args[0].input.TableName === 'test-trades').map((c) => c.args[0].input);
+      const index = tradeCalls.find((i) => i.IndexName === 'trades-by-date-gsi')!;
+      expect(index.ScanIndexForward).toBe(false);
+      expect(index.Limit).toBe(40);
+      expect(tradeCalls.find((i) => i.Select === 'COUNT')!.FilterExpression).toBe('attribute_not_exists(deletedAt)');
+    });
+
+    it('a user with more than 20 trades shows the real count, not 20', async () => {
+      const handler = await getHandler();
+      setupCognito();
+      setupDynamo();
+      ddbMock
+        .on(QueryCommand, { TableName: 'test-trades', Select: 'COUNT' })
+        .resolvesOnce({ Count: 700, LastEvaluatedKey: { userId: TEST_USER_ID, tradeId: 'x' } })
+        .resolves({ Count: 58 });
+
+      const res = (await handler(makeEvent(TEST_USER_ID), {} as any, () => {})) as any;
+
+      expect(JSON.parse(res.body).data.tradeCount).toBe(758);
+    });
+
+    it('leaves soft-deleted trades out of the recent list and keeps at most 20', async () => {
+      const handler = await getHandler();
+      setupCognito();
+      setupDynamo();
+      const rows = Array.from({ length: 40 }, (_, i) => ({ userId: TEST_USER_ID, tradeId: `t${i}`, openDate: `2026-01-${String(40 - i).padStart(2, '0')}` }));
+      ddbMock.on(QueryCommand, { TableName: 'test-trades', IndexName: 'trades-by-date-gsi' }).resolves({ Items: rows });
+      ddbMock.on(BatchGetCommand).callsFake((input) => ({
+        Responses: {
+          'test-trades': input.RequestItems['test-trades'].Keys.map((k: any) => ({ tradeId: k.tradeId, ...(k.tradeId === 't0' ? { deletedAt: '2026-02-01T00:00:00Z' } : {}) })),
+        },
+      }));
+
+      const res = (await handler(makeEvent(TEST_USER_ID), {} as any, () => {})) as any;
+      const recent = JSON.parse(res.body).data.recentTrades;
+
+      expect(recent).toHaveLength(20);
+      expect(recent.map((t: any) => t.tradeId)).not.toContain('t0');
+      expect(recent[0].tradeId).toBe('t1');
+    });
   });
 
   it('returns hasGoogle false when no Google identity', async () => {
     const handler = await getHandler();
+    cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: TEST_USER_ID }] });
     cognitoMock.on(AdminGetUserCommand).resolves({
       Username: TEST_USER_ID,
       UserAttributes: [
@@ -230,6 +281,7 @@ describe('admin-get-user handler', () => {
 
   it('returns 500 when Cognito call fails', async () => {
     const handler = await getHandler();
+    cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: TEST_USER_ID }] });
     cognitoMock.on(AdminGetUserCommand).rejects(new Error('Cognito unavailable'));
     setupDynamo();
 

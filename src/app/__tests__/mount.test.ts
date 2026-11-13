@@ -66,8 +66,8 @@ describe('GET /v1/me/entitlements', () => {
     const res = await app.request('/v1/me/entitlements', { headers: { ...auth, 'cloudfront-viewer-country': 'IN' } });
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body.data.entitlements).toMatchObject({ plan: 'pro', limits: { ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200 } });
-    expect(body.data.usage).toEqual({ ai_extract: 0, ai_insight: 0, ai_chat: 3, broker_import: 0 });
+    expect(body.data.entitlements).toMatchObject({ plan: 'pro', limits: { ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 } });
+    expect(body.data.usage).toEqual({ ai_extract: 0, ai_insight: 0, ai_chat: 3, broker_import: 0, ai_enhance: 0 });
     expect(body.data.billingCurrency).toBe('INR');
     expect(body.data.writableAccountIds).toEqual(['a1']);
     expect(body.data.periodResetsAt).toMatch(/-01T00:00:00.000Z$/);

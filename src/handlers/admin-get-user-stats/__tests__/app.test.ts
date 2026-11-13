@@ -278,6 +278,20 @@ describe('admin-get-user-stats handler', () => {
     expect(body.errorCode).toBe('INTERNAL_ERROR');
   });
 
+  it('logs the failure as one structured line with the message, not the whole error object (BE-084)', async () => {
+    ddbMock.on(QueryCommand).rejects(new Error('DynamoDB timeout'));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((l: string) => void lines.push(l));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((l: string) => void lines.push(l));
+
+    await handler(makeEvent('target-user-id', { accountId: 'acc-1', startDate: '2026-04-01', endDate: '2026-04-30' }));
+    spy.mockRestore();
+    errSpy.mockRestore();
+
+    const entry = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((e) => e?.msg === 'Admin get user stats error');
+    expect(entry).toMatchObject({ level: 'ERROR', userId: 'target-user-id', error: 'DynamoDB timeout', accountId: 'acc-1' });
+  });
+
   // -- Options pass-through --------------------------------------------------
 
   it('passes totalCapital and includeEquityCurve to aggregation', async () => {

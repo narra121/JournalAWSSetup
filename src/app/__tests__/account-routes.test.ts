@@ -1,4 +1,4 @@
-import { AdminUserGlobalSignOutCommand, CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import { AdminUserGlobalSignOutCommand, CognitoIdentityProviderClient, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,7 +23,16 @@ beforeEach(() => {
   cognito.reset();
   exportUserData.mockReset().mockResolvedValue({ exportVersion: 1, exportedAt: '2026-11-11T10:00:00.000Z', trades: [] });
   purgeUser.mockReset().mockResolvedValue({ deleted: { trades: 2 }, images: 1, errorReports: 0, stripeSubscriptionCancelled: false });
-  setTokenVerifier({ verify: async (t) => (t === 'good' ? { sub: 'u1', email: 'u@x.y' } : Promise.reject(new Error('bad'))) });
+  cognito.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_111' }] });
+  cognito.on(AdminUserGlobalSignOutCommand).resolves({});
+  setTokenVerifier({
+    verify: async (t) =>
+      t === 'good'
+        ? { sub: 'u1', email: 'u@x.y' }
+        : t === 'local'
+          ? { sub: 'u1', 'cognito:username': 'Google_222' }
+          : Promise.reject(new Error('bad')),
+  });
 });
 
 describe('account routes', () => {
@@ -45,14 +54,22 @@ describe('account routes', () => {
   it('DELETE /v1/auth/account purges only the caller', async () => {
     const res = await app.request('/v1/auth/account', { method: 'DELETE', headers: auth });
     expect(res.status).toBe(200);
-    expect(purgeUser).toHaveBeenCalledWith('u1', expect.anything());
+    expect(purgeUser).toHaveBeenCalledWith('u1', expect.anything(), expect.objectContaining({ sub: 'u1' }));
     expect((await res.json()).data.deleted.trades).toBe(2);
   });
 
-  it('POST /v1/auth/logout-all signs the caller out of every session', async () => {
-    cognito.on(AdminUserGlobalSignOutCommand).resolves({});
+  it('POST /v1/auth/logout-all signs the caller out with the pool username found by sub, not the sub itself (BE-003)', async () => {
     const res = await app.request('/v1/auth/logout-all', { method: 'POST', headers: auth });
     expect(res.status).toBe(200);
-    expect(cognito.commandCalls(AdminUserGlobalSignOutCommand)[0].args[0].input).toEqual({ UserPoolId: 'us-east-1_t', Username: 'u1' });
+    expect((await res.json()).message).toContain('within an hour');
+    expect(cognito.commandCalls(ListUsersCommand)[0].args[0].input).toMatchObject({ UserPoolId: 'us-east-1_t', Filter: 'sub = "u1"' });
+    expect(cognito.commandCalls(AdminUserGlobalSignOutCommand)[0].args[0].input).toEqual({ UserPoolId: 'us-east-1_t', Username: 'Google_111' });
+  });
+
+  it('POST /v1/auth/logout-all uses the cognito:username claim when the token has it, with no lookup', async () => {
+    const res = await app.request('/v1/auth/logout-all', { method: 'POST', headers: { authorization: 'Bearer local' } });
+    expect(res.status).toBe(200);
+    expect(cognito.commandCalls(ListUsersCommand)).toHaveLength(0);
+    expect(cognito.commandCalls(AdminUserGlobalSignOutCommand)[0].args[0].input).toEqual({ UserPoolId: 'us-east-1_t', Username: 'Google_222' });
   });
 });

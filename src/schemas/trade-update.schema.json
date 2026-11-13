@@ -11,10 +11,11 @@
     "exitPrice": { "type": ["number", "null"], "minimum": 0 },
     "stopLoss": { "type": ["number", "null"], "minimum": 0 },
     "takeProfit": { "type": ["number", "null"], "minimum": 0 },
-    "openDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}" },
-    "closeDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}" },
+    "openDate": { "type": "string", "pattern": "^\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|02-(?:0[1-9]|[12]\\d))(?:T(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|[+-](?:[01]\\d|2[0-3]):?[0-5]\\d)?)?$" },
+    "closeDate": { "type": ["string", "null"], "pattern": "^\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|02-(?:0[1-9]|[12]\\d))(?:T(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|[+-](?:[01]\\d|2[0-3]):?[0-5]\\d)?)?$" },
     "outcome": { "type": ["string", "null"], "enum": ["TP","SL","PARTIAL","BREAKEVEN", null] },
     "pnl": { "type": ["number", "null"] },
+    "netPnl": { "type": ["number", "null"] },
     "riskRewardRatio": { "type": ["number", "null"], "minimum": 0 },
     "setupType": { "type": ["string", "null"], "maxLength": 64 },
     "tradingSession": { "type": ["string", "null"], "maxLength": 32 },
@@ -23,13 +24,26 @@
     "newsEvents": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 50 },
     "mistakes": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 50 },
     "lessons": { "type": "array", "items": { "type": "string", "maxLength": 256 }, "maxItems": 50 },
-    "tags": { "type": "array", "items": { "type": "string", "maxLength": 32 }, "maxItems": 50 },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 24 }, "maxItems": 10 },
     "accountId": { "type": ["string", "null"], "minLength": 1 },
-    "accountIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 50 },
+    "accountIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 10 },
     "brokenRuleIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 50 },
+    "partialCloses": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "quantity": { "type": "number", "exclusiveMinimum": 0 },
+          "exitPrice": { "type": "number", "minimum": 0 },
+          "time": { "type": "string" }
+        }
+      }
+    },
     "images": {
       "type": "array",
-      "maxItems": 20,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "required": [],
@@ -43,6 +57,17 @@
           "description": { "type": ["string", "null"], "maxLength": 256 }
         }
       }
-    }
+    },
+    "assetClass": { "type": ["string", "null"], "enum": ["stock", "forex", "futures", "options", "crypto", "cfd", "commodity", null] },
+    "fees": { "type": ["number", "null"] },
+    "grossPnl": { "type": ["number", "null"] },
+    "contractMultiplier": { "type": ["number", "null"], "minimum": 0 },
+    "underlying": { "type": ["string", "null"], "maxLength": 64 },
+    "optionType": { "type": ["string", "null"], "enum": ["call", "put", null] },
+    "strike": { "type": ["number", "null"], "minimum": 0 },
+    "expiry": { "type": ["string", "null"], "maxLength": 32 },
+    "externalId": { "type": ["string", "null"], "maxLength": 128 },
+    "importSource": { "type": ["string", "null"], "maxLength": 32 },
+    "importBatchId": { "type": ["string", "null"], "maxLength": 64 }
   }
 }

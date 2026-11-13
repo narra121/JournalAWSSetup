@@ -1,15 +1,17 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 
 const SAVED_OPTIONS_TABLE = process.env.SAVED_OPTIONS_TABLE!;
 
 const validCategories = ['symbols', 'strategies', 'sessions', 'marketConditions', 'newsEvents', 'mistakes', 'lessons', 'timeframes', 'tags'];
 const MAX_TAG_LENGTH = 24;
+/** Size limits of one category list and of one entry in it. */
+const MAX_ENTRIES = 500;
+const MAX_ENTRY_LENGTH = 200;
 
 export const handler: ApiHandler = async (event) => {
   const userId = getUserId(event);
@@ -21,9 +23,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!event.body) {
     log.warn('missing body');
@@ -56,10 +55,16 @@ export const handler: ApiHandler = async (event) => {
         return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Category ${key} must be an array`);
       }
       
+      if (data[key].length > MAX_ENTRIES) {
+        return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${key} can have at most ${MAX_ENTRIES} entries`);
+      }
       for (const item of data[key]) {
         if (typeof item !== 'string') {
           log.warn('category items must be strings', { category: key });
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `All items in ${key} must be strings`);
+        }
+        if (item.length > MAX_ENTRY_LENGTH) {
+          return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Entries in ${key} can have at most ${MAX_ENTRY_LENGTH} characters`);
         }
         if (key === 'tags' && item.length > MAX_TAG_LENGTH) {
           return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `Tags can have at most ${MAX_TAG_LENGTH} characters`);
@@ -69,32 +74,27 @@ export const handler: ApiHandler = async (event) => {
   }
 
   try {
-    // Read existing item first to merge
-    const existingResult = await ddb.send(new GetCommand({
+    // Only the categories in the request are written, so a symbol the stream added meanwhile to a category the client
+    // did not send is never overwritten by an older copy of the whole item.
+    const sent = validCategories.filter((c) => data[c] !== undefined);
+    const names: Record<string, string> = { '#updatedAt': 'updatedAt', '#createdAt': 'createdAt' };
+    const values: Record<string, unknown> = { ':now': new Date().toISOString() };
+    const sets = ['#updatedAt = :now', '#createdAt = if_not_exists(#createdAt, :now)'];
+    sent.forEach((category, i) => {
+      names[`#c${i}`] = category;
+      values[`:v${i}`] = data[category];
+      sets.push(`#c${i} = :v${i}`);
+    });
+    const result = await ddb.send(new UpdateCommand({
       TableName: SAVED_OPTIONS_TABLE,
-      Key: { userId }
+      Key: { userId },
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
     }));
-    const existing = existingResult.Item || {};
-
-    const options = {
-      userId,
-      symbols: data.symbols ?? existing.symbols ?? [],
-      strategies: data.strategies ?? existing.strategies ?? [],
-      sessions: data.sessions ?? existing.sessions ?? [],
-      marketConditions: data.marketConditions ?? existing.marketConditions ?? [],
-      newsEvents: data.newsEvents ?? existing.newsEvents ?? [],
-      mistakes: data.mistakes ?? existing.mistakes ?? [],
-      lessons: data.lessons ?? existing.lessons ?? [],
-      timeframes: data.timeframes ?? existing.timeframes ?? [],
-      tags: data.tags ?? existing.tags ?? [],
-      ...(existing.createdAt ? { createdAt: existing.createdAt } : {}),
-      updatedAt: new Date().toISOString()
-    };
-
-    await ddb.send(new PutCommand({
-      TableName: SAVED_OPTIONS_TABLE,
-      Item: options
-    }));
+    const options = Object.fromEntries(validCategories.map((c) => [c, [] as string[]]));
+    Object.assign(options, result.Attributes);
 
     log.info('saved options updated');
 

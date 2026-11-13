@@ -40,6 +40,9 @@ export function assertDeclared(params, declared) {
   if (unknown.length) throw new Error(`--param not declared by template.yaml: ${unknown.join(', ')}`);
 }
 
+/** SSM parameter names that must live under /tradequt/prod/ on the prod stack (template.yaml has no default for the Stripe and ad ones, so an unset one reads as empty here). */
+const PROD_PARAM_NAMES = ['AdminSecretParamName', 'AdminJwtSecretParamName', 'StripeSecretKeyParamName', 'StripeWebhookSecretParamName', 'AdConfigParamName'];
+
 /**
  * Rules for the prod stack. `effective` maps parameter name → the value the stack will have after the update
  * (explicit --param, else the previous value, else the template default). Returns the list of problems.
@@ -49,7 +52,7 @@ export function prodParamProblems(effective) {
   const alarm = (effective.AlarmEmail ?? '').trim();
   if (!alarm) problems.push('AlarmEmail is empty: alarms would have no subscriber (pass --param AlarmEmail=<address>)');
   else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(alarm)) problems.push(`AlarmEmail is not an e-mail address: ${alarm}`);
-  for (const key of ['AdminSecretParamName', 'AdminJwtSecretParamName']) {
+  for (const key of PROD_PARAM_NAMES) {
     const value = effective[key] ?? '';
     if (!value.startsWith('/tradequt/prod/')) {
       problems.push(`${key} is ${JSON.stringify(value)}: it must be under /tradequt/prod/ (pass --param ${key}=/tradequt/prod/<name>)`);

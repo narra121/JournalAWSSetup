@@ -1,13 +1,16 @@
 import type { ApiHandler } from '../../shared/types';
-import { QueryCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../../shared/dynamo';
+import { queryDailyStats } from '../../shared/dailyStats';
 import { getUserId } from '../../shared/auth';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { DailyStatsRecord } from '../../shared/metrics/types';
 import { createHash } from 'crypto';
+import { dayOf, dayQueryRange, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
+import { IncompleteLoadError, loadFullRecords } from '../../shared/tradeRecords';
 
-const DAILY_STATS_TABLE = process.env.DAILY_STATS_TABLE!;
 const TRADES_TABLE = process.env.TRADES_TABLE!;
+const DAY_CONCURRENCY = 4;
 
 interface SyncRequest {
   accountId: string;
@@ -33,12 +36,13 @@ export const handler: ApiHandler = async (event) => {
   if (!accountId || !startDate || !endDate) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'accountId, startDate, and endDate are required');
   }
+  if (!isCalendarDay(startDate) || !isCalendarDay(endDate)) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'startDate and endDate must be dates in YYYY-MM-DD form');
+  }
 
   try {
     const isAll = accountId === 'ALL';
-    const records = isAll
-      ? await queryAllAccounts(userId, startDate, endDate)
-      : await querySingleAccount(userId, accountId, startDate, endDate);
+    const records = await queryDailyStats(userId, accountId, startDate, endDate);
 
     const serverHashes: Record<string, string> = {};
     if (isAll) {
@@ -67,21 +71,35 @@ export const handler: ApiHandler = async (event) => {
     ]);
     const staleDays: string[] = [];
     for (const date of allDates) {
-      if (date < startDate || date > endDate) continue;
+      if (date < startDate || date > endDate || !isCalendarDay(date)) continue;
       if (clientHashes[date] !== serverHashes[date]) {
         staleDays.push(date);
       }
     }
     staleDays.sort();
 
-    let trades: any[] = [];
+    // Trades come back grouped by the user's local day, the same day the hashes and stale days are keyed by. A stale day
+    // missing from `tradesByDay` could not be loaded completely: its hash is withheld so the client fetches it again.
+    const tradesByDay: Record<string, any[]> = {};
     if (staleDays.length > 0) {
-      trades = await fetchTradesForDays(userId, isAll ? undefined : accountId, staleDays);
+      const timeZone = await getUserTimeZone(userId).catch(() => null);
+      const account = isAll ? undefined : accountId;
+      for (let i = 0; i < staleDays.length; i += DAY_CONCURRENCY) {
+        await Promise.all(staleDays.slice(i, i + DAY_CONCURRENCY).map(async (day) => {
+          try {
+            tradesByDay[day] = await fetchTradesForDay(userId, account, day, timeZone);
+          } catch (e) {
+            if (!(e instanceof IncompleteLoadError)) throw e;
+            console.warn('Sync day incomplete', { userId, day });
+            delete serverHashes[day];
+          }
+        }));
+      }
     }
 
     return envelope({
       statusCode: 200,
-      data: { serverHashes, staleDays, trades },
+      data: { serverHashes, staleDays, tradesByDay },
       message: 'Sync complete',
     });
   } catch (error: any) {
@@ -90,96 +108,27 @@ export const handler: ApiHandler = async (event) => {
   }
 };
 
-async function queryAllAccounts(
-  userId: string, startDate: string, endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-  do {
-    const result = await ddb.send(new QueryCommand({
-      TableName: DAILY_STATS_TABLE,
-      IndexName: 'stats-by-date-gsi',
-      KeyConditionExpression: 'userId = :userId AND #date BETWEEN :startDate AND :endDate',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':userId': userId, ':startDate': startDate, ':endDate': endDate },
-      ExclusiveStartKey: exclusiveStartKey,
-    }));
-    if (result.Items) records.push(...(result.Items as DailyStatsRecord[]));
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-  return records;
-}
-
-async function querySingleAccount(
-  userId: string, accountId: string, startDate: string, endDate: string,
-): Promise<DailyStatsRecord[]> {
-  const records: DailyStatsRecord[] = [];
-  let exclusiveStartKey: Record<string, any> | undefined;
-  do {
-    const result = await ddb.send(new QueryCommand({
-      TableName: DAILY_STATS_TABLE,
-      KeyConditionExpression: 'userId = :userId AND sk BETWEEN :skStart AND :skEnd',
-      ExpressionAttributeValues: {
-        ':userId': userId,
-        ':skStart': `${accountId}#${startDate}`,
-        ':skEnd': `${accountId}#${endDate}`,
-      },
-      ExclusiveStartKey: exclusiveStartKey,
-    }));
-    if (result.Items) records.push(...(result.Items as DailyStatsRecord[]));
-    exclusiveStartKey = result.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-  return records;
-}
-
-async function fetchTradesForDays(
-  userId: string, accountId: string | undefined, staleDays: string[],
+async function fetchTradesForDay(
+  userId: string, accountId: string | undefined, day: string, timeZone: string | null,
 ): Promise<any[]> {
-  const dayResults = await Promise.all(
-    staleDays.map(day => queryTradesForDay(userId, day))
-  );
-  const allKeys = dayResults.flat();
-
-  if (allKeys.length === 0) return [];
-
-  const chunks: { userId: string; tradeId: string }[][] = [];
-  for (let i = 0; i < allKeys.length; i += 100) {
-    chunks.push(allKeys.slice(i, i + 100));
-  }
-
-  const batchResults = await Promise.all(
-    chunks.map(chunk =>
-      ddb.send(new BatchGetCommand({
-        RequestItems: { [TRADES_TABLE]: { Keys: chunk } },
-      }))
-    )
-  );
-
-  const items: any[] = [];
-  for (const result of batchResults) {
-    if (result.Responses?.[TRADES_TABLE]) {
-      items.push(...result.Responses[TRADES_TABLE].filter((it: any) => !it.deletedAt));
-    }
-  }
-
-  if (accountId) {
-    return items.filter((it: any) => it.accountId === accountId);
-  }
-  return items;
+  const keyRows = await queryTradeKeysForDay(userId, day, timeZone);
+  const full = await loadFullRecords(userId, keyRows);
+  return [...full.values()].filter((it: any) =>
+    !it.deletedAt && (!accountId || it.accountId === accountId) && dayOf(it.openDate, timeZone) === day);
 }
 
-async function queryTradesForDay(
-  userId: string, day: string,
+async function queryTradeKeysForDay(
+  userId: string, day: string, timeZone: string | null,
 ): Promise<{ userId: string; tradeId: string }[]> {
   const keys: { userId: string; tradeId: string }[] = [];
-  const inclusiveEnd = day + 'T23:59:59.999Z';
+  const { start, end } = dayQueryRange(day, timeZone);
   let exclusiveStartKey: Record<string, any> | undefined;
   do {
     const result = await ddb.send(new QueryCommand({
       TableName: TRADES_TABLE,
       IndexName: 'trades-by-date-gsi',
       KeyConditionExpression: 'userId = :u AND #od BETWEEN :start AND :end',
-      ExpressionAttributeValues: { ':u': userId, ':start': day, ':end': inclusiveEnd },
+      ExpressionAttributeValues: { ':u': userId, ':start': start, ':end': end },
       ExpressionAttributeNames: { '#od': 'openDate' },
       ExclusiveStartKey: exclusiveStartKey,
     }));

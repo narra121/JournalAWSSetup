@@ -35,6 +35,16 @@ export async function putSession(store: AiStore, userId: string, s: ChatSession)
   await store.put({ userId, sk: sessionSk(s.id), entity: 'chat-session', ...s });
 }
 
+/** Updates `updatedAt` (and the title) of a session without touching its message counter. */
+export async function touchSession(store: AiStore, userId: string, id: string, set: { updatedAt: string; title?: string }) {
+  await store.patch(userId, sessionSk(id), set);
+}
+
+/** Adds `by` messages to the session's counter; with `below`, only while it is under that cap (atomic, so two tabs cannot both pass it). */
+export function addMessages(store: AiStore, userId: string, id: string, by: number, below?: number): Promise<boolean> {
+  return store.addToCount(userId, sessionSk(id), 'messageCount', by, below);
+}
+
 export async function getSession(store: AiStore, userId: string, id: string): Promise<ChatSession | null> {
   const it = SESSION_ID.test(id) ? await store.get(userId, sessionSk(id)) : null;
   return it ? strip<ChatSession>(it) : null;

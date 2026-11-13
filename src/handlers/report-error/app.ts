@@ -17,7 +17,7 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
     }
     if (Buffer.byteLength(event.body, 'utf8') > MAX_BODY_BYTES) {
-      return errorResponse(413, ErrorCodes.VALIDATION_ERROR, 'Payload too large (max 200KB)');
+      return errorResponse(413, ErrorCodes.VALIDATION_ERROR, 'Payload too large (max 1 MB)');
     }
 
     // 2. Rate limit by IP
@@ -45,15 +45,15 @@ export const handler: ApiHandler = async (event) => {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid error report', details);
     }
 
-    // 4. Extract userId (optional — may not be authenticated)
-    const userId = getUserId(event) || data.userId || 'anonymous';
+    // 4. Only the verified token names the owner; a userId in the body is the caller's claim and never chooses the prefix.
+    const userId = getUserId(event) || 'anonymous';
 
-    // 5. Generate S3 key
+    // 5. Generate S3 key (userId first: account deletion lists errors/<userId>/ only)
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10); // yyyy-MM-dd
     const timestamp = now.toISOString().replace(/[:.]/g, '-');
     const hash = createHash('sha256').update(event.body).digest('hex').slice(0, 8);
-    const key = `errors/${dateStr}/${userId}/${timestamp}-${hash}.json`;
+    const key = `errors/${userId}/${dateStr}/${timestamp}-${hash}.json`;
 
     // 6. Write to S3
     await s3.send(new PutObjectCommand({

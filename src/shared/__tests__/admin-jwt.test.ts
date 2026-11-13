@@ -32,6 +32,12 @@ describe('verifyAdminToken', () => {
     expect(payload).toBeNull();
   });
 
+  it('accepts HS256 only: the same secret with HS384 is rejected', () => {
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '4h', algorithm: 'HS384' });
+    expect(verifyAdminToken(token, SECRET)).toBeNull();
+  });
+
   it('returns null for garbage string', () => {
     const payload = verifyAdminToken('not.a.jwt', SECRET);
     expect(payload).toBeNull();

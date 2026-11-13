@@ -1,5 +1,6 @@
 import { MetricProcessor, AggregationProcessor, TradeRecord, AggregationContext } from '../types';
 import { calcPnL } from '../../utils/pnl';
+import { dict } from '../dict';
 
 type BrokenRuleEntry = { count: number; totalPnl: number };
 type BrokenRuleDistMap = Record<string, BrokenRuleEntry>;
@@ -20,15 +21,15 @@ function mergeBrokenRuleDist(target: BrokenRuleDistMap, source: BrokenRuleDistMa
  */
 export class BrokenRulesProcessor implements MetricProcessor {
   readonly name = 'brokenRules';
-  private counts: Record<string, number> = {};
-  private distribution: BrokenRuleDistMap = {};
+  private counts: Record<string, number> = dict();
+  private distribution: BrokenRuleDistMap = dict();
 
   processTrade(trade: TradeRecord): void {
     const ruleIds = trade.brokenRuleIds;
     if (!Array.isArray(ruleIds)) return;
     const pnl = calcPnL(trade) ?? 0;
     for (const ruleId of ruleIds) {
-      if (!ruleId) continue;
+      if (!ruleId || typeof ruleId !== 'string') continue;
       this.counts[ruleId] = (this.counts[ruleId] || 0) + 1;
       if (!this.distribution[ruleId]) this.distribution[ruleId] = { count: 0, totalPnl: 0 };
       this.distribution[ruleId].count++;
@@ -44,15 +45,15 @@ export class BrokenRulesProcessor implements MetricProcessor {
   }
 
   reset(): void {
-    this.counts = {};
-    this.distribution = {};
+    this.counts = dict();
+    this.distribution = dict();
   }
 }
 
 export class BrokenRulesAggregator implements AggregationProcessor {
   readonly name = 'brokenRules';
-  private merged: Record<string, number> = {};
-  private distribution: BrokenRuleDistMap = {};
+  private merged: Record<string, number> = dict();
+  private distribution: BrokenRuleDistMap = dict();
 
   merge(record: Record<string, any>): void {
     const counts = record.brokenRulesCounts || {};
@@ -70,7 +71,7 @@ export class BrokenRulesAggregator implements AggregationProcessor {
   }
 
   reset(): void {
-    this.merged = {};
-    this.distribution = {};
+    this.merged = dict();
+    this.distribution = dict();
   }
 }

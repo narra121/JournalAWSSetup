@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
-import { computePnl, outcomeFromPnl, round2 } from '../pnl';
+import { computePnl, outcomeFromPnl } from '../pnl';
 import { estimateCharges, totalCharges } from './charges/india';
 import { decodeFile } from './decode';
 import { detectParser } from './detect';
 import { parserById } from './registry';
 import { buildEpisodes } from './roundtrip';
-import { istDate } from './table';
 import type { CanonicalField, Charges, ClosedTrade, NormalizedTrade, ParserOutput, SourceId } from './types';
 import { FileFormatError } from './xlsx';
 

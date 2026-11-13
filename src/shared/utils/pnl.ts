@@ -1,6 +1,7 @@
 /**
  * Calculate PnL for a trade record.
- * Uses stored pnl field if available, otherwise calculates from prices.
+ * Uses stored pnl field if available, otherwise calculates from prices (times `contractMultiplier`, default 1, like
+ * the client and the R multiple). Undefined when an input is missing or the side is not BUY/SELL.
  */
 export function calcPnL(item: any): number | undefined {
   if (item.pnl != null && typeof item.pnl === 'number') return item.pnl;
@@ -9,8 +10,9 @@ export function calcPnL(item: any): number | undefined {
   const qty = item.quantity;
   const side = item.side;
   if (entry == null || exit == null || qty == null || side == null) return undefined;
-  if (side === 'BUY') return (exit - entry) * qty;
-  if (side === 'SELL') return (entry - exit) * qty;
+  const multiplier = Number(item.contractMultiplier) > 0 ? Number(item.contractMultiplier) : 1;
+  if (side === 'BUY') return (exit - entry) * qty * multiplier;
+  if (side === 'SELL') return (entry - exit) * qty * multiplier;
   return undefined;
 }
 

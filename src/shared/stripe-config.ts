@@ -8,6 +8,8 @@ const ssm = new SSMClient({});
 const TTL_MS = 15 * 60 * 1000;
 const cache = new Map<string, { value: string | null; at: number }>();
 let client: Stripe | undefined;
+let clientKey: string | undefined;
+let override: Stripe | undefined;
 
 /** Reads an SSM parameter (decrypted); a missing parameter is `null`. Cached for 15 minutes. */
 export async function readParam(name: string): Promise<string | null> {
@@ -26,29 +28,46 @@ export async function readParam(name: string): Promise<string | null> {
 export function clearParamCache(): void {
   cache.clear();
   client = undefined;
+  clientKey = undefined;
+  override = undefined;
 }
 
 /** Test seam. */
 export function setStripeClient(c: Stripe | undefined): void {
-  client = c;
+  override = c;
 }
 
+/** The Stripe client for the current secret key (rebuilt when the cached parameter rotates). Timeouts stay under CloudFront's 60 s origin timeout. */
 export async function getStripe(): Promise<Stripe> {
-  if (client) return client;
+  if (override) return override;
   const key = await readParam(process.env.STRIPE_SECRET_KEY_PARAM!);
   if (!key) throw new Error('Stripe secret key not found in SSM');
-  client = new Stripe(key);
+  if (!client || clientKey !== key) {
+    client = new Stripe(key, { timeout: 20_000, maxNetworkRetries: 2 });
+    clientKey = key;
+  }
   return client;
 }
 
 const stage = () => process.env.STAGE_NAME || 'dev';
+
+/** INR for viewers CloudFront geolocates to India, USD otherwise. */
+export function billingCurrencyFor(country: string | undefined): Currency {
+  return country?.toUpperCase() === 'IN' ? 'INR' : 'USD';
+}
 
 /** Pro price id for the interval and currency, from `/tradequt/<env>/stripe/price/pro_<interval>_<currency>`. */
 export function proPriceId(interval: Interval, currency: Currency): Promise<string | null> {
   return readParam(`/tradequt/${stage()}/stripe/price/pro_${interval}_${currency.toLowerCase()}`);
 }
 
-/** Every configured Pro price id (the only prices checkout accepts). */
+/** The configured Pro price ids (monthly and yearly) of one currency. */
+export async function proPriceIdsFor(currency: Currency): Promise<string[]> {
+  const ids = await Promise.all((['month', 'year'] as Interval[]).map((i) => proPriceId(i, currency)));
+  return ids.filter((id): id is string => !!id);
+}
+
+/** Every configured Pro price id. */
 export async function allProPriceIds(): Promise<string[]> {
   const ids = await Promise.all(
     (['month', 'year'] as Interval[]).flatMap((i) => (['USD', 'INR'] as Currency[]).map((c) => proPriceId(i, c))),

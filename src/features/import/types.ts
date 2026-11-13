@@ -132,33 +132,3 @@ export interface ImportParser {
   detect(t: Tabular): number;
   parse(t: Tabular, ctx: ParseContext): ParserOutput;
 }
-
-/** Live broker connection state persisted by a future sync feature (tokens stored encrypted, never logged). */
-export interface SyncConnection {
-  provider: SyncProvider['id'];
-  userId: string;
-  accountId: string;
-  /** opaque provider credentials (access token, expiry, client id) */
-  credentials: Record<string, string>;
-  /** UTC ISO; after this the user must re-authorise (e.g. Kite tokens expire daily) */
-  expiresAt?: string;
-  lastSyncedAt?: string;
-}
-
-/**
- * Future live sync. Implementations return the same `Fill` the file parsers produce, so API and file imports
- * share round-trip building, charges and dedupe (externalId). Constraints per broker: design/features.md §8.
- */
-export interface SyncProvider {
-  id: 'zerodha' | 'dhan' | 'upstox' | 'angelone' | 'groww' | 'mt5';
-  /** Start authorisation: an OAuth/redirect URL, or a ready connection for token-paste flows. */
-  connect(userId: string, accountId: string, redirectUri: string): Promise<{ authUrl: string } | { connection: SyncConnection }>;
-  /** Finish the redirect flow with the provider's callback params (request_token, code, …). */
-  completeConnect(userId: string, accountId: string, params: Record<string, string>): Promise<SyncConnection>;
-  /** Renew credentials where the provider allows it; throws SyncAuthRequired when the user must log in again. */
-  refresh(conn: SyncConnection): Promise<SyncConnection>;
-  /** Executions since `sinceIso` (UTC), oldest first. Providers limited to "today" return only today's fills. */
-  fetchTrades(conn: SyncConnection, sinceIso: string): Promise<Fill[]>;
-}
-
-export class SyncAuthRequired extends Error {}

@@ -1,4 +1,4 @@
-import { BatchWriteCommand, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchWriteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../shared/dynamo';
 
 /** AiData row: PK userId, SK sk (`INSIGHT#…`, `CHAT#…`, `MSG#…`, `IMPORT#…`). Every key starts with the caller's userId. */
@@ -20,6 +20,12 @@ export interface AiStore {
   get(userId: string, sk: string): Promise<AiItem | null>;
   query(userId: string, o: QueryOpts): Promise<{ items: AiItem[]; lastKey?: Record<string, unknown> }>;
   delete(userId: string, sks: string[]): Promise<void>;
+  /** Writes `item` unless one with that key exists and has not expired (`expiresAt`, epoch ms, is not before `nowMs`). False when someone else holds it. */
+  putIfFree(item: AiItem & { expiresAt: number }, nowMs: number): Promise<boolean>;
+  /** Sets attributes of an existing item, leaving the others (counters included) as stored. */
+  patch(userId: string, sk: string, set: Record<string, unknown>): Promise<void>;
+  /** Atomically adds `by` to a number of an existing item; with `below`, only while the stored value is under it. False when the item is missing or the cap is reached. */
+  addToCount(userId: string, sk: string, attr: string, by: number, below?: number): Promise<boolean>;
 }
 
 const table = () => {
@@ -48,6 +54,54 @@ export const dynamoAiStore: AiStore = {
       }),
     );
     return { items: (r.Items as AiItem[]) ?? [], lastKey: r.LastEvaluatedKey };
+  },
+  async putIfFree(item, nowMs) {
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attribute_not_exists(sk) OR expiresAt < :now',
+          ExpressionAttributeValues: { ':now': nowMs },
+        }),
+      );
+      return true;
+    } catch (e: any) {
+      if (e?.name === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
+  },
+  async patch(userId, sk, set) {
+    const names = Object.fromEntries(Object.keys(set).map((k, i) => [`#a${i}`, k]));
+    const values = Object.fromEntries(Object.values(set).map((v, i) => [`:v${i}`, v]));
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: { userId, sk },
+        ConditionExpression: 'attribute_exists(sk)',
+        UpdateExpression: `SET ${Object.keys(names).map((n, i) => `${n} = :v${i}`).join(', ')}`,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+      }),
+    );
+  },
+  async addToCount(userId, sk, attr, by, below) {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: { userId, sk },
+          ConditionExpression: below === undefined ? 'attribute_exists(sk)' : 'attribute_exists(sk) AND (attribute_not_exists(#a) OR #a < :below)',
+          UpdateExpression: 'ADD #a :by',
+          ExpressionAttributeNames: { '#a': attr },
+          ExpressionAttributeValues: { ':by': by, ...(below === undefined ? {} : { ':below': below }) },
+        }),
+      );
+      return true;
+    } catch (e: any) {
+      if (e?.name === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
   },
   async delete(userId, sks) {
     for (let i = 0; i < sks.length; i += 25) {

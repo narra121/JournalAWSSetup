@@ -21,12 +21,22 @@ function splitLine(line: string, d: string): string[] {
   return parseCsv(line, d)[0] ?? [];
 }
 
-/** RFC 4180: quoted fields, doubled quotes, embedded delimiters/newlines, CRLF or LF. Cells are trimmed. */
+/**
+ * RFC 4180: quoted fields, doubled quotes, embedded delimiters/newlines, CRLF or LF. Cells are trimmed.
+ * A quote that is never closed (a stray leading `"` in a notes cell) would swallow the rest of the file as one cell, so
+ * the file is read again with quotes from that point on taken as ordinary characters.
+ */
 export function parseCsv(text: string, delimiter = sniffDelimiter(text)): Row[] {
+  const first = readCsv(text, delimiter, Infinity);
+  return first.unclosedAt === null ? first.rows : readCsv(text, delimiter, first.unclosedAt).rows;
+}
+
+function readCsv(text: string, delimiter: string, quotesOffFrom: number): { rows: Row[]; unclosedAt: number | null } {
   const rows: Row[] = [];
   let row: string[] = [];
   let cell = '';
   let quoted = false;
+  let openedAt = -1;
   let i = 0;
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   while (i < src.length) {
@@ -46,8 +56,9 @@ export function parseCsv(text: string, delimiter = sniffDelimiter(text)): Row[] 
       i++;
       continue;
     }
-    if (ch === '"' && cell.trim() === '') {
+    if (ch === '"' && cell.trim() === '' && i < quotesOffFrom) {
       quoted = true;
+      openedAt = i;
       cell = '';
       i++;
       continue;
@@ -70,9 +81,10 @@ export function parseCsv(text: string, delimiter = sniffDelimiter(text)): Row[] 
     cell += ch;
     i++;
   }
+  if (quoted) return { rows: [], unclosedAt: openedAt };
   if (cell !== '' || row.length) {
     row.push(cell.trim());
     rows.push(row);
   }
-  return rows.filter((r) => r.some((c) => c !== ''));
+  return { rows: rows.filter((r) => r.some((c) => c !== '')), unclosedAt: null };
 }

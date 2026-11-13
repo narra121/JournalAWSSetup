@@ -48,7 +48,14 @@ describe('assertDeclared', () => {
 });
 
 describe('prodParamProblems', () => {
-  const good = { AlarmEmail: 'ops@example.com', AdminSecretParamName: '/tradequt/prod/adminSecret', AdminJwtSecretParamName: '/tradequt/prod/adminJwtSecret' };
+  const good = {
+    AlarmEmail: 'ops@example.com',
+    AdminSecretParamName: '/tradequt/prod/adminSecret',
+    AdminJwtSecretParamName: '/tradequt/prod/adminJwtSecret',
+    StripeSecretKeyParamName: '/tradequt/prod/stripeSecretKey',
+    StripeWebhookSecretParamName: '/tradequt/prod/stripeWebhookSecret',
+    AdConfigParamName: '/tradequt/prod/adConfig',
+  };
 
   it('accepts a complete prod configuration', () => {
     expect(prodParamProblems(good)).toEqual([]);
@@ -69,8 +76,20 @@ describe('prodParamProblems', () => {
     expect(prodParamProblems({ ...good, AdminSecretParamName: '/tradequt/production/x' })).toHaveLength(1);
   });
 
+  it.each(['StripeSecretKeyParamName', 'StripeWebhookSecretParamName', 'AdConfigParamName'])(
+    'refuses %s when it is empty (template default), unset or points at dev',
+    (key) => {
+      for (const value of ['', undefined, `/tradequt/dev/${key}`]) {
+        const problems = prodParamProblems({ ...good, [key]: value });
+        expect(problems).toHaveLength(1);
+        expect(problems[0]).toContain(key);
+        expect(problems[0]).toMatch(/\/tradequt\/prod\//);
+      }
+    },
+  );
+
   it('reports every problem at once', () => {
-    expect(prodParamProblems({})).toHaveLength(3);
+    expect(prodParamProblems({})).toHaveLength(6);
   });
 });
 

@@ -35,12 +35,19 @@ export const handler = async (event: any) => {
     ]);
 
     const labels = ['createDefaultRules', 'createDefaultSavedOptions', 'createTrialSubscription'];
+    const TRIAL = 2;
+    // A trial row that already exists is not a failure (a repeated confirmation).
+    const trialExists = (r: PromiseSettledResult<unknown>) => r.status === 'rejected' && r.reason?.name === 'ConditionalCheckFailedException';
     results.forEach((r, i) => {
-      if (r.status === 'rejected') {
+      if (r.status === 'rejected' && !(i === TRIAL && trialExists(r))) {
         console.error(`${labels[i]} failed`, { userId, error: r.reason?.message || r.reason });
       }
     });
     console.log('post-confirmation init complete', { userId, trialEnd: trialEnd.toISOString(), results: results.map((r, i) => `${labels[i]}:${r.status}`) });
+
+    // Without the trial row the user stays on Free for good; failing the trigger makes Cognito fail the confirmation so it is retried.
+    const trial = results[TRIAL];
+    if (trial.status === 'rejected' && !trialExists(trial)) throw trial.reason;
   }
 
   return event;

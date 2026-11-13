@@ -10,6 +10,7 @@
 import { createHash } from 'crypto';
 import { DailyStatsRecord, AggregatedStats, AggregationContext } from './metrics/types';
 import { metricRegistry } from './metrics/registry';
+import { isCalendarDay } from './timezone';
 
 // Side-effect import: registers all built-in processors
 import './metrics/processors/index';
@@ -25,7 +26,7 @@ function byDateComparator(a: any, b: any): number {
 
 /**
  * Build a DailyStatsRecord for a single (userId, accountId, date) from its trades.
- * If trades is empty, returns null (caller should delete the record).
+ * If trades is empty or `date` is not a real calendar day, returns null (caller should delete the record).
  */
 export function computeDailyRecord(
   userId: string,
@@ -34,7 +35,7 @@ export function computeDailyRecord(
   trades: any[],
   timeZone?: string | null,
 ): DailyStatsRecord | null {
-  if (trades.length === 0) return null;
+  if (trades.length === 0 || !isCalendarDay(date)) return null;
 
   const processors = metricRegistry.getDailyProcessors();
   processors.forEach(p => p.reset());

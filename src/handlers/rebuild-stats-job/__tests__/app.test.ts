@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, ScanCommand, PutCommand, GetCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, DeleteCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 
-// Stub env before importing handler
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
 
-// Mock DynamoDBDocumentClient (the handler creates its own instance)
+// The handler creates its own DocumentClient; the mock covers every instance.
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-const { handler } = await import('../app.ts');
+const { handler, rebuildForUser } = await import('../app.ts');
+const { computeDailyRecord } = await import('../../../shared/stats-aggregator');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -24,444 +24,315 @@ function makeTrade(overrides: Record<string, any> = {}) {
     exitPrice: 110,
     quantity: 10,
     accountId: 'acc-1',
+    openDate: '2026-04-06T09:30:00Z',
     ...overrides,
   };
 }
 
-/** Stub the initial ScanCommand on DAILY_STATS_TABLE to return recently-changed users. */
-function stubRecentUsers(userIds: string[]) {
-  ddbMock.on(ScanCommand, { TableName: 'test-daily-stats' }).resolves({
-    Items: userIds.map(userId => ({ userId, lastUpdated: new Date().toISOString() })),
-    LastEvaluatedKey: undefined,
+interface World {
+  dirty?: { sk: string; dirtyAt: string }[];
+  trades?: Record<string, any[]>; // by userId
+  accounts?: Record<string, any[]>; // by userId
+  stored?: Record<string, { sk: string; tradeHash?: string }[]>; // daily stats by userId
+}
+
+/** Answers every Query by table / partition from a small in-memory world. */
+function stubWorld(w: World) {
+  ddbMock.on(QueryCommand).callsFake((input: any) => {
+    const v = input.ExpressionAttributeValues ?? {};
+    if (input.TableName === 'test-daily-stats') {
+      if (v[':pk'] === '#dirty') return { Items: (w.dirty ?? []).map((d) => ({ userId: '#dirty', ...d })) };
+      return { Items: (w.stored?.[v[':uid']] ?? []).map((i) => ({ userId: v[':uid'], ...i })) };
+    }
+    if (input.TableName === 'test-trades') return { Items: w.trades?.[v[':u']] ?? [] };
+    if (input.TableName === 'test-accounts') return { Items: w.accounts?.[v[':u']] ?? [] };
+    return { Items: [] };
   });
 }
 
-/** Stub the QueryCommand on TRADES_TABLE to return trades for a user. */
-function stubUserTrades(trades: any[]) {
-  ddbMock.on(QueryCommand, { TableName: 'test-trades' }).resolves({
-    Items: trades,
-    LastEvaluatedKey: undefined,
-  });
-}
-
-// ─── Tests ──────────────────────────────────────────────────────
+const dirty = (...ids: string[]) => ids.map((id) => ({ sk: id, dirtyAt: '2026-04-06T10:00:00.000Z' }));
+const balanceWrites = () => ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-accounts').map((c) => c.args[0].input);
+const batches = () => ddbMock.commandCalls(BatchWriteCommand).map((c) => c.args[0].input.RequestItems!['test-daily-stats'] as any[]);
+const putItems = () => batches().flat().filter((r) => r.PutRequest).map((r) => r.PutRequest.Item);
+const deletedKeys = () => batches().flat().filter((r) => r.DeleteRequest).map((r) => r.DeleteRequest.Key);
 
 beforeEach(() => {
   ddbMock.reset();
-  // Default: GetCommand for account returns initialBalance
-  ddbMock.on(GetCommand).resolves({
-    Item: { initialBalance: 10000 },
-  });
-  // Default: UpdateCommand succeeds
   ddbMock.on(UpdateCommand).resolves({});
-  // Default: PutCommand succeeds
-  ddbMock.on(PutCommand).resolves({});
-  // Default: QueryCommand for daily stats orphan cleanup returns empty
-  ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [] });
-  // Default: QueryCommand for trades returns empty
-  ddbMock.on(QueryCommand, { TableName: 'test-trades' }).resolves({ Items: [], LastEvaluatedKey: undefined });
-  // Default: DeleteCommand succeeds
   ddbMock.on(DeleteCommand).resolves({});
-  // Default: ScanCommand on daily stats returns empty (no recent changes)
-  ddbMock.on(ScanCommand, { TableName: 'test-daily-stats' }).resolves({
-    Items: [],
-    LastEvaluatedKey: undefined,
-  });
+  ddbMock.on(BatchWriteCommand).resolves({});
+  stubWorld({});
 });
 
 describe('rebuild-stats-job handler', () => {
-  // ── Targeted approach ──────────────────────────────────────────
+  // ── Selecting users (BE-009) ───────────────────────────────────
 
-  it('returns early when no users have recent changes', async () => {
-    // Default scan returns empty — no recent changes
+  it('returns early when no user is flagged, without scanning or reading trades', async () => {
     const result = await handler();
 
     expect(result).toEqual({ rebuiltUsers: 0, skipped: 'no recent changes' });
-    // Should NOT query trades table at all
-    expect(ddbMock.commandCalls(QueryCommand, { TableName: 'test-trades' })).toHaveLength(0);
-    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(QueryCommand).every((c) => c.args[0].input.TableName === 'test-daily-stats')).toBe(true);
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(1);
+    expect(batches()).toHaveLength(0);
+  });
+
+  it('never scans the daily stats table: users come from the #dirty partition', async () => {
+    stubWorld({ dirty: dirty('user-1') });
+    await handler();
+    const first = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+    expect(first.KeyConditionExpression).toBe('userId = :pk');
+    expect(first.ExpressionAttributeValues).toEqual({ ':pk': '#dirty' });
   });
 
   it('logs start message', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
     await handler();
-
     expect(consoleSpy).toHaveBeenCalledWith('rebuild-stats-job started', expect.objectContaining({ timestamp: expect.any(String) }));
     consoleSpy.mockRestore();
   });
 
   it('warns but processes ALL users when above threshold', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    // Generate 1500 unique users from the daily stats scan
-    const manyUsers = Array.from({ length: 1500 }, (_, i) => ({
-      userId: `user-${i}`,
-      lastUpdated: new Date().toISOString(),
-    }));
-    ddbMock.on(ScanCommand, { TableName: 'test-daily-stats' }).resolves({
-      Items: manyUsers,
-      LastEvaluatedKey: undefined,
-    });
+    stubWorld({ dirty: dirty(...Array.from({ length: 1500 }, (_, i) => `user-${i}`)) });
 
     const result = await handler();
 
-    // All 1500 users should be processed — no cap
     expect(result).toEqual({ rebuiltUsers: 1500 });
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('1500 users need rebuilding'),
-    );
-
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('1500 users need rebuilding'));
     warnSpy.mockRestore();
-    logSpy.mockRestore();
   });
 
-  // ── Success ─────────────────────────────────────────────────
-
-  it('rebuilds stats and returns rebuiltUsers count', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ tradeId: 't1', entryPrice: 100, exitPrice: 110, quantity: 10, side: 'BUY', openDate: '2026-01-15T10:00:00Z' }),
-      makeTrade({ tradeId: 't2', entryPrice: 200, exitPrice: 190, quantity: 5, side: 'BUY', openDate: '2026-01-15T11:00:00Z' }),
-    ]);
+  it('clears the flag after a successful rebuild so the user is not picked again (BE-009)', async () => {
+    stubWorld({ dirty: dirty('user-1'), trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [{ accountId: 'acc-1', initialBalance: 1000 }] } });
 
     const result = await handler();
 
     expect(result).toEqual({ rebuiltUsers: 1 });
-    // Trade 1: (110-100)*10 = 100; Trade 2: (190-200)*5 = -50; total PnL = 50
-    // Account balance should be initialBalance(10000) + 50 = 10050
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(10050);
+    const del = ddbMock.commandCalls(DeleteCommand)[0].args[0].input;
+    expect(del).toMatchObject({
+      TableName: 'test-daily-stats',
+      Key: { userId: '#dirty', sk: 'user-1' },
+      ConditionExpression: 'dirtyAt = :seen',
+      ExpressionAttributeValues: { ':seen': '2026-04-06T10:00:00.000Z' },
+    });
   });
 
-  it('handles user with no trades (all deleted since last daily stats write)', async () => {
-    stubRecentUsers(['user-1']);
-    // User appears in daily stats but has no trades anymore
-    stubUserTrades([]);
-
-    const result = await handler();
-
-    expect(result).toEqual({ rebuiltUsers: 1 });
-    // No account balance updates since there are no trades
-    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
-    // No daily stats PutCommands since there are no trades to group
-    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+  it('a flag that update-stats set again during the rebuild stays (conditional delete fails quietly)', async () => {
+    stubWorld({ dirty: dirty('user-1') });
+    ddbMock.on(DeleteCommand).rejects(Object.assign(new Error('changed'), { name: 'ConditionalCheckFailedException' }));
+    await expect(handler()).resolves.toEqual({ rebuiltUsers: 1 });
   });
 
-  // ── PnL calculation ─────────────────────────────────────────
-
-  it('calculates PnL correctly for BUY trades: (exit - entry) * qty', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ side: 'BUY', entryPrice: 50, exitPrice: 75, quantity: 4 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
-
-    await handler();
-
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    // (75 - 50) * 4 = 100; balance = 1000 + 100 = 1100
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1100);
-  });
-
-  it('calculates PnL correctly for SELL trades: (entry - exit) * qty', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ side: 'SELL', entryPrice: 200, exitPrice: 180, quantity: 2 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
-
-    await handler();
-
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    // (200 - 180) * 2 = 40; balance = 1000 + 40 = 1040
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1040);
-  });
-
-  // ── Skipping ────────────────────────────────────────────────
-
-  it('skips trades with accountId = "-1"', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ accountId: '-1', entryPrice: 100, exitPrice: 200, quantity: 1 }),
-      makeTrade({ tradeId: 't2', accountId: 'acc-1', entryPrice: 100, exitPrice: 110, quantity: 10 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 5000 } });
-
-    await handler();
-
-    // Only acc-1 should get a balance update, not the "-1" account
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBe(1);
-    expect(updateCalls[0].args[0].input.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
-    // Only the second trade counts: (110-100)*10 = 100; balance = 5000 + 100 = 5100
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(5100);
-  });
-
-  // ── Account balance updates ─────────────────────────────────
-
-  it('updates account balance = initialBalance + totalPnL', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ accountId: 'acc-1', side: 'BUY', entryPrice: 100, exitPrice: 120, quantity: 5 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({
-      Item: { initialBalance: 10000 },
+  it('keeps the flag of a user whose rebuild fails and throws after the others are done', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubWorld({ dirty: dirty('user-ok', 'user-bad'), trades: { 'user-ok': [makeTrade({ userId: 'user-ok' })], 'user-bad': [makeTrade({ userId: 'user-bad' })] } });
+    ddbMock.on(BatchWriteCommand).callsFake((input: any) => {
+      const items = input.RequestItems['test-daily-stats'];
+      if (items.some((r: any) => r.PutRequest?.Item.userId === 'user-bad')) throw new Error('write failed');
+      return {};
     });
 
-    await handler();
+    await expect(handler()).rejects.toThrow('write failed');
 
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    const updateInput = updateCalls[0].args[0].input;
-    expect(updateInput.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
-    // PnL = (120-100)*5 = 100; balance = 10000 + 100 = 10100
-    expect(updateInput.ExpressionAttributeValues![':balance']).toBe(10100);
-  });
-
-  // ── Multiple users ──────────────────────────────────────────
-
-  it('processes multiple users independently', async () => {
-    stubRecentUsers(['user-1', 'user-2']);
-    // QueryCommand on trades table returns trades matching the queried user
-    ddbMock.on(QueryCommand, { TableName: 'test-trades' })
-      .callsFake((input: any) => {
-        const userId = input.ExpressionAttributeValues[':u'];
-        if (userId === 'user-1') {
-          return {
-            Items: [makeTrade({ userId: 'user-1', tradeId: 't1', accountId: 'acc-1', side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 10 })],
-            LastEvaluatedKey: undefined,
-          };
-        }
-        if (userId === 'user-2') {
-          return {
-            Items: [makeTrade({ userId: 'user-2', tradeId: 't2', accountId: 'acc-2', side: 'SELL', entryPrice: 50, exitPrice: 40, quantity: 20 })],
-            LastEvaluatedKey: undefined,
-          };
-        }
-        return { Items: [], LastEvaluatedKey: undefined };
-      });
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 10000 } });
-
-    const result = await handler();
-
-    expect(result).toEqual({ rebuiltUsers: 2 });
-    // Both users should get account balance updates
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBe(2);
-    const accountIds = updateCalls.map((c) => c.args[0].input.Key!.accountId);
-    expect(accountIds).toContain('acc-1');
-    expect(accountIds).toContain('acc-2');
-  });
-
-  // ── Error / failure cases ──────────────────────────────────
-
-  it('throws when ScanCommand fails', async () => {
-    ddbMock.on(ScanCommand).rejects(new Error('DynamoDB scan failed'));
-
-    await expect(handler()).rejects.toThrow('DynamoDB scan failed');
-  });
-
-  it('throws when PutCommand fails writing daily stats', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([makeTrade({ openDate: '2026-01-15T10:00:00Z' })]);
-    ddbMock.on(PutCommand).rejects(new Error('PutCommand failed'));
-
-    await expect(handler()).rejects.toThrow('PutCommand failed');
-  });
-
-  it('logs error and continues when GetCommand fails fetching account initialBalance', async () => {
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ tradeId: 't1', accountId: 'acc-1' }),
-      makeTrade({ tradeId: 't2', accountId: 'acc-2', userId: 'user-1' }),
-    ]);
-    ddbMock.on(GetCommand).rejects(new Error('GetCommand failed'));
-
-    const result = await handler();
-
-    // Handler should complete despite GetCommand errors (try/catch per account)
-    expect(result).toEqual({ rebuiltUsers: 1 });
-    expect(consoleSpy).toHaveBeenCalled();
-    consoleSpy.mockRestore();
-  });
-
-  it('logs error and continues when UpdateCommand fails for account balance update', async () => {
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    stubRecentUsers(['user-1']);
-    stubUserTrades([makeTrade({ tradeId: 't1', accountId: 'acc-1' })]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 10000 } });
-    ddbMock.on(UpdateCommand).rejects(new Error('UpdateCommand failed'));
-
-    const result = await handler();
-
-    // Handler should complete despite UpdateCommand errors (try/catch per account)
-    expect(result).toEqual({ rebuiltUsers: 1 });
-    expect(consoleSpy).toHaveBeenCalled();
-    consoleSpy.mockRestore();
-  });
-
-  it('treats trade with missing side field (side: null) as SELL-like (falls into else branch)', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ tradeId: 't1', side: null, pnl: undefined, entryPrice: 100, exitPrice: 110, quantity: 10 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
-
-    await handler();
-
-    // When side is null, the handler falls into the else branch of the ternary:
-    // (entryPrice - exitPrice) * quantity = (100 - 110) * 10 = -100
-    // balance = 1000 + (-100) = 900
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(900);
-  });
-
-  it('processes trade with quantity = 0 resulting in pnl = 0', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ tradeId: 't1', side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 0 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
-
-    await handler();
-
-    // (110 - 100) * 0 = 0; balance = 1000 + 0 = 1000
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1000);
-  });
-
-  it('handles trade with negative prices', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([
-      makeTrade({ tradeId: 't1', side: 'BUY', entryPrice: -1, exitPrice: 5, quantity: 10 }),
-    ]);
-    ddbMock.on(GetCommand).resolves({ Item: { initialBalance: 1000 } });
-
-    await handler();
-
-    // (5 - (-1)) * 10 = 60; balance = 1000 + 60 = 1060
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
-    expect(updateCalls[0].args[0].input.ExpressionAttributeValues![':balance']).toBe(1060);
-  });
-
-  it('skips balance update when account not found (GetCommand returns no Item)', async () => {
-    stubRecentUsers(['user-1']);
-    stubUserTrades([makeTrade({ tradeId: 't1', accountId: 'acc-missing' })]);
-    ddbMock.on(GetCommand).resolves({ Item: undefined });
-
-    const result = await handler();
-
-    expect(result).toEqual({ rebuiltUsers: 1 });
-    // UpdateCommand should never be called since account was not found
-    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
-  });
-
-  it('includes brokenRuleIds, mistakes, and lessons in projection and processes them correctly', async () => {
-    stubRecentUsers(['user-1']);
-    const tradesWithExtras = [
-      makeTrade({
-        tradeId: 't1',
-        entryPrice: 100,
-        exitPrice: 110,
-        quantity: 10,
-        side: 'BUY',
-        openDate: '2026-01-15T10:00:00Z',
-        brokenRuleIds: ['rule-1', 'rule-2'],
-        mistakes: ['Entered too early'],
-        lessons: ['Wait for confirmation'],
-      }),
-      makeTrade({
-        tradeId: 't2',
-        entryPrice: 200,
-        exitPrice: 210,
-        quantity: 5,
-        side: 'BUY',
-        openDate: '2026-01-15T11:00:00Z',
-        brokenRuleIds: ['rule-3'],
-        mistakes: [],
-        lessons: ['Stick to plan'],
-      }),
-    ];
-
-    stubUserTrades(tradesWithExtras);
-
-    const result = await handler();
-
-    expect(result).toEqual({ rebuiltUsers: 1 });
-
-    // Verify the QueryCommand on TRADES_TABLE included brokenRuleIds, mistakes, lessons in projection
-    const queryCalls = ddbMock.commandCalls(QueryCommand, { TableName: 'test-trades' });
-    expect(queryCalls.length).toBeGreaterThanOrEqual(1);
-    const projection = queryCalls[0].args[0].input.ProjectionExpression;
-    expect(projection).toContain('brokenRuleIds');
-    expect(projection).toContain('mistakes');
-    expect(projection).toContain('lessons');
-
-    // Verify PutCommand was called for daily stats (trades should flow through to computeDailyRecord)
-    const putCalls = ddbMock.commandCalls(PutCommand);
-    expect(putCalls.length).toBeGreaterThanOrEqual(1);
-
-    // Verify the daily stats record was written for the correct date
-    const dailyStatsPut = putCalls.find(
-      (c) => c.args[0].input.TableName === 'test-daily-stats',
-    );
-    expect(dailyStatsPut).toBeDefined();
-    const item = dailyStatsPut!.args[0].input.Item;
-    expect(item!.userId).toBe('user-1');
-    expect(item!.accountId).toBe('acc-1');
-    expect(item!.date).toBe('2026-01-15');
+    const cleared = ddbMock.commandCalls(DeleteCommand).map((c) => c.args[0].input.Key!.sk);
+    expect(cleared).toEqual(['user-ok']);
+    err.mockRestore();
   });
 
   it('processes users concurrently in batches of 5', async () => {
-    // Create 7 users so we get 2 batches (5 + 2)
-    const userIds = Array.from({ length: 7 }, (_, i) => `user-${i}`);
-    stubRecentUsers(userIds);
-
-    // Track the order of processing to verify concurrency
-    const processedUsers: string[] = [];
-
-    ddbMock.on(QueryCommand, { TableName: 'test-trades' })
-      .callsFake((input: any) => {
-        const userId = input.ExpressionAttributeValues[':u'];
-        processedUsers.push(userId);
-        return { Items: [], LastEvaluatedKey: undefined };
-      });
-
+    let running = 0; let peak = 0;
+    const ids = Array.from({ length: 12 }, (_, i) => `user-${i}`);
+    stubWorld({ dirty: dirty(...ids) });
+    ddbMock.on(QueryCommand, { TableName: 'test-trades' }).callsFake(async () => {
+      running++; peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+      return { Items: [] };
+    });
     const result = await handler();
-
-    expect(result).toEqual({ rebuiltUsers: 7 });
-
-    // All 7 users should have been processed
-    expect(processedUsers).toHaveLength(7);
-    for (const uid of userIds) {
-      expect(processedUsers).toContain(uid);
-    }
+    expect(result).toEqual({ rebuiltUsers: 12 });
+    expect(peak).toBeLessThanOrEqual(5);
   });
 
-  it('deduplicates userIds from daily stats scan', async () => {
-    // Same user appears multiple times in daily stats (multiple records updated)
-    ddbMock.on(ScanCommand, { TableName: 'test-daily-stats' }).resolves({
-      Items: [
-        { userId: 'user-1', lastUpdated: new Date().toISOString() },
-        { userId: 'user-1', lastUpdated: new Date().toISOString() },
-        { userId: 'user-1', lastUpdated: new Date().toISOString() },
-      ],
-      LastEvaluatedKey: undefined,
+  // ── Daily stats (BE-009, BE-028) ───────────────────────────────
+
+  describe('daily stats', () => {
+    const trade = makeTrade({ updatedAt: '2026-04-06T10:00:00.000Z' });
+    const hashOf = (trades: any[]) => computeDailyRecord('user-1', 'acc-1', '2026-04-06', trades, null)!.tradeHash;
+
+    it('writes a day record per (account, day) with BatchWrite', async () => {
+      stubWorld({ trades: { 'user-1': [trade, makeTrade({ tradeId: 't2', openDate: '2026-04-07T09:30:00Z' }), makeTrade({ tradeId: 't3', accountId: 'acc-2' })] } });
+      await rebuildForUser('user-1');
+      expect(putItems().map((i) => i.sk).sort()).toEqual(['acc-1#2026-04-06', 'acc-1#2026-04-07', 'acc-2#2026-04-06']);
     });
-    stubUserTrades([makeTrade({ tradeId: 't1' })]);
 
-    const result = await handler();
+    it('does not rewrite a day whose tradeHash is unchanged, so lastUpdated does not move (BE-009)', async () => {
+      stubWorld({ trades: { 'user-1': [trade] }, stored: { 'user-1': [{ sk: 'acc-1#2026-04-06', tradeHash: hashOf([trade]) }] } });
+      await rebuildForUser('user-1');
+      expect(batches()).toHaveLength(0);
+    });
 
-    // Should only process user-1 once
-    expect(result).toEqual({ rebuiltUsers: 1 });
+    it('rewrites a day whose hash differs, and every day when forced', async () => {
+      stubWorld({ trades: { 'user-1': [trade] }, stored: { 'user-1': [{ sk: 'acc-1#2026-04-06', tradeHash: 'old' }] } });
+      await rebuildForUser('user-1');
+      expect(putItems()).toHaveLength(1);
+
+      ddbMock.resetHistory();
+      stubWorld({ trades: { 'user-1': [trade] }, stored: { 'user-1': [{ sk: 'acc-1#2026-04-06', tradeHash: hashOf([trade]) }] } });
+      await rebuildForUser('user-1', { force: true });
+      expect(putItems()).toHaveLength(1);
+    });
+
+    it('deletes day records that no longer have trades', async () => {
+      stubWorld({ trades: { 'user-1': [trade] }, stored: { 'user-1': [{ sk: 'acc-1#2026-04-06', tradeHash: 'x' }, { sk: 'acc-1#2026-03-01', tradeHash: 'y' }] } });
+      await rebuildForUser('user-1');
+      expect(deletedKeys()).toEqual([{ userId: 'user-1', sk: 'acc-1#2026-03-01' }]);
+    });
+
+    it('a user with no trades gets their stored day records removed', async () => {
+      stubWorld({ trades: { 'user-1': [] }, stored: { 'user-1': [{ sk: 'acc-1#2026-04-06' }] } });
+      await rebuildForUser('user-1');
+      expect(putItems()).toHaveLength(0);
+      expect(deletedKeys()).toEqual([{ userId: 'user-1', sk: 'acc-1#2026-04-06' }]);
+    });
+
+    it('skips unassigned trades, soft-deleted trades and dates that are not real days', async () => {
+      stubWorld({ trades: { 'user-1': [
+        makeTrade({ tradeId: 'a', accountId: '-1' }),
+        makeTrade({ tradeId: 'b', deletedAt: '2026-04-07T00:00:00Z' }),
+        makeTrade({ tradeId: 'c', openDate: '2026-13-01' }),
+        makeTrade({ tradeId: 'd', openDate: 'garbage' }),
+      ] } });
+      await rebuildForUser('user-1');
+      expect(putItems()).toHaveLength(0);
+    });
+
+    it('reads every field the processors need, so the hash and the segments match the stream (BE-028)', async () => {
+      stubWorld({});
+      await rebuildForUser('user-1');
+      const q = ddbMock.commandCalls(QueryCommand).find((c) => c.args[0].input.TableName === 'test-trades')!.args[0].input;
+      for (const field of ['assetClass', 'contractMultiplier', 'updatedAt', 'fees', 'importSource', 'brokenRuleIds', 'mistakes', 'lessons', 'deletedAt']) {
+        expect(q.ProjectionExpression).toContain(field);
+      }
+    });
+
+    it('a futures trade keeps its asset class and multiplier in the rebuilt record', async () => {
+      const fut = makeTrade({ assetClass: 'futures', contractMultiplier: 50, stopLoss: 90, pnl: 500, quantity: 1 });
+      stubWorld({ trades: { 'user-1': [fut] } });
+      await rebuildForUser('user-1');
+      const rec = putItems()[0];
+      expect(rec.segments.assetClass.futures.trades).toBe(1);
+      expect(rec.segments.assetClass.Unknown).toBeUndefined();
+    });
+  });
+
+  // ── Balances (BE-029, BE-037) ──────────────────────────────────
+
+  describe('account balances', () => {
+    const account = (over: Record<string, any> = {}) => ({ accountId: 'acc-1', initialBalance: 10000, balance: 10000, updatedAt: 'u1', ...over });
+
+    it('balance = initialBalance + P&L of the live trades (BUY and SELL formulas)', async () => {
+      stubWorld({
+        trades: { 'user-1': [makeTrade(), makeTrade({ tradeId: 't2', side: 'SELL', entryPrice: 100, exitPrice: 90, quantity: 5 })] },
+        accounts: { 'user-1': [account()] },
+      });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()).toHaveLength(1);
+      expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10150 });
+    });
+
+    it('uses the stored pnl, and ignores a trade whose side is neither BUY nor SELL (shared calcPnL)', async () => {
+      stubWorld({
+        trades: { 'user-1': [makeTrade({ pnl: 25 }), makeTrade({ tradeId: 't2', side: 'LONG' }), makeTrade({ tradeId: 't3', side: null })] },
+        accounts: { 'user-1': [account()] },
+      });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10025 });
+    });
+
+    it('applies the contract multiplier when no pnl is stored', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade({ quantity: 2, entryPrice: 100, exitPrice: 110, contractMultiplier: 50 })] }, accounts: { 'user-1': [account()] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 11000 });
+    });
+
+    it('resets an account whose trades are all gone to its initial balance', async () => {
+      stubWorld({ trades: { 'user-1': [] }, accounts: { 'user-1': [account({ balance: 12345 })] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10000 });
+    });
+
+    it('does not write an account whose balance is already right', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 10100 })] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()).toHaveLength(0);
+    });
+
+    it('does not count unassigned trades and ignores accounts the user no longer has', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade({ accountId: '-1' }), makeTrade({ tradeId: 't2', accountId: 'gone' })] }, accounts: { 'user-1': [account()] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()).toHaveLength(0);
+    });
+
+    it('writes only if the account is unchanged since it was read (stream ADDs and edits bump updatedAt)', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
+      await rebuildForUser('user-1');
+      const w = balanceWrites()[0];
+      expect(w.ConditionExpression).toBe('#updatedAt = :seen');
+      expect(w.ExpressionAttributeValues).toMatchObject({ ':seen': 'u1' });
+    });
+
+    it('an account without updatedAt is written only while it still has none', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0, updatedAt: undefined })] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()[0].ConditionExpression).toBe('attribute_not_exists(#updatedAt)');
+    });
+
+    it('re-reads accounts and trades and recomputes when a write lost the race', async () => {
+      let reads = 0;
+      ddbMock.on(QueryCommand).callsFake((input: any) => {
+        if (input.TableName === 'test-accounts') { reads++; return { Items: [account({ balance: 0, updatedAt: `u${reads}` })] }; }
+        if (input.TableName === 'test-trades') return { Items: reads === 1 ? [makeTrade()] : [makeTrade(), makeTrade({ tradeId: 't2' })] };
+        return { Items: [] };
+      });
+      let writes = 0;
+      ddbMock.on(UpdateCommand).callsFake(() => {
+        writes++;
+        if (writes === 1) throw Object.assign(new Error('raced'), { name: 'ConditionalCheckFailedException' });
+        return {};
+      });
+
+      await rebuildForUser('user-1');
+
+      expect(reads).toBe(2);
+      expect(balanceWrites().map((w) => w.ExpressionAttributeValues![':balance'])).toEqual([10100, 10200]);
+    });
+
+    it('gives up after three attempts with a warning instead of looping', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
+      ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('raced'), { name: 'ConditionalCheckFailedException' }));
+      await rebuildForUser('user-1');
+      expect(balanceWrites()).toHaveLength(3);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('logs a failing balance write and still rebuilds the daily stats', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
+      ddbMock.on(UpdateCommand).rejects(new Error('throttled'));
+      await rebuildForUser('user-1');
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('Failed to update balance for account acc-1'), expect.any(Error));
+      expect(putItems()).toHaveLength(1);
+      err.mockRestore();
+    });
+
+    it('an account id such as __proto__ is an ordinary key', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade({ accountId: '__proto__' })] }, accounts: { 'user-1': [account({ accountId: '__proto__', balance: 0 })] } });
+      await rebuildForUser('user-1');
+      expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10100 });
+      expect(({} as any).totalPnl).toBeUndefined();
+    });
   });
 });

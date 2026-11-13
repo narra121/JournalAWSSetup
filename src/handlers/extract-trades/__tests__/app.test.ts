@@ -15,10 +15,6 @@ const ssmMock = mockClient(SSMClient);
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 
-vi.mock('../../../shared/subscription', () => ({
-  checkSubscription: vi.fn().mockResolvedValue(null),
-}));
-
 const { handler } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -105,25 +101,6 @@ beforeEach(() => {
 });
 
 describe('extract-trades handler', () => {
-  it('returns 403 when subscription is inactive', async () => {
-    const { checkSubscription } = await import('../../../shared/subscription');
-    vi.mocked(checkSubscription).mockResolvedValueOnce({
-      statusCode: 403,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success: false, error: { code: 'SUBSCRIPTION_REQUIRED', message: 'Please subscribe', details: { reason: 'trial_expired' } } }),
-    } as any);
-
-    // Use a valid JWT so getUserId returns a userId, triggering checkSubscription
-    const header = btoa(JSON.stringify({ alg: 'RS256' }));
-    const payload = btoa(JSON.stringify({ sub: 'user-1' }));
-    const jwt = `${header}.${payload}.sig`;
-    const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }, { headers: { authorization: `Bearer ${jwt}` } }), {} as any) as any;
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error.code).toBe('SUBSCRIPTION_REQUIRED');
-  });
-
   // ── Success ─────────────────────────────────────────────────
 
   it('returns 200 with extracted items for a single image', async () => {
@@ -173,7 +150,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('imageBase64, images array, or textContent required');
+    expect(body.message).toBe('Add a screenshot or paste some text to extract trades from.');
   });
 
   it('returns 400 when more than 3 images provided', async () => {
@@ -185,7 +162,8 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Maximum 3 images');
+    expect(body.message).toBe('You can extract trades from up to 3 images at a time.');
+    expect(body.error).toEqual({ code: 'VALIDATION_ERROR', maxImages: 3 });
   });
 
   it('returns 400 when body is invalid JSON', async () => {
@@ -194,7 +172,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Body must be JSON');
+    expect(body.message).toBe('The request body must be valid JSON.');
   });
 
   // ── API errors ──────────────────────────────────────────────
@@ -208,7 +186,16 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('GeminiTimeout');
+    expect(body.errorCode).toBe('GEMINI_TIMEOUT');
+    expect(body.errorMessage).toBe(body.message);
+  });
+
+  it('400 when images holds anything but base64 text (BE-099)', async () => {
+    for (const images of [[123], ['aGVsbG8=', null], [{ data: 'x' }]]) {
+      const res = await handler(makeEvent({ images }), {} as any) as any;
+      expect(res.statusCode).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('logs the Gemini HTTP failure (model, status, provider message) before returning the error', async () => {
@@ -217,7 +204,7 @@ describe('extract-trades handler', () => {
       fetchMock.mockResolvedValue({ ok: false, status: 429, statusText: 'Too Many Requests', text: async () => 'You exceeded your current quota' });
       const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
       expect(res.statusCode).toBe(500);
-      const hit = err.mock.calls.find((c) => c[0] === 'ExtractTrades Gemini HTTP error');
+      const hit = err.mock.calls.find((c) => c[0] === 'Gemini HTTP error');
       expect(hit?.[1]).toEqual({ model: 'gemini-2.5-flash', status: 429, error: 'You exceeded your current quota' });
     } finally {
       err.mockRestore();
@@ -233,7 +220,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('ExtractionFailed');
+    expect(body.errorCode).toBe('EXTRACTION_FAILED');
   });
 
   it('returns 500 when all images fail to process', async () => {
@@ -248,7 +235,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('ExtractionFailed');
+    expect(body.errorCode).toBe('EXTRACTION_FAILED');
   });
 
   // ── SSM config error ────────────────────────────────────────
@@ -267,7 +254,8 @@ describe('extract-trades handler', () => {
     expect(body.success).toBe(false);
     // Due to module-level API key caching, the error may come from
     // Gemini (cached key) or SSM (first run). Either is a 500.
-    expect(['ConfigError', 'GeminiError']).toContain(body.errorCode);
+    expect(['INTERNAL_ERROR', 'GEMINI_ERROR']).toContain(body.errorCode);
+    expect(res.body).not.toContain('SSM');
   });
 
   // ── Text content extraction ─────────────────────────────────
@@ -323,7 +311,7 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.message).toContain('Text content too large');
+    expect(body.message).toBe('That text is too long. The limit is 10,000 characters.');
   });
 
   it('returns 500 on timeout for text extraction', async () => {
@@ -335,7 +323,8 @@ describe('extract-trades handler', () => {
     expect(res.statusCode).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
-    expect(body.errorCode).toBe('GeminiTimeout');
+    expect(body.errorCode).toBe('GEMINI_TIMEOUT');
+    expect(body.errorMessage).toBe(body.message);
   });
 
   it('prefers textContent over images when both provided', async () => {

@@ -66,10 +66,17 @@ export const handler: ApiHandler = async (event) => {
     const password = parsed?.password;
     if (typeof password !== 'string' || !password) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'password is required');
 
-    // Per source IP: one attacker cannot lock the real admin out, and each address still gets only 5 tries per 5 minutes.
+    // Per source IP: one address cannot lock the real admin out and gets only 5 tries per 5 minutes.
     const sourceIp = event.requestContext?.http?.sourceIp || 'unknown';
     const rl = await checkRateLimit({ key: `admin-login:${sourceIp}`, limit: 5, windowSeconds: 300 });
     if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
+
+    // Across all addresses: a guesser rotating IPs still gets at most 50 tries an hour (and can block the admin for that hour).
+    const global = await checkRateLimit({ key: 'admin-login:global', limit: 50, windowSeconds: 3600 });
+    if (!global.allowed) {
+      log.warn('Admin login blocked: global attempt limit reached');
+      return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: global.retryAfter });
+    }
 
     const [adminSecret, jwtSecret] = await Promise.all([
       getAdminSecret(),

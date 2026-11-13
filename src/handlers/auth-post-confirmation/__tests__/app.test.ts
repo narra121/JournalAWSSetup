@@ -89,14 +89,29 @@ describe('auth-post-confirmation handler', () => {
     expect(result).toEqual(event);
   });
 
-  it('handles DynamoDB errors gracefully and still returns event', async () => {
+  it('fails the confirmation when the trial row cannot be written, so Cognito reports an error and the user retries', async () => {
     ddbMock.on(PutCommand).rejects(new Error('DynamoDB error'));
 
-    const event = makeEvent('PostConfirmation_ConfirmSignUp', 'user-789');
+    await expect(handler(makeEvent('PostConfirmation_ConfirmSignUp', 'user-789'))).rejects.toThrow('DynamoDB error');
+    expect(createDefaultRules).toHaveBeenCalledWith('user-789');
+  });
 
-    const result = await handler(event);
+  it('treats an existing trial row as success (a repeated confirmation) and does not log it as an error', async () => {
+    const exists = Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
+    ddbMock.on(PutCommand).rejects(exists);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    expect(result).toEqual(event);
+    const event = makeEvent('PostConfirmation_ConfirmSignUp', 'user-790');
+    await expect(handler(event)).resolves.toEqual(event);
+    expect(errorLog).not.toHaveBeenCalled();
+    errorLog.mockRestore();
+  });
+
+  it('still returns the event when only the default rules or saved options fail', async () => {
+    vi.mocked(createDefaultRules).mockRejectedValueOnce(new Error('rules failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const event = makeEvent('PostConfirmation_ConfirmSignUp', 'user-791');
+    await expect(handler(event)).resolves.toEqual(event);
   });
 
   it('skips creation for non-ConfirmSignUp triggers', async () => {

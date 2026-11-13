@@ -1,5 +1,6 @@
 import { BatchGetCommand, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { Context, MiddlewareHandler } from 'hono';
+import { fail } from '../../features/http';
 import { ddb } from '../../shared/dynamo';
 import type { AppEnv } from '../types';
 import { FREE_ACCOUNT_LIMIT } from './entitlements';
@@ -52,8 +53,9 @@ export function accountLimit(): MiddlewareHandler<AppEnv> {
 }
 
 /**
- * Guards writes by account. `accountsOf` returns the accounts a request touches (read from a clone of the body, so the
- * handler still receives it). Unassigned trades and a request that names no account are allowed.
+ * Guards writes by account: everything that changes a trade or an account except deleting an account, which stays open
+ * as the way out of the over-limit state. `accountsOf` returns the accounts a request touches (read from a clone of the
+ * body, so the handler still receives it). Unassigned trades and a request that names no account are allowed.
  */
 export function writableGuard(accountsOf: (c: Context<AppEnv>, body: any) => Promise<string[]> | string[]): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
@@ -85,27 +87,51 @@ export async function accountsInTradeUpdate(c: Context<AppEnv>, body: any): Prom
   return res.Item?.accountId ? [res.Item.accountId] : [];
 }
 
-/** Accounts a bulk update ends on: the new `set.accountId` plus the stored account of every listed trade. */
-export async function accountsInBulkUpdate(c: Context<AppEnv>, body: any): Promise<string[]> {
-  const ids: string[] = Array.isArray(body?.tradeIds) ? body.tradeIds : [];
+/** The delete, bulk-delete and bulk-update handlers reject more ids than this, so the guard does not look them up. */
+const MAX_TRADE_IDS = 200;
+
+/**
+ * The stored accounts of the named trades (soft-deleted ones too: restore names them). Unprocessed BatchGet keys are
+ * retried; if some stay unprocessed the request fails instead of passing with trades of a read-only account unchecked.
+ */
+async function storedAccountsOf(c: Context<AppEnv>, tradeIds: unknown): Promise<string[]> {
+  const table = process.env.TRADES_TABLE!;
+  const ids = [...new Set(Array.isArray(tradeIds) ? tradeIds.filter((id): id is string => typeof id === 'string' && !!id) : [])];
   const accounts = new Set<string>();
-  if (typeof body?.set?.accountId === 'string') accounts.add(body.set.accountId);
+  if (ids.length > MAX_TRADE_IDS) return [];
   for (let i = 0; i < ids.length; i += 100) {
-    const res = await ddb.send(
-      new BatchGetCommand({
-        RequestItems: { [process.env.TRADES_TABLE!]: { Keys: ids.slice(i, i + 100).map((tradeId) => ({ userId: c.get('userId'), tradeId })), ProjectionExpression: 'accountId' } },
-      }),
-    );
-    for (const it of res.Responses?.[process.env.TRADES_TABLE!] ?? []) if (it.accountId) accounts.add(it.accountId);
+    let keys: Record<string, any>[] = ids.slice(i, i + 100).map((tradeId) => ({ userId: c.get('userId'), tradeId }));
+    for (let attempt = 0; keys.length > 0 && attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
+      const res = await ddb.send(new BatchGetCommand({ RequestItems: { [table]: { Keys: keys, ProjectionExpression: 'accountId' } } }));
+      for (const it of res.Responses?.[table] ?? []) if (it.accountId) accounts.add(it.accountId);
+      keys = (res.UnprocessedKeys?.[table]?.Keys as Record<string, any>[] | undefined) ?? [];
+    }
+    if (keys.length > 0) throw new Error('Could not read every trade to check account access');
   }
   return [...accounts];
 }
+
+/** Accounts a bulk update ends on: the new `set.accountId` plus the stored account of every listed trade. */
+export async function accountsInBulkUpdate(c: Context<AppEnv>, body: any): Promise<string[]> {
+  const stored = await storedAccountsOf(c, body?.tradeIds);
+  return typeof body?.set?.accountId === 'string' ? [body.set.accountId, ...stored] : stored;
+}
+
+/** Accounts a bulk delete or restore touches: the stored account of every listed trade. */
+export const accountsInTradeIds = (c: Context<AppEnv>, body: any): Promise<string[]> => storedAccountsOf(c, body?.tradeIds);
+
+/** Account of the trade a `DELETE /trades/{tradeId}` removes. */
+export const accountsInTradeDelete = (c: Context<AppEnv>): Promise<string[]> => storedAccountsOf(c, [c.req.param('tradeId')]);
+
+/** Account that `PUT /accounts/{accountId}` and its `/status` change. */
+export const accountsInAccountUpdate = (c: Context<AppEnv>): string[] => [c.req.param('accountId')!];
 
 /** `PUT /me/writable-accounts`: choose which (≤ 2) accounts stay writable on the free plan. */
 export async function saveWritableAccounts(c: Context<AppEnv>, accountIds: unknown) {
   const userId = c.get('userId');
   if (!Array.isArray(accountIds) || accountIds.some((id) => typeof id !== 'string') || new Set(accountIds).size !== accountIds.length) {
-    return c.json({ success: false, message: 'accountIds must be a list of distinct account ids', errorCode: 'VALIDATION_ERROR', errorMessage: 'accountIds must be a list of distinct account ids' }, 400);
+    return fail(c, 400, 'VALIDATION_ERROR', 'Choose each account at most once.');
   }
   if (!c.get('entitlements').features.unlimited_accounts && accountIds.length > FREE_ACCOUNT_LIMIT) {
     return planRequired(c, 'unlimited_accounts', c.get('entitlements'), { limit: FREE_ACCOUNT_LIMIT });
@@ -113,7 +139,7 @@ export async function saveWritableAccounts(c: Context<AppEnv>, accountIds: unkno
   const owned = await listAccountIds(userId);
   const unknown = (accountIds as string[]).filter((id) => !owned.includes(id));
   if (unknown.length) {
-    return c.json({ success: false, message: `Unknown accounts: ${unknown.join(', ')}`, errorCode: 'VALIDATION_ERROR', errorMessage: `Unknown accounts: ${unknown.join(', ')}` }, 400);
+    return fail(c, 400, 'VALIDATION_ERROR', unknown.length === 1 ? "One of those accounts doesn't exist." : "Some of those accounts don't exist.");
   }
   await ddb.send(
     new UpdateCommand({

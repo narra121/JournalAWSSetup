@@ -5,6 +5,7 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
+vi.stubEnv('DAILY_STATS_TABLE', 'test-stats');
 
 // Must import handler after env stubs
 const { handler } = await import('../app.ts');
@@ -49,6 +50,7 @@ function makeEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayP
 
 beforeEach(() => {
   ddbMock.reset();
+  ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [] });
 });
 
 describe('list-accounts handler', () => {
@@ -59,7 +61,7 @@ describe('list-accounts handler', () => {
       { userId: 'user-1', accountId: 'acc-1', name: 'Account 1', balance: 12000, initialBalance: 10000 },
       { userId: 'user-1', accountId: 'acc-2', name: 'Account 2', balance: 8000, initialBalance: 5000 },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -74,7 +76,7 @@ describe('list-accounts handler', () => {
   });
 
   it('returns empty list with zero totals when no accounts exist', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [] });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -92,7 +94,7 @@ describe('list-accounts handler', () => {
       { userId: 'user-1', accountId: 'acc-2', balance: 3000, initialBalance: 5000 },     // -2000 pnl
       { userId: 'user-1', accountId: 'acc-3', balance: 7500, initialBalance: 7500 },     // 0 pnl
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -117,7 +119,7 @@ describe('list-accounts handler', () => {
   // ── DynamoDB errors ─────────────────────────────────────────
 
   it('returns 500 when DynamoDB query fails', async () => {
-    ddbMock.on(QueryCommand).rejects(new Error('DynamoDB timeout'));
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).rejects(new Error('DynamoDB timeout'));
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -128,7 +130,7 @@ describe('list-accounts handler', () => {
   });
 
   it('returns 500 with correct message when DynamoDB query fails', async () => {
-    ddbMock.on(QueryCommand).rejects(new Error('Throughput exceeded'));
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).rejects(new Error('Throughput exceeded'));
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -156,7 +158,7 @@ describe('list-accounts handler', () => {
     const items = [
       { userId: 'user-1', accountId: 'acc-1', balance: 0, initialBalance: 0 },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -170,7 +172,7 @@ describe('list-accounts handler', () => {
     const items = [
       { userId: 'user-1', accountId: 'acc-1', name: 'Empty Account' },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -186,7 +188,7 @@ describe('list-accounts handler', () => {
     const items = [
       { userId: 'user-1', accountId: 'acc-1', balance: 2000, initialBalance: 10000 },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -204,7 +206,7 @@ describe('list-accounts handler', () => {
       { userId: 'user-1', accountId: 'acc-2', name: 'Breached', status: 'breached', balance: 4000, initialBalance: 10000 },
       { userId: 'user-1', accountId: 'acc-3', name: 'Passed', status: 'passed', balance: 15000, initialBalance: 10000 },
     ];
-    ddbMock.on(QueryCommand).resolves({ Items: items });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: items });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -221,7 +223,7 @@ describe('list-accounts handler', () => {
   // ── Response shape ─────────────────────────────────────────
 
   it('response body contains success true and message "Accounts retrieved"', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [] });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -240,7 +242,7 @@ describe('list-accounts handler', () => {
     ];
 
     // First call returns page 1 with LastEvaluatedKey
-    ddbMock.on(QueryCommand)
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' })
       .resolvesOnce({
         Items: page1Items,
         LastEvaluatedKey: { userId: 'user-1', accountId: 'acc-2' },
@@ -264,15 +266,15 @@ describe('list-accounts handler', () => {
     expect(body.data.totalBalance).toBe(35000); // 10000 + 5000 + 20000
     expect(body.data.totalPnl).toBe(7000); // (10000-8000) + (5000-5000) + (20000-15000)
 
-    // Verify DynamoDB was called twice
-    const queryCalls = ddbMock.commandCalls(QueryCommand);
+    // Verify the accounts table was queried twice
+    const queryCalls = ddbMock.commandCalls(QueryCommand).filter((c) => c.args[0].input.TableName === 'test-accounts');
     expect(queryCalls).toHaveLength(2);
     // Second call should have ExclusiveStartKey from the first response
     expect(queryCalls[1].args[0].input.ExclusiveStartKey).toEqual({ userId: 'user-1', accountId: 'acc-2' });
   });
 
   it('handles DynamoDB returning undefined Items (treated as empty)', async () => {
-    ddbMock.on(QueryCommand).resolves({ Items: undefined });
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: undefined });
 
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 
@@ -282,4 +284,94 @@ describe('list-accounts handler', () => {
     expect(body.data.totalBalance).toBe(0);
     expect(body.data.totalPnl).toBe(0);
   });
+
+  // ── Currencies (BE-043) ─────────────────────────────────────
+
+  it('never adds balances of different currencies: totals per currency, and no single total', async () => {
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [
+      { userId: 'user-1', accountId: 'a', name: 'US', currency: 'USD', balance: 10000, initialBalance: 9000 },
+      { userId: 'user-1', accountId: 'b', name: 'JP', currency: 'JPY', balance: 1500000, initialBalance: 1000000 },
+      { userId: 'user-1', accountId: 'c', name: 'US2', currency: 'usd', balance: 500, initialBalance: 500 },
+    ] });
+    const res = await handler(makeEvent(), {} as any, () => {}) as any;
+    const data = JSON.parse(res.body).data;
+    expect(data.totalsByCurrency).toEqual({ USD: { balance: 10500, pnl: 1000 }, JPY: { balance: 1500000, pnl: 500000 } });
+    expect(data.totalBalance).toBeUndefined();
+    expect(data.totalPnl).toBeUndefined();
+  });
+
+  it('with one currency the single totals stay and match the per-currency block', async () => {
+    ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [
+      { userId: 'user-1', accountId: 'a', currency: 'INR', balance: 100, initialBalance: 80 },
+      { userId: 'user-1', accountId: 'b', currency: 'INR', balance: 50, initialBalance: 50 },
+    ] });
+    const data = JSON.parse(((await handler(makeEvent(), {} as any, () => {})) as any).body).data;
+    expect(data).toMatchObject({ totalBalance: 150, totalPnl: 20, totalsByCurrency: { INR: { balance: 150, pnl: 20 } } });
+  });
+
+  // ── Trade counts (DailyStats) ───────────────────────────────
+
+  describe('trade count per account', () => {
+    const accounts = [
+      { userId: 'user-1', accountId: 'a', name: 'A', balance: 1, initialBalance: 1 },
+      { userId: 'user-1', accountId: 'b', name: 'B', balance: 1, initialBalance: 1 },
+      { userId: 'user-1', accountId: 'c', name: 'C', balance: 1, initialBalance: 1 },
+    ];
+
+    it('sums the daily rows of each account and names its latest day; an account without rows has 0 and null', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [
+        { accountId: 'a', date: '2026-11-03', tradeCount: 2 },
+        { accountId: 'a', date: '2026-11-10', tradeCount: 5 },
+        { accountId: 'a', date: '2026-10-30', tradeCount: 1 },
+        { accountId: 'b', date: '2026-09-01', tradeCount: 4 },
+        { accountId: 'gone', date: '2026-09-01', tradeCount: 9 },
+      ] });
+
+      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+
+      const byId = Object.fromEntries(JSON.parse(res.body).data.accounts.map((a: any) => [a.accountId, a]));
+      expect(byId.a).toMatchObject({ name: 'A', tradeCount: 8, lastTradeDate: '2026-11-10' });
+      expect(byId.b).toMatchObject({ tradeCount: 4, lastTradeDate: '2026-09-01' });
+      expect(byId.c).toMatchObject({ tradeCount: 0, lastTradeDate: null });
+    });
+
+    it('reads every day of the user in one pass over the date index, following the pages', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' })
+        .resolvesOnce({ Items: [{ accountId: 'a', date: '2026-11-03', tradeCount: 2 }], LastEvaluatedKey: { k: 1 } })
+        .resolvesOnce({ Items: [{ accountId: 'a', date: '2026-11-04', tradeCount: 3 }] });
+
+      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+
+      expect(JSON.parse(res.body).data.accounts[0].tradeCount).toBe(5);
+      const stats = ddbMock.commandCalls(QueryCommand).map((c) => c.args[0].input).filter((i) => i.TableName === 'test-stats');
+      expect(stats).toHaveLength(2);
+      expect(stats[0]).toMatchObject({
+        IndexName: 'stats-by-date-gsi',
+        ExpressionAttributeValues: { ':userId': 'user-1', ':startDate': '0000-01-01', ':endDate': '9999-12-31' },
+        ProjectionExpression: '#sk, #date, accountId, tradeCount',
+      });
+    });
+
+    it('ignores rows without a positive count and leaves the other fields of the response as they were', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [{ userId: 'user-1', accountId: 'a', currency: 'USD', balance: 7, initialBalance: 5 }] });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [{ accountId: 'a', date: '2026-11-03', tradeCount: 0 }, { accountId: 'a', date: '2026-11-04' }] });
+
+      const data = JSON.parse(((await handler(makeEvent(), {} as any, () => {})) as any).body).data;
+
+      expect(data.accounts).toEqual([{ userId: 'user-1', accountId: 'a', currency: 'USD', balance: 7, initialBalance: 5, tradeCount: 0, lastTradeDate: null }]);
+      expect(data).toMatchObject({ totalBalance: 7, totalPnl: 2, totalsByCurrency: { USD: { balance: 7, pnl: 2 } } });
+    });
+
+    it('returns 500 when the DailyStats query fails', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).rejects(new Error('stats timeout'));
+
+      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+
+      expect(res.statusCode).toBe(500);
+    });
+  });
 });
+

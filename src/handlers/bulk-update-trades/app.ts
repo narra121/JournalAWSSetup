@@ -4,7 +4,8 @@ import { getUserId } from '../../shared/auth';
 import { makeLogger } from '../../shared/logger';
 import type { ApiHandler } from '../../shared/types';
 import { tagsError } from '../../shared/tags';
-import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
+import { envelope, errorResponse, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
+import { tradeUpdateSchema } from '../../schemas';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
@@ -14,6 +15,13 @@ export const SETTABLE_FIELDS = ['setupType', 'tradingSession', 'marketCondition'
 export const LIST_FIELDS = ['mistakes', 'lessons', 'tags', 'newsEvents', 'brokenRuleIds'] as const;
 
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/** First problem of `value` against the single-trade update schema's definition of `field` (length limits, enums, list sizes), or null. */
+function fieldProblem(field: string, value: unknown): string | null {
+  const definition = (tradeUpdateSchema.properties as Record<string, object>)[field];
+  const validate = getValidator({ type: 'object', properties: { [field]: definition } }, `bulkUpdate:${field}`);
+  return validate({ [field]: value }) ? null : formatErrors(validate.errors)[0].message;
+}
 
 async function loadTrades(userId: string, tradeIds: string[]): Promise<Map<string, any>> {
   const found = new Map<string, any>();
@@ -61,9 +69,17 @@ export const handler: ApiHandler = async (event) => {
     }
     for (const k of Object.keys(set)) {
       if (set[k] !== null && typeof set[k] !== 'string') return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `set.${k} must be a string or null`);
+      // A trade without an account drops out of every balance and statistic, so accountId is never cleared in bulk.
+      if (k === 'accountId' && set[k] === null) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'set.accountId must be an account id');
+      const problem = fieldProblem(k, set[k]);
+      if (problem) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, problem);
     }
     for (const group of [add, remove]) {
       for (const k of Object.keys(group)) if (!isStringList(group[k])) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${k} must be a list of strings`);
+    }
+    for (const k of Object.keys(add)) {
+      const problem = fieldProblem(k, add[k]);
+      if (problem) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, problem);
     }
     if (!Object.keys(set).length && !Object.keys(add).length && !Object.keys(remove).length) {
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Nothing to change');
@@ -81,12 +97,10 @@ export const handler: ApiHandler = async (event) => {
         const current: string[] = Array.isArray(trade[field]) ? trade[field] : [];
         const dropped = new Set<string>(remove[field] ?? []);
         const merged = [...new Set([...current, ...(add[field] ?? [])])].filter((v) => !dropped.has(v));
-        if (field === 'tags') {
-          const problem = tagsError(merged);
-          if (problem) {
-            failed.push({ tradeId, message: problem });
-            return;
-          }
+        const problem = field === 'tags' ? tagsError(merged) : fieldProblem(field, merged);
+        if (problem) {
+          failed.push({ tradeId, message: problem });
+          return;
         }
         changes[field] = merged;
       }
@@ -102,7 +116,7 @@ export const handler: ApiHandler = async (event) => {
         await ddb.send(new UpdateCommand({
           TableName: TRADES_TABLE,
           Key: { userId, tradeId },
-          ConditionExpression: 'attribute_exists(tradeId)',
+          ConditionExpression: 'attribute_exists(tradeId) AND attribute_not_exists(deletedAt)',
           UpdateExpression: `SET ${sets.join(', ')}`,
           ExpressionAttributeNames: names,
           ExpressionAttributeValues: values,

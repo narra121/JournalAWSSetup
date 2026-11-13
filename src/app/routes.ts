@@ -9,7 +9,6 @@ import { handler as adminLogin } from '../handlers/admin-login/app';
 import { handler as adminManageSubscription } from '../handlers/admin-manage-subscription/app';
 import { handler as adminUpdateConfig } from '../handlers/admin-update-config/app';
 import { handler as adminUpdateUser } from '../handlers/admin-update-user/app';
-import { handler as analytics } from '../handlers/analytics/app';
 import { handler as authConfirmForgotPassword } from '../handlers/auth-confirm-forgot-password/app';
 import { handler as authConfirmSignup } from '../handlers/auth-confirm-signup/app';
 import { handler as authForgotPassword } from '../handlers/auth-forgot-password/app';
@@ -45,7 +44,6 @@ import { handler as reportError } from '../handlers/report-error/app';
 import { handler as stripeWebhook } from '../handlers/stripe-webhook/app';
 import { handler as restoreTrades } from '../handlers/restore-trades/app';
 import { handler as syncTrades } from '../handlers/sync-trades/app';
-import { handler as toggleRule } from '../handlers/toggle-rule/app';
 import { handler as updateAccount } from '../handlers/update-account/app';
 import { handler as updateAccountStatus } from '../handlers/update-account-status/app';
 import { handler as updateGoal } from '../handlers/update-goal/app';
@@ -57,8 +55,9 @@ import { handler as updateUserPreferences } from '../handlers/update-user-prefer
 import { handler as updateUserProfile } from '../handlers/update-user-profile/app';
 import { handler as verifyCheckoutSession } from '../handlers/verify-checkout-session/app';
 import { optionalUser } from './auth/cognito';
-import { accountLimit, accountsInBulkUpdate, accountsInCreateBody, accountsInTradeUpdate, writableGuard } from './billing/accounts';
+import { accountLimit, accountsInAccountUpdate, accountsInBulkUpdate, accountsInCreateBody, accountsInTradeDelete, accountsInTradeIds, accountsInTradeUpdate, writableGuard } from './billing/accounts';
 import { advancedAnalyticsGate, metered, withEntitlements } from './billing/middleware';
+import { extractUnits } from './billing/extractUnits';
 import type { LegacyHandler } from './http/adapter';
 import type { AppEnv } from './types';
 
@@ -87,8 +86,8 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/accounts', 'cognito', listAccounts),
   r('POST', '/v1/accounts', 'cognito', createAccount, [withEntitlements(), accountLimit()]),
   r('DELETE', '/v1/accounts/{accountId}', 'cognito', deleteAccount),
-  r('PUT', '/v1/accounts/{accountId}', 'cognito', updateAccount),
-  r('PATCH', '/v1/accounts/{accountId}/status', 'cognito', updateAccountStatus),
+  r('PUT', '/v1/accounts/{accountId}', 'cognito', updateAccount, [withEntitlements(), writableGuard(accountsInAccountUpdate)]),
+  r('PATCH', '/v1/accounts/{accountId}/status', 'cognito', updateAccountStatus, [withEntitlements(), writableGuard(accountsInAccountUpdate)]),
   r('GET', '/v1/ad-config', 'cognito', getAdConfig),
   r('GET', '/v1/admin/config', 'admin', adminGetConfig),
   r('PUT', '/v1/admin/config', 'admin', adminUpdateConfig),
@@ -100,14 +99,13 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/admin/users/{userId}/stats', 'admin', adminGetUserStats),
   r('PUT', '/v1/admin/users/{userId}/subscription', 'admin', adminManageSubscription),
   r('GET', '/v1/admin/users/{userId}/trades', 'admin', adminListUserTrades),
-  r('GET', '/v1/analytics', 'cognito', analytics),
   r('POST', '/v1/auth/confirm-forgot-password', 'public', authConfirmForgotPassword),
   r('POST', '/v1/auth/confirm-signup', 'public', authConfirmSignup),
   r('POST', '/v1/auth/forgot-password', 'public', authForgotPassword),
   r('POST', '/v1/auth/login', 'public', authLogin),
   r('POST', '/v1/auth/refresh', 'public', authRefresh),
   r('POST', '/v1/auth/signup', 'public', authSignup),
-  r('POST', '/v1/enhance-text', 'cognito', enhanceText),
+  r('POST', '/v1/enhance-text', 'cognito', enhanceText, [withEntitlements(), metered('ai_enhance')]),
   r('POST', '/v1/errors/report', 'public', reportError, [optionalUser()]),
   r('POST', '/v1/goals', 'cognito', createGoal),
   r('GET', '/v1/goals/progress', 'cognito', getGoalsProgress),
@@ -121,7 +119,6 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/rules-goals', 'cognito', getRulesGoals),
   r('DELETE', '/v1/rules/{ruleId}', 'cognito', deleteRule),
   r('PUT', '/v1/rules/{ruleId}', 'cognito', updateRule),
-  r('PATCH', '/v1/rules/{ruleId}/toggle', 'cognito', toggleRule),
   r('GET', '/v1/stats', 'cognito', getStats, [advancedAnalyticsGate()]),
   r('DELETE', '/v1/subscriptions', 'cognito', manageStripeSubscription),
   r('GET', '/v1/subscriptions', 'cognito', manageStripeSubscription),
@@ -132,13 +129,13 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/subscriptions/verify', 'cognito', verifyCheckoutSession),
   r('GET', '/v1/trades', 'cognito', listTrades),
   r('POST', '/v1/trades', 'cognito', createTrade, [withEntitlements(), writableGuard(accountsInCreateBody)]),
-  r('POST', '/v1/trades/bulk-delete', 'cognito', bulkDeleteTrades),
+  r('POST', '/v1/trades/bulk-delete', 'cognito', bulkDeleteTrades, [withEntitlements(), writableGuard(accountsInTradeIds)]),
   r('POST', '/v1/trades/bulk-update', 'cognito', bulkUpdateTrades, [withEntitlements(), writableGuard(accountsInBulkUpdate)]),
-  r('POST', '/v1/trades/extract', 'cognito', extractTrades, [withEntitlements(), metered('ai_extract')]),
-  r('POST', '/v1/trades/restore', 'cognito', restoreTrades),
+  r('POST', '/v1/trades/extract', 'cognito', extractTrades, [withEntitlements(), metered('ai_extract', async (c) => extractUnits(await c.req.raw.clone().text()))]),
+  r('POST', '/v1/trades/restore', 'cognito', restoreTrades, [withEntitlements(), writableGuard(accountsInTradeIds)]),
   r('POST', '/v1/trades/sync', 'cognito', syncTrades),
   r('GET', '/v1/trades/{tradeId}', 'cognito', getTrade),
-  r('DELETE', '/v1/trades/{tradeId}', 'cognito', deleteTrade),
+  r('DELETE', '/v1/trades/{tradeId}', 'cognito', deleteTrade, [withEntitlements(), writableGuard(accountsInTradeDelete)]),
   r('PUT', '/v1/trades/{tradeId}', 'cognito', updateTrade, [withEntitlements(), writableGuard(accountsInTradeUpdate)]),
   r('PUT', '/v1/user/notifications', 'cognito', updateUserNotifications),
   r('PUT', '/v1/user/preferences', 'cognito', updateUserPreferences),

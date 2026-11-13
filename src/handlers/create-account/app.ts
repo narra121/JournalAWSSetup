@@ -7,9 +7,7 @@ import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from 
 import { makeLogger } from '../../shared/logger';
 import { batchWritePutAll } from '../../shared/batchWrite';
 import { getUserId } from '../../shared/auth';
-import { checkSubscription } from '../../shared/subscription';
 import { GOAL_TYPE_CONFIG, DEFAULT_GOAL_TARGETS, VALID_GOAL_TYPES } from '../../shared/goalDefaults';
-import type { GoalType } from '../../shared/goalDefaults';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -39,9 +37,6 @@ export const handler: ApiHandler = async (event) => {
     log.warn('unauthorized request');
     return errorResponse(401, ErrorCodes.UNAUTHORIZED, 'Unauthorized');
   }
-
-  const subError = await checkSubscription(userId);
-  if (subError) return subError;
 
   if (!event.body) {
     log.warn('missing body');
@@ -138,15 +133,20 @@ export const handler: ApiHandler = async (event) => {
       });
     }
 
-    // Batch write all default goals
+    // The account exists now: a failed goals write must not answer 500 (the client would retry and create a second account).
+    // get-rules-goals writes the defaults of a period on first read anyway.
     if (defaultGoals.length > 0) {
-      await batchWritePutAll({
-        ddb,
-        tableName: GOALS_TABLE,
-        items: defaultGoals,
-        log
-      });
-      log.info('default goals created for account', { accountId, goalsCount: defaultGoals.length });
+      try {
+        await batchWritePutAll({
+          ddb,
+          tableName: GOALS_TABLE,
+          items: defaultGoals,
+          log
+        });
+        log.info('default goals created for account', { accountId, goalsCount: defaultGoals.length });
+      } catch (goalsError: any) {
+        log.error('default goals not created for account', { accountId, error: goalsError.message });
+      }
     }
 
     log.info('account created', { accountId });
