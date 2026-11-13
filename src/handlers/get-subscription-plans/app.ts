@@ -70,34 +70,34 @@ export const handler = async (
   }
 };
 
-// Display amounts mirror scripts/stripe/lib.mjs PRICES: INR in whole rupees (19900 paise = 199), USD in cents.
+// Display amounts mirror scripts/stripe/lib.mjs PRICES: INR in whole rupees (49900 paise = 499), USD in cents.
 const PLAN_CONFIG: Record<string, Record<string, { amount: number; name: string; description: string; savings?: string; monthlyEquivalent?: number }>> = {
   inr: {
     monthly: {
-      amount: 199,
+      amount: 499,
       name: 'TradeQut Pro Monthly',
       description: 'Monthly subscription — full access to all features',
     },
     yearly: {
-      amount: 1499,
+      amount: 4999,
       name: 'TradeQut Pro Annual',
-      description: 'Annual subscription — full access, save 37%',
-      savings: '37%',
-      monthlyEquivalent: 125,
+      description: 'Annual subscription — full access, save 17%',
+      savings: '17%',
+      monthlyEquivalent: 417,
     },
   },
   usd: {
     monthly: {
-      amount: 999, // $9.99 stored in cents
+      amount: 499, // $4.99 stored in cents
       name: 'TradeQut Pro Monthly',
       description: 'Monthly subscription — full access to all features',
     },
     yearly: {
-      amount: 7900, // $79 stored in cents
+      amount: 4999, // $49.99 stored in cents
       name: 'TradeQut Pro Annual',
-      description: 'Annual subscription — full access, save 34%',
-      savings: '34%',
-      monthlyEquivalent: 658, // $6.58 in cents
+      description: 'Annual subscription — full access, save 17%',
+      savings: '17%',
+      monthlyEquivalent: 417, // $4.17 in cents
     },
   },
 };

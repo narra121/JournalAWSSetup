@@ -18,10 +18,10 @@ export const putParam = (name, value) => ssm(['put-parameter', '--name', name, '
 
 /** Pro catalogue (CONTRACT §4). Amounts are in the currency's smallest unit (cents, paise). */
 export const PRICES = [
-  { key: 'pro_month_usd', currency: 'usd', amount: 999, interval: 'month' },
-  { key: 'pro_year_usd', currency: 'usd', amount: 7900, interval: 'year' },
-  { key: 'pro_month_inr', currency: 'inr', amount: 19900, interval: 'month' },
-  { key: 'pro_year_inr', currency: 'inr', amount: 149900, interval: 'year' },
+  { key: 'pro_month_usd', currency: 'usd', amount: 499, interval: 'month' },
+  { key: 'pro_year_usd', currency: 'usd', amount: 4999, interval: 'year' },
+  { key: 'pro_month_inr', currency: 'inr', amount: 49900, interval: 'month' },
+  { key: 'pro_year_inr', currency: 'inr', amount: 499900, interval: 'year' },
 ];
 
 export function stripeFor(secretKey, expectedPrefix) {
@@ -33,8 +33,9 @@ export function stripeFor(secretKey, expectedPrefix) {
 export async function ensureCatalog(stripe, { dryRun, returnUrl }) {
   const plan = { product: null, prices: {}, portalConfigId: null, created: [] };
 
-  const found = await stripe.products.search({ query: "metadata['tradequt_plan']:'pro' AND active:'true'" });
-  let product = found.data[0];
+  // Stripe's Search API is unavailable for this India account ("not available in your region"), so list and filter.
+  const found = await stripe.products.list({ active: true, limit: 100 });
+  let product = found.data.find((p) => p.metadata?.tradequt_plan === 'pro');
   if (!product) {
     plan.created.push('product TradeQut Pro');
     if (!dryRun) product = await stripe.products.create({ name: 'TradeQut Pro', metadata: { tradequt_plan: 'pro' } });
@@ -76,7 +77,7 @@ export async function ensureCatalog(stripe, { dryRun, returnUrl }) {
       enabled: true,
       default_allowed_updates: ['price'],
       proration_behavior: 'create_prorations',
-      products: [{ product: product.id, prices: priceIds }],
+      products: [{ product: product.id, prices: priceIds, adjustable_quantity: { enabled: false } }],
     };
   }
 

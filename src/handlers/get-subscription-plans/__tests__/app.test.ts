@@ -127,9 +127,9 @@ describe('get-subscription-plans handler', () => {
     expect(body.data.plans).toEqual([]);
   });
 
-  // ── 5. Returns correct amounts: USD $9.99/$79, INR 199/1499 ──
+  // ── 5. Returns correct amounts: USD $4.99/$49.99, INR 499/4999 ──
 
-  it('returns correct amounts for USD: $9.99 monthly, $79 yearly', async () => {
+  it('returns correct amounts for USD: $4.99 monthly, $49.99 yearly', async () => {
     mockSSMPrices('usd');
 
     const res = await handler(makeEvent()) as any;
@@ -138,12 +138,12 @@ describe('get-subscription-plans handler', () => {
     const monthly = body.data.plans.find((p: any) => p.period === 'monthly');
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    // USD amounts are stored in cents (999, 7900) but displayed as dollars
-    expect(monthly.amount).toBe(9.99);
-    expect(yearly.amount).toBe(79);
+    // USD amounts are stored in cents (499, 4999) but displayed as dollars
+    expect(monthly.amount).toBe(4.99);
+    expect(yearly.amount).toBe(49.99);
   });
 
-  it('returns correct amounts for INR: 199 monthly, 1499 yearly', async () => {
+  it('returns correct amounts for INR: 499 monthly, 4999 yearly', async () => {
     mockSSMPrices('inr');
 
     const res = await handler(makeEvent({ currency: 'INR' })) as any;
@@ -153,8 +153,8 @@ describe('get-subscription-plans handler', () => {
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
     // INR amounts are in rupees directly
-    expect(monthly.amount).toBe(199);
-    expect(yearly.amount).toBe(1499);
+    expect(monthly.amount).toBe(499);
+    expect(yearly.amount).toBe(4999);
   });
 
   // ── 6. Returns savings info for yearly plans ───────────────────
@@ -167,9 +167,9 @@ describe('get-subscription-plans handler', () => {
     const body = JSON.parse(res.body);
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    expect(yearly.savings).toBe('34%');
+    expect(yearly.savings).toBe('17%');
     expect(yearly.monthlyEquivalent).toBeDefined();
-    expect(yearly.monthlyEquivalent).toBe(6.58); // $6.58 in dollars
+    expect(yearly.monthlyEquivalent).toBe(4.17); // $4.17 in dollars
   });
 
   it('returns savings info for yearly INR plans', async () => {
@@ -180,8 +180,8 @@ describe('get-subscription-plans handler', () => {
     const body = JSON.parse(res.body);
     const yearly = body.data.plans.find((p: any) => p.period === 'yearly');
 
-    expect(yearly.savings).toBe('37%');
-    expect(yearly.monthlyEquivalent).toBe(125);
+    expect(yearly.savings).toBe('17%');
+    expect(yearly.monthlyEquivalent).toBe(417);
   });
 
   it('monthly plans do not have savings info', async () => {

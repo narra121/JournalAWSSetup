@@ -1,6 +1,6 @@
 # Stripe live setup (owner approved 2026-11-11; run by the main thread at the cut-over)
 
-Pro prices (CONTRACT §4): **$9.99/month, $79/year, ₹199/month, ₹1,499/year**. Currency follows the viewer country
+Pro prices (CONTRACT §4): **$4.99/month, $49.99/year, ₹499/month, ₹4,999/year** (created in live mode 2026-11-13). Currency follows the viewer country
 (`CloudFront-Viewer-Country: IN` → INR, otherwise USD) and an existing Stripe customer keeps their currency.
 
 Nothing here has been executed. `scripts/stripe/create-live-prices.mjs` is a dry run unless `--live --confirm` is given and it

@@ -11,7 +11,7 @@ export interface Entitlements {
   plan: 'free' | 'trial' | 'pro';
   status: PlanStatus;
   trialEndsAt?: string;
-  /** Present only when the Subscriptions record carries them (paid plans). Amounts are in major units (79 = $79). */
+  /** Present only when the Subscriptions record carries them (paid plans). Amounts are in major units (49.99 = $49.99). */
   interval?: 'month' | 'year';
   amount?: number;
   currency?: string;
