@@ -81,6 +81,20 @@ describe('enhance-text handler', () => {
     expect(body.data.enhancedText).toBe('This is the enhanced version of the text.');
   });
 
+  it('logs one ai_call line with the model that answered, never the text', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      mockFetchSuccess('Fixed text.');
+      await handler(makeEvent({ text: 'secret rough notes' }), {} as any);
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('ai_call'));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ level: 'INFO', msg: 'ai_call', feature: 'enhance', model: 'gemini-2.5-flash-lite', userId: 'user-1', requestId: 'req-1' });
+      expect(lines[0]).not.toMatch(/secret|Fixed text/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   // ── Input validation ────────────────────────────────────────
 
   it('returns 400 when body is missing', async () => {

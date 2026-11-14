@@ -130,9 +130,10 @@ interface GenerateTextOptions {
  * `gemini`, which tries `MODELS` in order and falls back on 404/429/5xx, a 400 naming an unsupported field or an empty
  * reply. `timeoutMs` is a single deadline for the whole call (every model); on expiry the fetch rejects with an
  * `AbortError`. A non-retryable HTTP error throws GeminiHttpError and a response without text throws
- * `Error('Gemini returned empty response')`. `finishReason` is in Gemini's vocabulary ("STOP" when complete).
+ * `Error('Gemini returned empty response')`. `finishReason` is in Gemini's vocabulary ("STOP" when complete); `model` is
+ * the model that answered (after any fallback), for features/ai/log.ts `logAiCall`.
  */
-export async function generateText(opts: GenerateTextOptions): Promise<{ text: string; finishReason?: string }> {
+export async function generateText(opts: GenerateTextOptions): Promise<{ text: string; finishReason?: string; model: string }> {
   const viaOpenRouter = aiProvider() === 'openrouter';
   const label = viaOpenRouter ? 'OpenRouter' : 'Gemini';
   const attempts = viaOpenRouter ? openRouterAttempts(await openRouterKey.get(), opts) : geminiAttempts(await geminiKey.get(), opts);
@@ -164,7 +165,7 @@ export async function generateText(opts: GenerateTextOptions): Promise<{ text: s
         throw new Error('Gemini returned empty response');
       }
       if (i > 0) console.log(`Used fallback model ${model} successfully`);
-      return { text, finishReason };
+      return { text, finishReason, model };
     }
     throw new Error('All Gemini models failed');
   } finally {

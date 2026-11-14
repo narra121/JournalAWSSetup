@@ -135,11 +135,12 @@ async function getPlanDetails(
       monthlyEquivalent: displayMonthlyEquivalent,
     };
   } catch (error: any) {
-    console.error(`Error fetching plan ${period} ${suffix}:`, error.name, error.message);
+    // A price that is not configured yet is a known state (the plan is left out), not an error to alert on.
     if (error.name === 'ParameterNotFound') {
       console.log(`Plan not found for ${period}_${suffix}`);
       return null;
     }
+    console.error(`Error fetching plan ${period} ${suffix}:`, error.name, error.message);
     throw error;
   }
 }

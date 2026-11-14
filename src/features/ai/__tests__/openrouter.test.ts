@@ -375,7 +375,7 @@ describe('shared generateText (extraction, enhance-text) via OpenRouter', () => 
   it('sends the image as a data URL to gemini-3.5-flash-lite with data_collection deny and maps finish_reason', async () => {
     const f = vi.fn().mockResolvedValue(completion({ content: ' symbol,side \n' }));
     vi.stubGlobal('fetch', f);
-    expect(await call()).toEqual({ text: 'symbol,side', finishReason: 'STOP' });
+    expect(await call()).toEqual({ text: 'symbol,side', finishReason: 'STOP', model: 'google/gemini-3.5-flash-lite' });
     const [url, init] = f.mock.calls[0];
     expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer key-for-/tradequt/openrouterApiKey', 'HTTP-Referer': 'https://tradequt.com', 'X-Title': 'TradeQut' });
@@ -392,7 +392,7 @@ describe('shared generateText (extraction, enhance-text) via OpenRouter', () => 
   it('429 or an empty answer from the only model fails after one call; length maps to MAX_TOKENS', async () => {
     const f = vi.fn().mockResolvedValue(okJson({ choices: [{ finish_reason: 'length', message: { content: 'part' } }] }));
     vi.stubGlobal('fetch', f);
-    expect(await call()).toEqual({ text: 'part', finishReason: 'MAX_TOKENS' });
+    expect(await call()).toEqual({ text: 'part', finishReason: 'MAX_TOKENS', model: 'google/gemini-3.5-flash-lite' });
     const r = vi.fn().mockResolvedValue(fail(429));
     vi.stubGlobal('fetch', r);
     await expect(call()).rejects.toMatchObject({ status: 429 });
@@ -419,7 +419,7 @@ describe('shared generateText (extraction, enhance-text) via OpenRouter', () => 
     process.env.GEMINI_API_KEY_PARAM = '/test/gemini';
     const f = vi.fn().mockResolvedValue(okJson({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }));
     vi.stubGlobal('fetch', f);
-    expect(await call()).toEqual({ text: 'ok', finishReason: 'STOP' });
+    expect(await call()).toEqual({ text: 'ok', finishReason: 'STOP', model: 'gemini-2.5-flash-lite' });
     expect(f.mock.calls[0][0]).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
     expect(JSON.parse(f.mock.calls[0][1].body).contents[0].parts).toEqual(parts);
     delete process.env.GEMINI_API_KEY_PARAM;

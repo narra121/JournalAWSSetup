@@ -174,5 +174,6 @@ describe('defaultWeeklyDeps', () => {
     const d = await defaultWeeklyDeps();
     expect(typeof d.plan).toBe('function');
     expect(typeof d.generate).toBe('function');
-  });
+    // The first dynamic import of the insights feature takes over 5 s when the whole suite runs in parallel.
+  }, 30_000);
 });

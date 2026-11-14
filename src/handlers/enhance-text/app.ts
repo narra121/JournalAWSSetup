@@ -2,6 +2,7 @@ import type { ApiHandler } from '../../shared/types';
 import { envelope, errorFromException, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { generateText, geminiTimeoutMs } from '../../shared/gemini';
+import { logAiCall } from '../../features/ai/log';
 
 const SYSTEM_PROMPT = `You are a grammar and spelling corrector. Fix grammar, spelling, and punctuation errors in the given text. Keep the original meaning, tone, and wording intact. Do not add, remove, or rephrase content beyond what is needed to correct errors. Return ONLY the corrected text. No explanations, no filler.`;
 
@@ -66,6 +67,7 @@ ${text}` }],
       return errorResponse(502, ErrorCodes.BAD_GATEWAY, AI_UNAVAILABLE);
     }
 
+    logAiCall('enhance', result.model, undefined, { requestId: event.requestContext?.requestId, userId });
     return envelope({
       statusCode: 200,
       data: { enhancedText: result.text },

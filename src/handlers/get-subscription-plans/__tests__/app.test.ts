@@ -127,6 +127,19 @@ describe('get-subscription-plans handler', () => {
     expect(body.data.plans).toEqual([]);
   });
 
+  it('a price that is not configured is not logged as an error (it is a known state, not an alert)', async () => {
+    const paramNotFound = new Error('Parameter not found');
+    (paramNotFound as any).name = 'ParameterNotFound';
+    ssmMock.on(GetParameterCommand).rejects(paramNotFound);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await handler(makeEvent());
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   // ── 5. Returns correct amounts: USD $4.99/$49.99, INR 499/4999 ──
 
   it('returns correct amounts for USD: $4.99 monthly, $49.99 yearly', async () => {

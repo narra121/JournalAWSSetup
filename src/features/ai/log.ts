@@ -4,7 +4,7 @@ import { AiUnavailableError } from './gemini';
 const MAX_ERROR_CHARS = 300;
 
 /** One structured INFO line per answered AI call: the model that served it and the tokens; never the prompt or the answer. */
-export function logAiCall(feature: 'chat' | 'insights', model: string | undefined, usage: { promptTokens: number; outputTokens: number } | undefined, ctx: { requestId?: string; userId?: string }): void {
+export function logAiCall(feature: 'chat' | 'insights' | 'enhance', model: string | undefined, usage: { promptTokens: number; outputTokens: number } | undefined, ctx: { requestId?: string; userId?: string }): void {
   makeLogger(ctx).info('ai_call', { feature, model, promptTokens: usage?.promptTokens, outputTokens: usage?.outputTokens });
 }
 
