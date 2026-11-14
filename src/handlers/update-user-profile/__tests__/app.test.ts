@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('USER_POOL_ID', 'us-east-1_TestPool');
+vi.stubEnv('USER_PREFERENCES_TABLE', 'prefs');
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
+const ddbMock = mockClient(DynamoDBDocumentClient);
 
 const { handler } = await import('../app.ts');
 
@@ -51,6 +54,8 @@ beforeEach(() => {
   cognitoMock.reset();
   cognitoMock.on(AdminUpdateUserAttributesCommand).resolves({});
   cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_999' }] });
+  ddbMock.reset();
+  ddbMock.on(UpdateCommand).resolves({});
 });
 
 describe('update-user-profile handler', () => {
@@ -67,6 +72,12 @@ describe('update-user-profile handler', () => {
     const cognitoCalls = cognitoMock.commandCalls(AdminUpdateUserAttributesCommand);
     expect(cognitoCalls).toHaveLength(1);
     expect(cognitoCalls[0].args[0].input.UserAttributes).toEqual([{ Name: 'name', Value: 'New Name' }]);
+  });
+
+  it('also stores the name in the UserPreferences row, which GET /user/profile reads before the token is reissued (REQUESTS #12)', async () => {
+    await handler(makeEvent({ name: 'Asha' }), {} as any, () => {});
+    const update = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(update).toMatchObject({ TableName: 'prefs', Key: { userId: 'user-1' }, ExpressionAttributeValues: { ':name': 'Asha' } });
   });
 
   it('returns 500 when Cognito update fails', async () => {

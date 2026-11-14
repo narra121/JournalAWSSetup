@@ -1,5 +1,7 @@
 import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes, errorFromException } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { resolveCognitoUsername } from '../../shared/cognitoUser';
@@ -46,6 +48,17 @@ export const handler: ApiHandler = async (event) => {
       Username: await resolveCognitoUsername(USER_POOL_ID, userId),
       UserAttributes: attributes,
     }));
+
+    // The copy GET /user/profile reads first (update-user-profile writes the same attribute).
+    if (data.name !== undefined) {
+      await ddb.send(new UpdateCommand({
+        TableName: process.env.USER_PREFERENCES_TABLE!,
+        Key: { userId },
+        UpdateExpression: 'SET #name = :name, updatedAt = :now',
+        ExpressionAttributeNames: { '#name': 'name' },
+        ExpressionAttributeValues: { ':name': data.name, ':now': new Date().toISOString() },
+      }));
+    }
 
     log.info('admin-update-user success', { userId });
 

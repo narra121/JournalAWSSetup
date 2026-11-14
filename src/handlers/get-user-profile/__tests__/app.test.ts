@@ -67,6 +67,18 @@ beforeEach(() => {
 describe('get-user-profile handler', () => {
   // ── Success ─────────────────────────────────────────────────
 
+  it('returns the saved name over the ID token claim, which stays old until the token is reissued (REQUESTS #12)', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...storedPreferences, name: 'Asha' } });
+    const body = JSON.parse(((await handler(makeEvent({ sub: 'user-1', name: 'e2e-old', email: 'test@example.com' }), {} as any, () => {})) as any).body);
+    expect(body.data.user.name).toBe('Asha');
+  });
+
+  it('falls back to the claim when no name was saved yet', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { ...storedPreferences, name: '  ' } });
+    const body = JSON.parse(((await handler(makeEvent(), {} as any, () => {})) as any).body);
+    expect(body.data.user.name).toBe('Test User');
+  });
+
   it('returns user profile with Cognito data and stored preferences', async () => {
     const res = await handler(makeEvent(), {} as any, () => {}) as any;
 

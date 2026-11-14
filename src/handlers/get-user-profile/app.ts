@@ -20,10 +20,7 @@ export const handler: ApiHandler = async (event) => {
   }
 
   try {
-    // Extract user info directly from the ID token claims
-    // (no extra Cognito API call needed — the ID token already has email/name)
     const claims = getClaims(event);
-    const userName = claims.name || '';
     const userEmail = claims.email || '';
 
     // Get preferences from DynamoDB
@@ -31,6 +28,10 @@ export const handler: ApiHandler = async (event) => {
       TableName: USER_PREFERENCES_TABLE,
       Key: { userId }
     }));
+
+    // The name saved by update-user-profile wins: the token's claim stays old until the token is reissued.
+    const stored = prefsResult.Item?.name;
+    const userName = (typeof stored === 'string' && stored.trim() ? stored : claims.name) || '';
 
     const preferences = prefsResult.Item || {
       userId,

@@ -5,13 +5,16 @@ import {
   AdminUpdateUserAttributesCommand,
   ListUsersCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // ─── Env (must be before any module-scope reads) ──────────────
 vi.stubEnv('USER_POOL_ID', 'us-east-1_TestPool');
+vi.stubEnv('USER_PREFERENCES_TABLE', 'prefs');
 
 // ─── SDK mocks ────────────────────────────────────────────────
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
+const ddbMock = mockClient(DynamoDBDocumentClient);
 
 // Dynamic import to ensure env vars are set before module-scope reads
 const { handler } = await import('../app');
@@ -58,10 +61,18 @@ beforeEach(() => {
   cognitoMock.reset();
   cognitoMock.on(AdminUpdateUserAttributesCommand).resolves({});
   cognitoMock.on(ListUsersCommand).resolves({ Users: [{ Username: 'Google_999' }] });
+  ddbMock.reset();
+  ddbMock.on(UpdateCommand).resolves({});
 });
 
 // ─── Tests ────────────────────────────────────────────────────
 describe('admin-update-user handler', () => {
+  it('also stores the name GET /user/profile reads first, so an admin rename is not hidden by an older saved name', async () => {
+    const res = (await handler(makeEvent(TEST_USER_ID, { name: 'Renamed' }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(200);
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({ TableName: 'prefs', Key: { userId: TEST_USER_ID }, ExpressionAttributeValues: { ':name': 'Renamed' } });
+  });
+
   // ── Validation errors ───────────────────────────────────────
 
   it('returns 400 if userId path parameter is missing', async () => {

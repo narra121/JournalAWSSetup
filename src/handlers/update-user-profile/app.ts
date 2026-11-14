@@ -1,5 +1,7 @@
 import type { ApiHandler } from '../../shared/types';
 import { CognitoIdentityProviderClient, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { ddb } from '../../shared/dynamo';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getClaims, getUserId } from '../../shared/auth';
@@ -60,6 +62,15 @@ export const handler: ApiHandler = async (event) => {
       log.warn('failed to update cognito', { error: cognitoError.message });
       return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to update profile attributes');
     }
+
+    // GET /user/profile reads this copy: the caller's ID token carries the old name until it is reissued.
+    await ddb.send(new UpdateCommand({
+      TableName: process.env.USER_PREFERENCES_TABLE!,
+      Key: { userId },
+      UpdateExpression: 'SET #name = :name, updatedAt = :now',
+      ExpressionAttributeNames: { '#name': 'name' },
+      ExpressionAttributeValues: { ':name': data.name, ':now': new Date().toISOString() },
+    }));
 
     log.info('profile updated');
 
