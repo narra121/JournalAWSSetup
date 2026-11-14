@@ -72,6 +72,14 @@ describe('buildTaxReport', () => {
   it('warns that these are estimates and mentions the turnover method', () => {
     expect(r.warnings.join(' ')).toMatch(/chartered accountant/);
     expect(r.warnings.join(' ')).toMatch(/ICAI/);
+    expect(buildTaxReport([fixture[3]], '2026-27', null).warnings.join(' ')).not.toMatch(/fees may be missing/);
+  });
+
+  it('says so when the recorded fees are below the statutory estimate (the parts then exceed the total)', () => {
+    const noFees = buildTaxReport([{ ...fixture[3], fees: 0, pnl: 1500 }], '2026-27', null);
+    expect(noFees.charges.total).toBe(0);
+    expect(noFees.charges.stt).toBe(13.5);
+    expect(noFees.warnings.join(' ')).toMatch(/fees recorded on these trades \(₹0\.00\) are less than the statutory charges estimated at these rates \(₹19\.\d\d\)/);
   });
 });
 

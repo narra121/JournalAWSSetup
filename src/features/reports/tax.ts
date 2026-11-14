@@ -133,6 +133,11 @@ export function buildTaxReport(trades: TradeRow[], fy: string, accountId: string
   ];
   if (fnoB.trades) warnings.push('F&O turnover follows the ICAI guidance (absolute profits and losses, plus premium on the sale leg of options).');
   if (notCoveredCount) warnings.push(`${notCoveredCount} forex, crypto or CFD trades are not covered by this report.`);
+  // The statutory parts are estimated from rates; when they exceed the fees recorded, they are not a split of the total.
+  if (round2(statTotal) > round2(totalFees)) {
+    const inr = (v: number) => `₹${round2(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    warnings.push(`The fees recorded on these trades (${inr(totalFees)}) are less than the statutory charges estimated at these rates (${inr(statTotal)}), so some fees may be missing from your journal. Net P&L uses the recorded fees.`);
+  }
 
   return {
     fy,

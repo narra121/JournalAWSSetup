@@ -183,6 +183,21 @@ describe('POST /sessions/:id/messages', () => {
     expect(msgs.map((m: any) => m.role)).toEqual(['user']);
   });
 
+  it('logs one ai_call info line with the model and tokens of an answered message, never the prompt or the answer', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const { app } = setup();
+      const id = await newSession(app);
+      await readSse(await post(app, `/sessions/${id}/messages`, { content: 'secret question about BANKNIFTY' }));
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('ai_call'));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ level: 'INFO', msg: 'ai_call', feature: 'chat', model: 'gemini-test', promptTokens: 120, outputTokens: 30, userId: 'u1' });
+      expect(lines[0]).not.toMatch(/BANKNIFTY|secret question/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('logs one structured warn line with model, status and the provider message, never prompt or trade text', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {

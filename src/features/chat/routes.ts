@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../../app/types';
 import { dayOf } from '../../shared/timezone';
 import { generate as geminiGenerate, stream as geminiStream, toolCallTurn, toolResultTurn, type GeminiContent, type GeminiRequest, type ToolCall } from '../ai/gemini';
-import { logAiFailure } from '../ai/log';
+import { logAiCall, logAiFailure } from '../ai/log';
 import { sseFrame, ssePing } from '../ai/sse';
 import { dynamoAccounts, loadAnalysisInput, resolveTimeZone, userTimeZone, type AnalysisDeps, type LoadedInput } from '../analysis/load';
 import type { QueryResult } from '../analysis/types';
@@ -258,6 +258,7 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
           await c.get('quota').consume('ai_chat', -1).catch(() => undefined);
           send(sseFrame('error', { code: 'AI_UNAVAILABLE', message: 'The AI service could not answer that. You were not charged; try again or rephrase.' }));
         }
+        if (model) logAiCall('chat', model, usage, { requestId: c.get('requestId'), userId });
         if (answer) {
           const shown = tables.map((t) => appTable(t.table));
           const currency = input?.currency ?? null;

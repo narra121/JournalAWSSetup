@@ -175,6 +175,19 @@ describe('generateInsight', () => {
     }
   });
 
+  it('logs one ai_call info line with the model and tokens of a generated report', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const { deps, q } = setup({ generate: vi.fn(async () => ({ text: 'not json', model: 'openai/gpt-6.1-terra', usage: { promptTokens: 900, outputTokens: 200 } })) as any });
+      await generateInsight(deps, q.quota, 'u1', OCT, 'req-7');
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('ai_call'));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ level: 'INFO', msg: 'ai_call', feature: 'insights', model: 'openai/gpt-6.1-terra', promptTokens: 900, outputTokens: 200, requestId: 'req-7', userId: 'u1' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('survives non-JSON model output with the code wording', async () => {
     const { deps, q } = setup({ generate: vi.fn(async () => ({ text: 'not json', model: 'm', usage: { promptTokens: 0, outputTokens: 0 } })) as any });
     const r = await generateInsight(deps, q.quota, 'u1', OCT);

@@ -1,7 +1,7 @@
 import type { Quota } from '../../app/types';
 import { resolveTimeZone } from '../analysis/load';
 import { AiUnavailableError, generate as geminiGenerate } from '../ai/gemini';
-import { logAiFailure } from '../ai/log';
+import { logAiCall, logAiFailure } from '../ai/log';
 import { getFocus } from '../focus/store';
 import { timeId } from '../ids';
 import type { AiStore } from '../store';
@@ -102,6 +102,7 @@ export async function generateInsight(deps: InsightDeps, quota: Quota, userId: s
   try {
     const prompt = { period: { from: input.from, to: input.to }, tradeCount };
     const res = await deps.generate(buildInsightRequest(computed, prompt));
+    logAiCall('insights', res.model, res.usage, { requestId, userId });
     let parsed: unknown;
     try {
       parsed = JSON.parse(res.text);
