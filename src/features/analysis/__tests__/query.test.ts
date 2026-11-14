@@ -14,6 +14,13 @@ describe('runQuery', () => {
     expect(r.tradeIds).toHaveLength(12);
   });
 
+  it('stats: the trades behind the table are its rows; trades without the value are named in the note (R-046)', () => {
+    const r = q({ kind: 'stats', groupBy: ['optionType'] });
+    const inRows = r.rows.reduce((s, row) => s + Number(row[1]), 0);
+    expect(r.tradeIds).toHaveLength(inRows);
+    expect(r.note).toBe(`${12 - inRows} trades have no option type and are not in the table.`);
+  });
+
   it('stats, two way, with the exploring note', () => {
     const r = q({ kind: 'stats', groupBy: ['optionType', 'expiryDay'] });
     expect(r.rows.map((x) => x.slice(0, 3))).toEqual([['Calls', 'On expiry day', 1], ['Puts', 'Before expiry day', 1]]);

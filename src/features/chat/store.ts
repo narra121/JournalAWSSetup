@@ -6,6 +6,8 @@ export interface ChatSession {
   id: string;
   title: string;
   insightId?: string;
+  /** account of the latest answered question; null = all accounts; absent on older sessions */
+  accountId?: string | null;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -41,7 +43,7 @@ export async function putSession(store: AiStore, userId: string, s: ChatSession)
 }
 
 /** Updates `updatedAt` (and the title) of a session without touching its message counter. */
-export async function touchSession(store: AiStore, userId: string, id: string, set: { updatedAt: string; title?: string }) {
+export async function touchSession(store: AiStore, userId: string, id: string, set: { updatedAt: string; title?: string; accountId?: string | null }) {
   await store.patch(userId, sessionSk(id), set);
 }
 

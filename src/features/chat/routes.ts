@@ -267,7 +267,7 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
             ...(model ? { model } : {}), tradeIds: citedTradeIds(answer, known), ...(shown.length ? { tables: shown, currency } : {}),
           };
           await putMessage(deps.store, userId, sessionId, assistant).catch(() => undefined);
-          await touchSession(deps.store, userId, sessionId, { updatedAt: deps.now().toISOString(), title: session.title || content.slice(0, TITLE_MAX) }).catch(() => undefined);
+          await touchSession(deps.store, userId, sessionId, { updatedAt: deps.now().toISOString(), title: session.title || content.slice(0, TITLE_MAX), ...(refused ? {} : { accountId: period.accountId }) }).catch(() => undefined);
           if (!failed) {
             send(sseFrame('done', {
               messageId: assistant.id, usage: { ...usage, remaining }, disclaimer: DISCLAIMER, tradeIds: assistant.tradeIds, tables: shown,

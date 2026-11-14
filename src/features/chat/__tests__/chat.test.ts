@@ -239,6 +239,16 @@ describe('POST /sessions/:id/messages', () => {
     expect(stream).not.toHaveBeenCalled();
   });
 
+  it('records on the session the account the latest answer used (null = all accounts), so a reopened chat can show its scope', async () => {
+    const { app } = setup();
+    const id = await newSession(app);
+    await readSse(await post(app, `/sessions/${id}/messages`, { content: 'hello', accountId: 'acc1' }));
+    const listed = ((await (await app.request('/sessions')).json()) as any).data.sessions;
+    expect(listed.find((s: any) => s.id === id).accountId).toBe('acc1');
+    await readSse(await post(app, `/sessions/${id}/messages`, { content: 'again', accountId: null }));
+    expect(((await (await app.request('/sessions')).json()) as any).data.sessions.find((s: any) => s.id === id).accountId).toBeNull();
+  });
+
   it('caps a session at 100 messages', async () => {
     const { app, store } = setup();
     const id = await newSession(app);

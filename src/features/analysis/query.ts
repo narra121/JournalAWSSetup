@@ -7,6 +7,13 @@ import { DIMENSIONS, type AnalysisQuery, type Dimension, type PeriodBounds, type
 import { parseWhatIfRule, replay } from './whatif';
 
 export const MAX_QUERY_ROWS = 50;
+
+/** A dimension in a sentence ("2 trades have no setup …"). */
+const DIMENSION_WORD: Record<Dimension, string> = {
+  symbol: 'symbol', setup: 'setup', session: 'session', direction: 'direction', assetClass: 'asset class', weekday: 'weekday', hour: 'time of day',
+  marketCondition: 'market condition', newsEvent: 'news event', tag: 'tag', plannedRR: 'planned R:R', holding: 'holding time', tradeNumber: 'trade number',
+  optionType: 'option type', expiryDay: 'expiry date',
+};
 export const MAX_TRADE_ROWS = 20;
 
 const matches = (f: TradeFacts, filters?: QueryFilters) =>
@@ -44,9 +51,13 @@ export function runQuery(trades: TradeRow[], query: AnalysisQuery, opts: { timeZ
       }
       const list = [...cells.values()].sort((a, b) => b.members.length - a.members.length || (a.values.map((v) => v.key).join() < b.values.map((v) => v.key).join() ? -1 : 1));
       const shown = list.slice(0, MAX_QUERY_ROWS);
+      // The trades behind the table are those in its rows: a trade without the grouped value (no setup, say) has no row.
+      const listed = new Set(shown.flatMap((c) => c.members));
+      const missing = facts.filter((f) => !listed.has(f) && query.groupBy.some((d) => dimensionValues(f, d).length === 0)).length;
       const notes: string[] = [];
       if (query.groupBy.length === 2) notes.push('Two-way cells are for exploring only; a cell is judged only with 30 or more trades in it and outside it.');
       if (list.length > shown.length) notes.push(`Showing the ${MAX_QUERY_ROWS} largest of ${list.length} groups.`);
+      if (missing) notes.push(`${missing} ${missing === 1 ? 'trade has' : 'trades have'} no ${query.groupBy.map((d) => DIMENSION_WORD[d]).join(' or ')} and ${missing === 1 ? 'is' : 'are'} not in the table.`);
       if (!facts.length) notes.push('No trade matches these filters.');
       return {
         columns: [...(query.groupBy.length ? query.groupBy : ['group']), ...FIGURE_COLUMNS],
@@ -56,7 +67,7 @@ export function runQuery(trades: TradeRow[], query: AnalysisQuery, opts: { timeZ
         }),
         label: sampleLabel(facts.length),
         ...(notes.length ? { note: notes.join(' ') } : {}),
-        tradeIds: idsOf(facts),
+        tradeIds: idsOf(query.groupBy.length ? facts.filter((f) => listed.has(f)) : facts),
       };
     }
     case 'sequence': {
