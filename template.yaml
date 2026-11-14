@@ -179,6 +179,12 @@ Resources:
           RequireUppercase: true
       UserAttributeUpdateSettings:
         AttributesRequireVerificationBeforeUpdate: [email]
+      # Cognito's own sender allows 50 emails a day. SES needs the identity policy "cognito-user-pools" on the domain
+      # (aws sesv2 create-email-identity-policy); CloudFormation has no resource for it.
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+        SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AppDomain}
+        From: !Sub "TradeQut <noreply@${AppDomain}>"
       LambdaConfig:
         PreSignUp: !GetAtt EventFunction.Arn
         PostConfirmation: !GetAtt EventFunction.Arn
