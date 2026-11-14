@@ -39,6 +39,14 @@ describe('GET /v1/insights/debrief/:tradeId (report §5.4)', () => {
     expect(detail.setupHistory).toBe('1 trade of "Scalp" in the last 90 days; 30 are needed to judge it.');
   });
 
+  it('a risk far under the median keeps a significant digit (0.02×, never 0.0×)', async () => {
+    const { deps } = insightDeps([...trades(), tr('x5', '2026-11-05', '09:00', { setupType: 'Breakout', stopLoss: 95, exitPrice: 104, quantity: 0.2 })]);
+    const app = withUser(insightsApp(deps), 'u1', fakeQuota().quota);
+    const d = ((await (await app.request('/debrief/x5')).json()) as any).data.debrief;
+    const detail = Object.fromEntries(d.checks.map((c: any) => [c.id, c.detail]));
+    expect(detail.riskWithinUsual).toBe('Risked ₹1.00, 0.02× your median of ₹50.00 over the last 90 days.');
+  });
+
   it('with a daily-cap focus the trade number is checked too', async () => {
     const { app, store } = setup();
     await putFocus(store, 'u1', { rule: { kind: 'maxTradesPerDay', n: 1 }, text: 'One trade a day.', startedAt: '2026-10-01T00:00:00.000Z', findingKey: null });

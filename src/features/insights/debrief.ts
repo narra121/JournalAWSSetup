@@ -55,7 +55,9 @@ export function debriefChecks(facts: TradeFacts[], f: TradeFacts, focus: Focus |
   else if (risks.length < MIN_RISK_HISTORY) add('riskWithinUsual', 'notApplicable', `Only ${plural(risks.length, 'trade')} with a stop in the last ${BASELINE_DAYS} days: too few to know your usual risk.`);
   else {
     const multiple = f.risk / med;
-    add('riskWithinUsual', multiple <= RISK_MULTIPLE ? 'met' : 'notMet', `Risked ${money(f.risk, currency)}, ${multiple.toFixed(1)}× your median of ${money(med, currency)} over the last ${BASELINE_DAYS} days.`);
+    // Below 0.1× one decimal would print 0.0×, which reads as nothing risked.
+    const times = multiple >= 0.1 ? multiple.toFixed(1) : multiple.toPrecision(1);
+    add('riskWithinUsual', multiple <= RISK_MULTIPLE ? 'met' : 'notMet', `Risked ${money(f.risk, currency)}, ${times}× your median of ${money(med, currency)} over the last ${BASELINE_DAYS} days.`);
   }
 
   if (t.pnl < 0) {
