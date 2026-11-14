@@ -27,13 +27,15 @@ env:
   AWS_REGION: us-east-1
   AWS_DEFAULT_REGION: us-east-1
   AWS_PROFILE: ""
-  TRADEQUT_RESEARCH: ${{ runner.temp }}/tradequt
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.confirm == 'deploy-prod' }}
     steps:
+      # The runner context is not allowed in workflow-level env.
+      - name: Set TRADEQUT_RESEARCH
+        run: echo "TRADEQUT_RESEARCH=$RUNNER_TEMP/tradequt" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           ref: main
