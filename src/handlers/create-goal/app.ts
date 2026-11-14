@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { materializePeriod } from '../get-rules-goals/app';
 import { GOAL_TYPE_CONFIG, VALID_GOAL_TYPES, VALID_PERIODS } from '../../shared/goalDefaults';
 import type { GoalType } from '../../shared/goalDefaults';
 
@@ -79,6 +80,8 @@ export const handler: ApiHandler = async (event) => {
       updatedAt: now
     };
 
+    // Store the copies the period GET showed before the first write to it.
+    if (data.periodKey) await materializePeriod(userId, data.periodKey);
     await ddb.send(new PutCommand({
       TableName: GOALS_TABLE,
       Item: goal

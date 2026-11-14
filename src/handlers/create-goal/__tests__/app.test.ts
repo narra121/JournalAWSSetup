@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 vi.stubEnv('GOALS_TABLE', 'test-goals');
@@ -59,6 +59,8 @@ function validGoalBody(overrides: Record<string, any> = {}) {
 beforeEach(() => {
   ddbMock.reset();
   ddbMock.on(PutCommand).resolves({});
+  // The period is already stored, so materializePeriod (get-rules-goals) has nothing to copy.
+  ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', goalId: 'week#2026-04-07#g0' }] });
 });
 
 describe('create-goal handler', () => {

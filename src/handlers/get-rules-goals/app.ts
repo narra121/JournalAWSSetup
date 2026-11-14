@@ -287,62 +287,10 @@ export const handler: ApiHandler = async (event) => {
       });
     }
 
-    // Current period with no records — clone-on-write
-    const carryForward = await getCarryForward(userId);
-    let newRules: any[] = [];
-    let newGoals: any[] = [];
-
-    if (carryForward) {
-      // Try previous period first
-      const prevPeriodKey = getPreviousPeriodKey(periodKey);
-      const prevPrefix = `${prevPeriodKey}#`;
-      const [prevRules, prevGoals] = await Promise.all([
-        queryTable(RULES_TABLE, userId, prevPrefix),
-        queryTable(GOALS_TABLE, userId, prevPrefix),
-      ]);
-
-      if (prevRules.length > 0 || prevGoals.length > 0) {
-        // Clone from previous period
-        newRules = cloneRules(prevRules, userId, periodKey);
-        newGoals = cloneGoals(prevGoals, userId, periodKey);
-      } else {
-        // Try legacy records
-        const [legacyRules, legacyGoals] = await Promise.all([
-          queryLegacyRecords(RULES_TABLE, userId),
-          queryLegacyRecords(GOALS_TABLE, userId),
-        ]);
-
-        if (legacyRules.length > 0 || legacyGoals.length > 0) {
-          newRules = cloneRules(legacyRules, userId, periodKey);
-          newGoals = cloneGoals(legacyGoals, userId, periodKey);
-        } else {
-          // No source records at all — create defaults
-          newRules = createDefaultRules(userId, periodKey);
-          newGoals = createDefaultGoals(userId, periodKey);
-        }
-      }
-    } else {
-      // Carry-forward OFF — create defaults
-      newRules = createDefaultRules(userId, periodKey);
-      newGoals = createDefaultGoals(userId, periodKey);
-    }
-
-    // Batch write new records
-    const writes: Promise<void>[] = [];
-    if (newRules.length > 0) {
-      writes.push(batchWritePutAll({ ddb, tableName: RULES_TABLE, items: newRules, log }));
-    }
-    if (newGoals.length > 0) {
-      writes.push(batchWritePutAll({ ddb, tableName: GOALS_TABLE, items: newGoals, log }));
-    }
-    await Promise.all(writes);
-
-    log.info('clone-on-write completed', {
-      periodKey,
-      carryForward,
-      rulesCount: newRules.length,
-      goalsCount: newGoals.length,
-    });
+    // Current period with no records: the records it would start with, not stored (a GET never writes).
+    // The first rule or goal write to the period stores them (materializePeriod).
+    const { rules: newRules, goals: newGoals } = await planPeriod(userId, periodKey);
+    log.info('current period not stored yet, returning its starting records', { periodKey, rulesCount: newRules.length, goalsCount: newGoals.length });
 
     return envelope({
       statusCode: 200,
@@ -365,7 +313,53 @@ export const handler: ApiHandler = async (event) => {
 };
 
 /** The part of a period-scoped id after the period key (`week#2026-11-02#<tail>`), or the whole legacy id. */
+/**
+ * The records the current period starts with: the previous period's, else the ones made before periods existed, else the
+ * starter rules. No goals are made up: a goal exists only once the user sets one.
+ */
+async function planPeriod(userId: string, periodKey: string): Promise<{ rules: any[]; goals: any[] }> {
+  if (await getCarryForward(userId)) {
+    const prevPrefix = `${getPreviousPeriodKey(periodKey)}#`;
+    const [prevRules, prevGoals] = await Promise.all([queryTable(RULES_TABLE, userId, prevPrefix), queryTable(GOALS_TABLE, userId, prevPrefix)]);
+    if (prevRules.length > 0 || prevGoals.length > 0) return { rules: cloneRules(prevRules, userId, periodKey), goals: cloneGoals(prevGoals, userId, periodKey) };
+    const [legacyRules, legacyGoals] = await Promise.all([queryLegacyRecords(RULES_TABLE, userId), queryLegacyRecords(GOALS_TABLE, userId)]);
+    if (legacyRules.length > 0 || legacyGoals.length > 0) return { rules: cloneRules(legacyRules, userId, periodKey), goals: cloneGoals(legacyGoals, userId, periodKey) };
+  }
+  return { rules: createDefaultRules(userId, periodKey), goals: [] };
+}
+
+/**
+ * Stores the starting records of the current period before its first rule or goal write, so an edit of a record the GET
+ * showed finds it, and a new record does not hide the others. Nothing happens for a stored, past or future period.
+ */
+export async function materializePeriod(userId: string, periodKey: string): Promise<void> {
+  if (!isValidPeriodKey(periodKey)) return;
+  const prefix = `${periodKey}#`;
+  const [rules, goals] = await Promise.all([queryTable(RULES_TABLE, userId, prefix), queryTable(GOALS_TABLE, userId, prefix)]);
+  if (rules.length > 0 || goals.length > 0 || !(await isCurrentPeriod(userId, periodKey))) return;
+  const plan = await planPeriod(userId, periodKey);
+  await Promise.all([
+    plan.rules.length > 0 ? batchWritePutAll({ ddb, tableName: RULES_TABLE, items: plan.rules }) : undefined,
+    plan.goals.length > 0 ? batchWritePutAll({ ddb, tableName: GOALS_TABLE, items: plan.goals }) : undefined,
+  ]);
+}
+
+/** `week#2026-11-09` of a period record id `week#2026-11-09#<id>`; null for a record made before periods existed. */
+export function periodKeyOf(id: string): string | null {
+  const parts = String(id).split('#');
+  return parts.length >= 3 ? `${parts[0]}#${parts[1]}` : null;
+}
+
 const idTail = (id: string): string => String(id).split('#').pop() as string;
+
+/**
+ * A period copy keeps the dates of the record it copies: a copy made when Goals opens is not a rule the user set.
+ * The first-run checklist (TradeFlow useGettingStarted) reads these dates to tell starter records from the user's own.
+ */
+function copyStamps(src: { createdAt?: unknown; updatedAt?: unknown }, now: string): { createdAt: string; updatedAt: string } {
+  const createdAt = typeof src.createdAt === 'string' ? src.createdAt : now;
+  return { createdAt, updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : createdAt };
+}
 
 function cloneRules(sourceRules: any[], userId: string, periodKey: string): any[] {
   const now = new Date().toISOString();
@@ -374,8 +368,7 @@ function cloneRules(sourceRules: any[], userId: string, periodKey: string): any[
     userId,
     ruleId: `${periodKey}#${idTail(rule.ruleId)}`,
     completed: false,
-    createdAt: now,
-    updatedAt: now,
+    ...copyStamps(rule, now),
   }));
 }
 
@@ -387,8 +380,7 @@ function cloneGoals(sourceGoals: any[], userId: string, periodKey: string): any[
     ...goal,
     userId,
     goalId: `${periodKey}#${idTail(goal.goalId)}`,
-    createdAt: now,
-    updatedAt: now,
+    ...copyStamps(goal, now),
   }));
 }
 

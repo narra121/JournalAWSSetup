@@ -9,7 +9,7 @@ vi.stubEnv('USER_PREFERENCES_TABLE', 'test-user-preferences');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-const { handler, getPreviousPeriodKey, getPeriodType, isLegacyRecord, periodHoldsDay } = await import('../app.ts');
+const { handler, getPreviousPeriodKey, getPeriodType, isLegacyRecord, periodHoldsDay, materializePeriod } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -182,6 +182,25 @@ describe('get-rules-goals handler', () => {
 
   // ── Clone-on-write ──────────────────────────────────────────
 
+  it('a period copy keeps the dates of what it copies, so the first-run checklist does not count it as set by the user', async () => {
+    const stamped = (r: Record<string, unknown>) => ({ ...r, createdAt: '2026-03-31T08:00:00.000Z', updatedAt: '2026-03-31T08:00:00.000Z' });
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({ Items: [] })
+      .resolvesOnce({ Items: [] })
+      .resolvesOnce({ Items: prevPeriodRules.map(stamped) })
+      .resolvesOnce({ Items: [stamped(prevPeriodGoals[0])] });
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', carryForwardGoalsRules: true } });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+
+    const res = (await handler(makeEvent({ queryStringParameters: { periodKey: 'week#2026-04-07', currentPeriod: 'true' } } as any), {} as any, () => {})) as any;
+
+    const body = JSON.parse(res.body);
+    for (const item of [...body.data.rules, ...body.data.goals]) {
+      expect(item.createdAt).toBe('2026-03-31T08:00:00.000Z');
+      expect(item.updatedAt).toBe('2026-03-31T08:00:00.000Z');
+    }
+  });
+
   it('clones previous period rules when carry-forward ON and no current records', async () => {
     // 1st+2nd query: current period — empty
     ddbMock.on(QueryCommand)
@@ -216,9 +235,8 @@ describe('get-rules-goals handler', () => {
     for (const goal of body.data.goals) {
       expect(goal.goalId).toMatch(/^week#2026-04-07#/);
     }
-    // Verify BatchWriteCommand was called
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls.length).toBeGreaterThanOrEqual(1);
+    // A GET never writes: the copies are stored by the first write to the period (materializePeriod).
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
   it('clones legacy records when no previous period records exist and carry-forward ON', async () => {
@@ -277,18 +295,14 @@ describe('get-rules-goals handler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    // 6 default rules, 4 default weekly goals
+    // 6 starter rules; no goals are made up (a goal exists only once the user sets one), and nothing is written
     expect(body.data.rules).toHaveLength(6);
-    expect(body.data.goals).toHaveLength(4);
+    expect(body.data.goals).toHaveLength(0);
     expect(body.data.meta.cloned).toBe(true);
-    // Verify period-stamped IDs
     for (const rule of body.data.rules) {
       expect(rule.ruleId).toMatch(/^week#2026-04-07#/);
     }
-    for (const goal of body.data.goals) {
-      expect(goal.goalId).toMatch(/^week#2026-04-07#/);
-      expect(goal.period).toBe('weekly');
-    }
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
   it('creates monthly defaults when carry-forward OFF and monthly periodKey', async () => {
@@ -311,16 +325,8 @@ describe('get-rules-goals handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.rules).toHaveLength(6);
-    expect(body.data.goals).toHaveLength(4);
-    for (const goal of body.data.goals) {
-      expect(goal.goalId).toMatch(/^month#2026-04#/);
-      expect(goal.period).toBe('monthly');
-    }
-    // Verify monthly targets
-    const profitGoal = body.data.goals.find((g: any) => g.goalType === 'profit');
-    expect(profitGoal.target).toBe(2000);
-    const winRateGoal = body.data.goals.find((g: any) => g.goalType === 'winRate');
-    expect(winRateGoal.target).toBe(70);
+    for (const rule of body.data.rules) expect(rule.ruleId).toMatch(/^month#2026-04#/);
+    expect(body.data.goals).toHaveLength(0);
   });
 
   it('returns empty for past period with no records', async () => {
@@ -607,9 +613,9 @@ describe('get-rules-goals handler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    // Defaults: 6 rules, 4 goals
+    // Starter rules only, no goals
     expect(body.data.rules).toHaveLength(6);
-    expect(body.data.goals).toHaveLength(4);
+    expect(body.data.goals).toHaveLength(0);
     expect(body.data.meta.cloned).toBe(true);
   });
 
@@ -668,8 +674,17 @@ describe('legacy goals are cloned by period kind (M2)', () => {
     expect((await run('month#2026-04')).map((g) => g.goalId)).toEqual(['month#2026-04#lm']);
   });
 
-  it('what is written to the goals table is the same filtered set', async () => {
+  it('the first write stores the same filtered set the GET showed (materializePeriod)', async () => {
     await run('week#2026-04-07');
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    ddbMock.reset();
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: [] }) // the period (still empty)
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: [] }) // the previous period
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: legacy }); // legacy rules, legacy goals
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', carryForwardGoalsRules: true } });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    await materializePeriod('user-1', 'week#2026-04-07');
     const written = ddbMock.commandCalls(BatchWriteCommand).flatMap((c) => Object.entries(c.args[0].input.RequestItems!))
       .filter(([table]) => table === 'test-goals').flatMap(([, reqs]) => (reqs as any[]).map((r) => r.PutRequest.Item.goalId));
     expect(written.sort()).toEqual(['week#2026-04-07#lw', 'week#2026-04-07#lw2']);
@@ -699,11 +714,27 @@ describe('currentPeriod=true is checked by the server (M2)', () => {
     },
   );
 
-  it.each(['week#2026-04-07', 'month#2026-04'])('the period %s that holds today is written when claimed', async (periodKey) => {
+  it.each(['week#2026-04-07', 'month#2026-04'])('the period %s that holds today shows its starting rules when claimed, and a GET writes nothing', async (periodKey) => {
     nothingStored();
     const data = await get(periodKey);
     expect(data.meta.cloned).toBe(true);
+    expect(data.rules.length).toBeGreaterThan(0);
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+  });
+
+  it('materializePeriod stores the current period once, and never a past or an already stored one', async () => {
+    nothingStored();
+    await materializePeriod('user-1', 'week#2026-04-07');
     expect(ddbMock.commandCalls(BatchWriteCommand).length).toBeGreaterThan(0);
+    ddbMock.reset();
+    nothingStored();
+    await materializePeriod('user-1', 'week#2026-03-31');
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    ddbMock.reset();
+    ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', ruleId: 'week#2026-04-07#r1', rule: 'x' }] });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    await materializePeriod('user-1', 'week#2026-04-07');
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
   it('a period that holds today is still empty and unwritten when the client does not claim it', async () => {

@@ -4,6 +4,7 @@ import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { materializePeriod, periodKeyOf } from '../get-rules-goals/app';
 import { VALID_PERIODS } from '../../shared/goalDefaults';
 
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -77,6 +78,9 @@ export const handler: ApiHandler = async (event) => {
     expressionAttributeNames['#updatedAt'] = 'updatedAt';
     expressionAttributeValues[':updatedAt'] = now;
 
+    // Store the copies the period GET showed before the first write to it.
+    const period = periodKeyOf(goalId);
+    if (period) await materializePeriod(userId, period);
     const result = await ddb.send(new UpdateCommand({
       TableName: GOALS_TABLE,
       Key: { userId, goalId },

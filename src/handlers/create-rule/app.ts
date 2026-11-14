@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
+import { materializePeriod } from '../get-rules-goals/app';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 
@@ -59,6 +60,8 @@ export const handler: ApiHandler = async (event) => {
       updatedAt: now
     };
 
+    // Store the copies the period GET showed before the first write to it.
+    if (data.periodKey) await materializePeriod(userId, data.periodKey);
     await ddb.send(new PutCommand({
       TableName: RULES_TABLE,
       Item: rule
