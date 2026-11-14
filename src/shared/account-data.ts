@@ -8,6 +8,7 @@ import { uploadPrefix } from './images';
 import type { Logger } from './logger';
 import { STATS_DIRTY_PK } from './statsDirty';
 import { getStripe } from './stripe-config';
+import { userRateLimitKey } from '../app/http/rate-limit';
 
 const cognito = new CognitoIdentityProviderClient({});
 const s3 = new S3Client({});
@@ -186,6 +187,8 @@ export async function purgeUser(userId: string, log?: Logger, claims?: Record<st
     await ddb.send(new DeleteCommand({ TableName: table, Key: { userId } }));
     deleted[name] = 1;
   }
+  // The per-user request counter (src/app/http/rate-limit.ts); this very request has just written it.
+  if (process.env.RATE_LIMIT_TABLE) await ddb.send(new DeleteCommand({ TableName: process.env.RATE_LIMIT_TABLE, Key: { key: userRateLimitKey(userId) } }));
 
   const imageKeys = [
     ...(await listKeys(process.env.IMAGES_BUCKET!, `images/${userId}/`)),

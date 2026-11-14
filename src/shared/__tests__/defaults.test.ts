@@ -7,7 +7,6 @@ describe('DEFAULT_USER_PREFERENCES', () => {
   it('has expected top-level properties', () => {
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('darkMode');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('currency');
-    expect(DEFAULT_USER_PREFERENCES).toHaveProperty('timeZone');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('notifications');
     expect(DEFAULT_USER_PREFERENCES).toHaveProperty('carryForwardGoalsRules');
   });
@@ -20,8 +19,8 @@ describe('DEFAULT_USER_PREFERENCES', () => {
     expect(DEFAULT_USER_PREFERENCES.currency).toBe('USD');
   });
 
-  it('defaults timeZone to UTC, under the key stats and preference-changes read (no legacy `timezone`)', () => {
-    expect(DEFAULT_USER_PREFERENCES.timeZone).toBe('UTC');
+  it('has no time zone: an absent timeZone means the user never chose one (the app then saves the browser zone)', () => {
+    expect(DEFAULT_USER_PREFERENCES).not.toHaveProperty('timeZone');
     expect(DEFAULT_USER_PREFERENCES).not.toHaveProperty('timezone');
   });
 

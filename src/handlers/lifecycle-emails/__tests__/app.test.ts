@@ -121,7 +121,7 @@ describe('runWeeklyReports', () => {
     expect(generate.mock.calls.map((c) => c[0])).not.toContain('optout');
     expect(plan.mock.calls.map((c) => c[0])).not.toContain('optout');
     expect(result.generated).toBe(2);
-    expect(sendEmail.mock.calls[0][0].text).toContain('/app/settings#notifications');
+    expect(sendEmail.mock.calls[0][0].text).toContain('/app/settings/notifications');
   });
 
   it('generates for several users at once but never more than 8 in flight, so a large run fits the timeout (BE-023)', async () => {

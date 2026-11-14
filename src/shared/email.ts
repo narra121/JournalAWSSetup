@@ -48,9 +48,12 @@ const layout = (body: string, footer: string) =>
 
 const TRANSACTIONAL_FOOTER = 'You get this message because it concerns your TradeQut account.';
 
+/** The app's Notifications section (TradeFlow SettingsView route `settings/notifications`; `/app/settings` alone opens Profile). */
+const notificationsUrl = () => `${appUrl()}/app/settings/notifications`;
+
 /** Non-transactional mails carry the way to switch them off (Settings → Notifications). */
 const optionalFooter = () =>
-  `You can turn these emails off in <a href="${appUrl()}/app/settings#notifications">Settings → Notifications</a>.`;
+  `You can turn these emails off in <a href="${notificationsUrl()}">Settings → Notifications</a>.`;
 
 export function trialEndingMail(to: string, endsOn: string): Mail {
   const url = `${appUrl()}/app/billing`;
@@ -99,7 +102,7 @@ export function weeklyReportMail(to: string, summary: string): Mail {
   return {
     to,
     subject: 'Your TradeQut weekly report is ready',
-    text: `${summary}\n\nRead the full report: ${url}\n\nYou can turn these emails off in Settings: ${appUrl()}/app/settings#notifications`,
+    text: `${summary}\n\nRead the full report: ${url}\n\nYou can turn these emails off in Settings: ${notificationsUrl()}`,
     html: layout(`<h2>Your weekly report is ready</h2><p>${escapeHtml(summary)}</p><p><a href="${url}">Read the full report</a></p>`, optionalFooter()),
   };
 }

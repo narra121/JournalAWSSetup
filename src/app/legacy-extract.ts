@@ -62,7 +62,7 @@ export const legacyExtract = async (event: any, context?: any) => {
   if (!fromProdPool(claims)) {
     const sub = (await ddb.send(new GetCommand({ TableName: process.env.SUBSCRIPTIONS_TABLE!, Key: { userId } }))).Item;
     const entitlements = computeEntitlements(effectiveSubscription(sub));
-    if (isReadOnly(entitlements)) return json(402, trialExpiredBody());
+    if (isReadOnly(entitlements)) return json(402, trialExpiredBody(entitlements));
     quota = createQuota(userId, entitlements);
     units = extractUnits(event.body);
     const taken = await quota.consume('ai_extract', units);

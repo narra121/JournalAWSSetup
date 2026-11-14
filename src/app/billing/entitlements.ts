@@ -70,7 +70,8 @@ export function computeEntitlements(
       else if (!grantExpired && sub.source !== 'admin_grant') e.renewsAt = sub.currentEnd;
     }
     if (sub?.source === 'admin_grant' && sub.periodEnd) e.endsAt = sub.periodEnd;
-    if (currentPriceIds && sub?.planId) e.legacyPrice = !currentPriceIds.includes(sub.planId);
+    // No configured price (SSM missing or unreadable) says nothing about the subscriber's price, so nothing is flagged.
+    if (currentPriceIds?.length && sub?.planId) e.legacyPrice = !currentPriceIds.includes(sub.planId);
     return e;
   }
   if (isFuture(sub?.trialEnd, now)) {

@@ -101,6 +101,21 @@ describe('purgeUser', () => {
     expect(order.indexOf('ddb:stats:1')).toBeLessThan(order.indexOf('del:stats'));
   });
 
+  it('removes the per-user request counter, which the delete request itself has just written', async () => {
+    vi.stubEnv('RATE_LIMIT_TABLE', 'ratelimit');
+    const deletes: any[] = [];
+    ddb.on(DeleteCommand).callsFake((input) => {
+      deletes.push(input);
+      return {};
+    });
+    try {
+      await purgeUser('U1-Sub');
+    } finally {
+      vi.stubEnv('RATE_LIMIT_TABLE', '');
+    }
+    expect(deletes).toContainEqual({ TableName: 'ratelimit', Key: { key: 'user:u1-sub' } });
+  });
+
   it('also removes uploads that were never attached to a trade (H10)', async () => {
     const result = await purgeUser('u1');
     const prefixes = s3.commandCalls(ListObjectsV2Command).filter((c) => c.args[0].input.Bucket === 'images-bucket').map((c) => c.args[0].input.Prefix);

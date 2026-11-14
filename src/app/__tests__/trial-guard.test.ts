@@ -180,15 +180,13 @@ describe.each(['expired', 'lapsedPro'])('read-only user (%s)', (plan) => {
     subscription = { ...PLANS[plan] };
   });
 
+  // A former Pro user is not told about a free trial.
+  const message = plan === 'lapsedPro' ? 'Your Pro plan has ended. Upgrade to Pro to add, edit or delete.' : 'Your free trial has ended. Upgrade to Pro to add, edit or delete.';
+
   it.each(GUARDED)('%s → 402 TRIAL_EXPIRED, handler not called', async (route) => {
     const res = await send(route);
     expect(res.status).toBe(402);
-    expect(await res.json()).toEqual({
-      success: false,
-      errorCode: 'TRIAL_EXPIRED',
-      message: 'Your free trial has ended. Upgrade to Pro to add, edit or delete.',
-      errorMessage: 'Your free trial has ended. Upgrade to Pro to add, edit or delete.',
-    });
+    expect(await res.json()).toEqual({ success: false, errorCode: 'TRIAL_EXPIRED', message, errorMessage: message });
     expect(reached).not.toHaveBeenCalled();
   });
 

@@ -90,6 +90,8 @@ describe('plan status and billing facts (BE-E5)', () => {
     expect(computeEntitlements({ status: 'active', planId: 'price_old' }, new Date(), ['price_new']).legacyPrice).toBe(true);
     expect(computeEntitlements({ status: 'active', planId: 'price_new' }, new Date(), ['price_new']).legacyPrice).toBe(false);
     expect(computeEntitlements({ status: 'active', planId: 'price_new' }).legacyPrice).toBeUndefined();
+    // No configured price ids (dev without prices, or SSM unreadable): no subscriber is called legacy.
+    expect(computeEntitlements({ status: 'active', planId: 'price_new' }, new Date(), []).legacyPrice).toBeUndefined();
   });
 
   it('an admin grant reports its end date and never a renewal', () => {

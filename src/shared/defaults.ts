@@ -1,7 +1,10 @@
+/**
+ * No `timeZone`: a user has one only once it is saved, so an absent zone means "never chosen" and the app saves the
+ * browser's zone on the first signed-in load (TradeFlow usePreferences.ts `useSyncServerPreferences`).
+ */
 export const DEFAULT_USER_PREFERENCES = {
   darkMode: false,
   currency: 'USD',
-  timeZone: 'UTC',
   notifications: {
     tradeReminders: true,
     weeklyReport: true,

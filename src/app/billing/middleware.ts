@@ -4,7 +4,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { errorBody } from '../../shared/apiError';
 import { ddb } from '../../shared/dynamo';
 import { wantsAdvancedSection } from '../../shared/statsSections';
-import type { AppEnv, QuotaFeature } from '../types';
+import type { AppEnv, Entitlements, QuotaFeature } from '../types';
 import { computeEntitlements, effectiveSubscription, isReadOnly, PLANS_VERSION } from './entitlements';
 import { createQuota } from './quota';
 import { planRequired, quotaExceeded } from './responses';
@@ -61,8 +61,11 @@ export function withEntitlements(): MiddlewareHandler<AppEnv> {
 }
 
 export const TRIAL_EXPIRED_MESSAGE = 'Your free trial has ended. Upgrade to Pro to add, edit or delete.';
+export const PRO_ENDED_MESSAGE = 'Your Pro plan has ended. Upgrade to Pro to add, edit or delete.';
 
-export const trialExpiredBody = () => errorBody('TRIAL_EXPIRED', TRIAL_EXPIRED_MESSAGE);
+/** The code is TRIAL_EXPIRED for both read-only states; only the sentence tells a lapsed Pro user (`proEndedAt`) apart. */
+export const trialExpiredBody = (entitlements?: Pick<Entitlements, 'proEndedAt'>) =>
+  errorBody('TRIAL_EXPIRED', entitlements?.proEndedAt ? PRO_ENDED_MESSAGE : TRIAL_EXPIRED_MESSAGE);
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -91,7 +94,7 @@ export function readOnlyGuard(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const method = c.req.method.toUpperCase();
     if (SAFE_METHODS.has(method) || !isReadOnly(c.get('entitlements')) || isExemptWrite(method, c.req.path)) return next();
-    return c.json(trialExpiredBody(), 402);
+    return c.json(trialExpiredBody(c.get('entitlements')), 402);
   };
 }
 

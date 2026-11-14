@@ -94,6 +94,14 @@ describe('legacyExtract (dev Function URL kept for the stale prod frontend)', ()
       expect(extract).not.toHaveBeenCalled();
     });
 
+    it('a lapsed Pro user is told Pro ended, not the free trial', async () => {
+      ddb.on(GetCommand).resolves({ Item: { userId: 'sub-dev-token', status: 'cancelled', stripeSubscriptionId: 'sub_1', endedAt: new Date(Date.now() - day).toISOString(), trialEnd: new Date(Date.now() - 60 * day).toISOString(), plansVersion: 2 } });
+      const res = await legacyExtract(event('dev-token'));
+      expect(res.statusCode).toBe(402);
+      expect(JSON.parse(res.body)).toMatchObject({ errorCode: 'TRIAL_EXPIRED', message: 'Your Pro plan has ended. Upgrade to Pro to add, edit or delete.' });
+      expect(extract).not.toHaveBeenCalled();
+    });
+
     it('a record from before the trial plans counts as a fresh trial (this function only reads), so the extract runs', async () => {
       ddb.on(GetCommand).resolves({ Item: { userId: 'sub-dev-token', status: 'trial', trialEnd: new Date(Date.now() - 30 * day).toISOString() } });
       ddb.on(UpdateCommand).resolves({ Attributes: { count: 1 } });

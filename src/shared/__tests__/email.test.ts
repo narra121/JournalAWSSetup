@@ -17,6 +17,13 @@ describe('weeklyReportMail (BE-079)', () => {
     expect(html).toContain('<a href="https://tradequt.com/app/insights">Read the full report</a>');
   });
 
+  it('the switch-off link opens the Notifications section, in both parts (/app/settings alone opens Profile)', () => {
+    const { text, html } = weeklyReportMail('u@example.com', 'Week.');
+    expect(text).toContain('https://tradequt.com/app/settings/notifications');
+    expect(html).toContain('<a href="https://tradequt.com/app/settings/notifications">Settings → Notifications</a>');
+    expect(text + html).not.toContain('/app/settings#');
+  });
+
   it('plain summaries are unchanged', () => {
     expect(weeklyReportMail('u@example.com', 'Great week: 12 trades, +3.2R.').html).toContain('<p>Great week: 12 trades, +3.2R.</p>');
   });

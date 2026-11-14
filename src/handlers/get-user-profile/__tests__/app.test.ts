@@ -92,7 +92,8 @@ describe('get-user-profile handler', () => {
     expect(body.data.user.preferences).toBeDefined();
     expect(body.data.user.preferences.darkMode).toBe(false);
     expect(body.data.user.preferences.currency).toBe('USD');
-    expect(body.data.user.preferences.timeZone).toBe('UTC');
+    // Unset until saved: the app reads the absence as "never chosen" and saves the browser's zone.
+    expect(body.data.user.preferences).not.toHaveProperty('timeZone');
     expect(body.data.user.preferences.notifications.tradeReminders).toBe(true);
     expect(body.data.user.preferences.notifications.weeklyReport).toBe(true);
     expect(body.data.user.preferences.notifications.goalAlerts).toBe(true);
