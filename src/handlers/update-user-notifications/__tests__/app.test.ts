@@ -92,11 +92,44 @@ describe('update-user-notifications handler', () => {
     expect(body.data.notifications.weeklyReport).toBe(false);
     expect(body.data.notifications.goalAlerts).toBe(false);
 
-    // First call creates the `notifications` map when it is missing, second sets the flags.
+    // One write when the `notifications` map exists (L3).
     const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls).toHaveLength(2);
-    expect(updateCalls[0].args[0].input.UpdateExpression).toContain('if_not_exists');
-    expect(updateCalls[1].args[0].input.UpdateExpression).toContain('#notifications.#tradeReminders');
+    expect(updateCalls).toHaveLength(1);
+    const input = updateCalls[0].args[0].input;
+    expect(input.UpdateExpression).toBe('SET #notifications.#tradeReminders = :tradeReminders, #notifications.#weeklyReport = :weeklyReport, #notifications.#goalAlerts = :goalAlerts, #updatedAt = :updatedAt');
+    expect(input.ConditionExpression).toBe('attribute_exists(#notifications)');
+    expect(input.ExpressionAttributeValues).toMatchObject({ ':tradeReminders': false, ':weeklyReport': false, ':goalAlerts': false });
+  });
+
+  it('a partial update names only the flags it carries', async () => {
+    await handler(makeEvent({ weeklyReport: false }), {} as any, () => {});
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toBe('SET #notifications.#weeklyReport = :weeklyReport, #updatedAt = :updatedAt');
+    expect(Object.keys(input.ExpressionAttributeNames!).sort()).toEqual(['#notifications', '#updatedAt', '#weeklyReport']);
+  });
+
+  it.each([{}, { unknown: true }, { tradeReminders: undefined }])('rejects the body %j: it carries no flag, so nothing is written (L3)', async (body) => {
+    const res = await handler(makeEvent(body), {} as any, () => {}) as any;
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errorCode).toBe('VALIDATION_ERROR');
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
+  it('a user without a notifications map (or preferences item) gets it created once, then the flags are set', async () => {
+    const missing = Object.assign(new Error('no map'), { name: 'ConditionalCheckFailedException' });
+    ddbMock.on(UpdateCommand)
+      .rejectsOnce(missing)
+      .resolvesOnce({})
+      .resolves({ Attributes: { userId: 'user-1', notifications: { tradeReminders: false } } });
+
+    const res = await handler(makeEvent({ tradeReminders: false }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.notifications).toEqual({ tradeReminders: false });
+    const calls = ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].UpdateExpression).toBe('SET #notifications = if_not_exists(#notifications, :empty)');
+    expect(calls[2].UpdateExpression).toContain('#notifications.#tradeReminders');
   });
 
   it.each([

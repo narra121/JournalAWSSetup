@@ -93,7 +93,25 @@ describe('GET /v1/journal/days', () => {
       { date: '2026-11-10', accountId: null, plan: 'a', review: '', updatedAt: 't1' },
       { date: '2026-11-11', accountId: 'acc-1', plan: 'b', review: 'c', updatedAt: 't2' },
     ]);
-    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues).toMatchObject({ ':u': 'u1', ':a': 'DAYNOTE#2026-11-01', ':b': 'DAYNOTE#2026-11-30#~' });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues).toMatchObject({ ':u': 'u1', ':a': 'DAYNOTE#2026-11-01', ':b': 'DAYNOTE#2026-11-30#\u{10ffff}' });
+  });
+
+  it('the upper bound sorts above every account scope, including ones past "~" and outside the BMP (L4)', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await app.request('/v1/journal/days?from=2026-11-01&to=2026-11-30', { headers });
+    const upper = String(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues![':b']);
+    for (const scope of ['ALL', 'acc-1', '~', 'ü', '￿', '\u{1f4c8}']) expect(Buffer.compare(Buffer.from(`DAYNOTE#2026-11-30#${scope}`), Buffer.from(upper))).toBeLessThanOrEqual(0);
+    expect(Buffer.compare(Buffer.from('DAYNOTE#2026-12-01#ALL'), Buffer.from(upper))).toBeGreaterThan(0);
+  });
+
+  it('rejects impossible calendar days in from and to, and accepts the open-ended default (L4)', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    for (const q of ['from=2026-02-30', 'to=2026-04-31', 'from=2026-13-01', 'to=2027-02-29', 'from=2026-11-30&to=2026-11-01']) {
+      expect((await app.request(`/v1/journal/days?${q}`, { headers })).status).toBe(400);
+    }
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(0);
+    expect((await app.request('/v1/journal/days?from=2028-02-29', { headers })).status).toBe(200);
+    expect((await app.request('/v1/journal/days', { headers })).status).toBe(200);
   });
 
   it('filters by account scope (ALL = the null scope) and validates the range', async () => {

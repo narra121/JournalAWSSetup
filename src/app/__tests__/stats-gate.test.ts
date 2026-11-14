@@ -24,29 +24,17 @@ beforeEach(() => {
 });
 
 describe('GET /v1/stats?sections=advanced (advanced_analytics gate)', () => {
-  it('Free plan → 402 PLAN_REQUIRED advanced_analytics; the default response is unchanged and needs no plan lookup', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'cancelled' } });
-    const blocked = await get('accountId=ALL&sections=advanced');
-    expect(blocked.status).toBe(402);
-    expect(await blocked.json()).toMatchObject({ errorCode: 'PLAN_REQUIRED', error: { feature: 'advanced_analytics', plan: 'free' } });
-    expect(reached).not.toHaveBeenCalled();
-    ddb.resetHistory();
-    expect((await get('accountId=ALL')).status).toBe(200);
-    expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
-  });
+  const readOnly = { userId: 'u1', status: 'cancelled', trialEnd: new Date(Date.now() - 86400000).toISOString(), plansVersion: 2 };
 
-  it.each([
-    ['repeated key, advanced last', 'accountId=ALL&sections=x&sections=advanced'],
-    ['repeated key, advanced first', 'accountId=ALL&sections=advanced&sections=x'],
-    ['comma list', 'accountId=ALL&sections=x,advanced'],
-  ])('Free plan cannot get advanced by editing the query: %s (BE-002)', async (_name, qs) => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'cancelled' } });
-    expect((await get(qs)).status).toBe(402);
-    expect(reached).not.toHaveBeenCalled();
+  it('a read-only user (trial over) still reads the advanced section: every read works after the trial', async () => {
+    ddb.on(GetCommand).resolves({ Item: readOnly });
+    expect((await get('accountId=ALL&sections=advanced')).status).toBe(200);
+    expect((await get('accountId=ALL')).status).toBe(200);
+    expect(reached).toHaveBeenCalledTimes(2);
   });
 
   it('the gate decides on the same string the handler receives', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active' } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     await get('accountId=ALL&sections=x&sections=advanced');
     const received = reached.mock.calls[0][0].queryStringParameters.sections;
     expect(received).toBe('x,advanced');
@@ -54,7 +42,7 @@ describe('GET /v1/stats?sections=advanced (advanced_analytics gate)', () => {
   });
 
   it('trial and Pro users get the section', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active' } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     expect((await get('accountId=ALL&sections=advanced')).status).toBe(200);
     expect(reached).toHaveBeenCalledTimes(1);
   });

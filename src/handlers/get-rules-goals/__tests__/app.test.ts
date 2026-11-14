@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
@@ -9,7 +9,7 @@ vi.stubEnv('USER_PREFERENCES_TABLE', 'test-user-preferences');
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
-const { handler, getPreviousPeriodKey, getPeriodType, isLegacyRecord } = await import('../app.ts');
+const { handler, getPreviousPeriodKey, getPeriodType, isLegacyRecord, periodHoldsDay } = await import('../app.ts');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -75,8 +75,17 @@ const prevPeriodGoals = [
 
 // ─── Tests ──────────────────────────────────────────────────────
 
+// A Wednesday inside the week of 2026-04-07 and the month 2026-04: the periods the clone-on-write tests call current.
+const NOW = '2026-04-08T10:00:00Z';
+
 beforeEach(() => {
   ddbMock.reset();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('get-rules-goals handler', () => {
@@ -237,7 +246,9 @@ describe('get-rules-goals handler', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.rules).toHaveLength(2);
-    expect(body.data.goals).toHaveLength(2);
+    // A weekly period takes the weekly legacy goal only, not the monthly one (M2).
+    expect(body.data.goals.map((g: any) => g.goalId)).toEqual(['week#2026-04-07#g2']);
+    expect(body.data.goals.every((g: any) => g.period === 'weekly')).toBe(true);
     expect(body.data.meta.cloned).toBe(true);
     // Should have new periodKey in the IDs
     for (const rule of body.data.rules) {
@@ -386,6 +397,7 @@ describe('get-rules-goals handler', () => {
 
     ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
 
+    vi.setSystemTime(new Date('2026-04-15T10:00:00Z'));
     const event = makeEvent({
       queryStringParameters: { periodKey: 'week#2026-04-14', currentPeriod: 'true' },
     } as any);
@@ -625,6 +637,112 @@ describe('get-rules-goals handler', () => {
     // Should clone from previous period (carry-forward defaults to true)
     expect(body.data.rules).toHaveLength(2);
     expect(body.data.meta.cloned).toBe(true);
+  });
+});
+
+// ─── Legacy cloning by period, and the currentPeriod claim (M2) ─────
+
+describe('legacy goals are cloned by period kind (M2)', () => {
+  const legacy = [
+    { userId: 'user-1', goalId: 'lw', goalType: 'profit', target: 500, period: 'weekly', accountId: 'acc-1' },
+    { userId: 'user-1', goalId: 'lm', goalType: 'profit', target: 2000, period: 'monthly', accountId: 'acc-1' },
+    { userId: 'user-1', goalId: 'lw2', goalType: 'winRate', target: 65, period: 'weekly', accountId: 'acc-1' },
+    { userId: 'user-1', goalId: 'lnone', goalType: 'maxTrades', target: 8, accountId: 'acc-1' },
+  ];
+  const run = async (periodKey: string) => {
+    ddbMock.on(QueryCommand)
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: [] }) // the period
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: [] }) // the previous period
+      .resolvesOnce({ Items: [] }).resolvesOnce({ Items: legacy }); // legacy rules, legacy goals
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', carryForwardGoalsRules: true } });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    const res = (await handler(makeEvent({ queryStringParameters: { periodKey, currentPeriod: 'true' } } as any), {} as any, () => {})) as any;
+    return JSON.parse(res.body).data.goals as any[];
+  };
+
+  it('a weekly period gets the weekly legacy goals only', async () => {
+    expect((await run('week#2026-04-07')).map((g) => g.goalId).sort()).toEqual(['week#2026-04-07#lw', 'week#2026-04-07#lw2']);
+  });
+
+  it('a monthly period gets the monthly legacy goals only', async () => {
+    expect((await run('month#2026-04')).map((g) => g.goalId)).toEqual(['month#2026-04#lm']);
+  });
+
+  it('what is written to the goals table is the same filtered set', async () => {
+    await run('week#2026-04-07');
+    const written = ddbMock.commandCalls(BatchWriteCommand).flatMap((c) => Object.entries(c.args[0].input.RequestItems!))
+      .filter(([table]) => table === 'test-goals').flatMap(([, reqs]) => (reqs as any[]).map((r) => r.PutRequest.Item.goalId));
+    expect(written.sort()).toEqual(['week#2026-04-07#lw', 'week#2026-04-07#lw2']);
+  });
+});
+
+describe('currentPeriod=true is checked by the server (M2)', () => {
+  const nothingStored = () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', carryForwardGoalsRules: false } });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+  };
+  const get = async (periodKey: string, currentPeriod = 'true') => {
+    const res = (await handler(makeEvent({ queryStringParameters: { periodKey, currentPeriod } } as any), {} as any, () => {})) as any;
+    return JSON.parse(res.body).data;
+  };
+
+  it.each(['week#2026-03-31', 'week#2026-04-14', 'week#2025-04-07', 'month#2026-03', 'month#2026-05'])(
+    'a GET claiming %s is current writes nothing and returns it empty, like any other period that is not current',
+    async (periodKey) => {
+      nothingStored();
+      const data = await get(periodKey);
+      expect(data.rules).toEqual([]);
+      expect(data.goals).toEqual([]);
+      expect(data.meta.cloned).toBeUndefined();
+      expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    },
+  );
+
+  it.each(['week#2026-04-07', 'month#2026-04'])('the period %s that holds today is written when claimed', async (periodKey) => {
+    nothingStored();
+    const data = await get(periodKey);
+    expect(data.meta.cloned).toBe(true);
+    expect(ddbMock.commandCalls(BatchWriteCommand).length).toBeGreaterThan(0);
+  });
+
+  it('a period that holds today is still empty and unwritten when the client does not claim it', async () => {
+    nothingStored();
+    const data = await get('week#2026-04-07', 'false');
+    expect(data.goals).toEqual([]);
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+  });
+
+  it('today is the day in the time zone of the user, not in UTC', async () => {
+    // 2026-04-13 20:30Z is already Tuesday 2026-04-14 in Kolkata: the new week has started for this user.
+    vi.setSystemTime(new Date('2026-04-13T20:30:00Z'));
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', carryForwardGoalsRules: false, timeZone: 'Asia/Kolkata' } });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    expect((await get('week#2026-04-14')).meta.cloned).toBe(true);
+    expect((await get('week#2026-04-07')).meta.cloned).toBeUndefined();
+  });
+
+  it('records that already exist are returned without the check', async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', goalId: 'week#2026-03-31#g', period: 'weekly', goalType: 'profit', target: 1 }] });
+    const data = await get('week#2026-03-31');
+    expect(data.goals).toHaveLength(1);
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+  });
+});
+
+describe('periodHoldsDay', () => {
+  it('a week holds its 7 days from the first one', () => {
+    expect(periodHoldsDay('week#2026-04-07', '2026-04-07')).toBe(true);
+    expect(periodHoldsDay('week#2026-04-07', '2026-04-13')).toBe(true);
+    expect(periodHoldsDay('week#2026-04-07', '2026-04-14')).toBe(false);
+    expect(periodHoldsDay('week#2026-04-07', '2026-04-06')).toBe(false);
+  });
+
+  it('a month holds its own days only', () => {
+    expect(periodHoldsDay('month#2026-04', '2026-04-30')).toBe(true);
+    expect(periodHoldsDay('month#2026-04', '2026-05-01')).toBe(false);
+    expect(periodHoldsDay('month#2026-04', '2025-04-15')).toBe(false);
   });
 });
 

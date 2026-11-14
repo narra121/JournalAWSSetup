@@ -1,6 +1,10 @@
-import type { Computed, Finding, Metric } from './metrics';
+import { fmt, type Metric } from './metrics';
+import { money } from './format';
+import type { Computed } from './review';
+import type { NoteTheme, Review } from './types';
 
 export type SectionKind = 'strength' | 'leak' | 'pattern' | 'action';
+/** The section list every insight carries; old insights have only this, new ones also have `review`. */
 export interface InsightSection {
   kind: SectionKind;
   title: string;
@@ -9,93 +13,123 @@ export interface InsightSection {
   tradeIds?: string[];
 }
 
-const KINDS: SectionKind[] = ['strength', 'leak', 'pattern', 'action'];
 export const MAX_SECTIONS = 8;
-export const MIN_SECTIONS = 3;
+const SECTION_TRADES = 5;
+const MAX_THEMES = 3;
+const MAX_QUOTES = 3;
+
 const clamp = (s: unknown, n: number) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, n) : '');
 
-function actionFor(f: Finding): { title: string; body: string } {
-  const r = f.metricRef;
-  if (r === 'noStopNet') return { title: 'Set a stop before every entry', body: 'Decide and record a stop loss before entering each trade, so risk per trade is known and the R-multiple can be measured.' };
-  if (r === 'revengeNet') return { title: 'Pause after a loss', body: 'After a losing trade, wait at least 15 minutes and re-check your setup before opening the next trade.' };
-  if (r === 'overtradingNet') return { title: 'Cap trades per day', body: 'Set a maximum number of trades per day and stop for the day when you reach it or after your daily loss limit.' };
-  if (r === 'fees') return { title: 'Reduce small, frequent trades', body: 'Fees take a large share of profit. Fewer, higher-quality trades lower the cost per trade.' };
-  if (r === 'maxLossStreak') return { title: 'Step back after a losing streak', body: 'After three losses in a row, stop trading for the session and review those trades before the next one.' };
-  if (r.startsWith('mistake.')) return { title: 'Add a pre-trade check', body: `Add a short checklist item before entry that prevents this mistake: ${f.title.replace(/^Mistake: /, '')}.` };
-  if (r.startsWith('rule.')) return { title: 'Review the broken rule before trading', body: `Read this rule before each session: ${f.title.replace(/^Broken rule: /, '')}.` };
-  return { title: 'Review these trades before the next session', body: 'Go through the listed trades, note what they have in common, and reduce size in this area until the pattern is fixed.' };
+/** Numbers as written in a text ("₹26,382.89" → 26382.89, "8.4R" → 8.4); signs are ignored. */
+export function numbersIn(text: string): { value: number; decimals: number }[] {
+  return [...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => {
+    const raw = m[0].replace(/,/g, '');
+    return { value: Number(raw), decimals: raw.includes('.') ? raw.split('.')[1].length : 0 };
+  });
+}
+
+const SKIP_KEYS = new Set(['key', 'id', 'tradeId', 'tradeIds', 'notes']);
+/** Every number in the payload sent to the model (ids, keys and the trader's notes left out): the only numbers a text may show. */
+export function allowedNumbers(payload: unknown): number[] {
+  const out = new Set<number>();
+  const walk = (v: unknown, key?: string) => {
+    if (key && SKIP_KEYS.has(key)) return;
+    if (typeof v === 'number' && Number.isFinite(v)) out.add(Math.abs(v));
+    else if (typeof v === 'string') for (const n of numbersIn(v)) out.add(n.value);
+    else if (Array.isArray(v)) v.forEach((x) => walk(x));
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, k);
+  };
+  walk(payload);
+  return [...out];
+}
+
+/** True when every number in `text` is an allowed number, a share of one written as a percentage, or one of them rounded. */
+export function onlyKnownNumbers(text: string, allowed: number[]): boolean {
+  return numbersIn(text).every(({ value, decimals }) => {
+    const f = 10 ** decimals;
+    return allowed.some((a) => [a, a * 100].some((v) => Math.abs(Math.round(v * f) / f - value) < 1e-9));
+  });
+}
+
+const PERSON = /\b(great|good|nice|excellent|fantastic) (job|work)\b|\bwell done\b|\bproud\b|\bimpressive\b|\bcongratulations\b|\byou(?: are|'re) (?:a |an |so |very |too )?(?:great|good|excellent|disciplined|undisciplined|bad|poor|terrible|impulsive|reckless|lazy|careless|emotional|greedy|natural|talented|smart)\b/i;
+const ADVICE = /\b(buy|sell)(s|ing)?\b|\bhold (it|on|the position)\b|\bprice target\b|\btarget price\b|\b(will|going to) (rise|fall|go up|go down|rally|crash|recover)\b/i;
+
+/** The model's text when it is usable, else the code's: no unknown number, nothing about the person, no market advice. */
+export function wording(model: unknown, fallback: string, max: number, allowed: number[]): string {
+  const t = clamp(model, max);
+  if (!t || !onlyKnownNumbers(t, allowed) || PERSON.test(t)) return fallback;
+  if (ADVICE.test(t) && !ADVICE.test(fallback)) return fallback;
+  return t;
+}
+
+const norm = (s: string) => s.replace(/[\s"“”'‘’]+/g, ' ').trim().toLowerCase();
+
+function themesOf(raw: unknown, c: Computed, allowed: number[]): NoteTheme[] {
+  const notes = new Map((c.notes ?? []).map((n) => [n.id, norm([n.note ?? '', ...n.lessons].join(' \u0000 '))]));
+  const out: NoteTheme[] = [];
+  for (const t of Array.isArray(raw) ? raw : []) {
+    if (out.length === MAX_THEMES) break;
+    const o = (t && typeof t === 'object' ? t : {}) as Record<string, unknown>;
+    const theme = wording(o.theme, '', 160, allowed);
+    const side = o.side === 'winning' || o.side === 'losing' || o.side === 'both' ? o.side : null;
+    if (!theme || !side) continue;
+    const quotes: NoteTheme['quotes'] = [];
+    for (const q of Array.isArray(o.quotes) ? o.quotes : []) {
+      const qo = (q && typeof q === 'object' ? q : {}) as Record<string, unknown>;
+      const tradeId = typeof qo.tradeId === 'string' ? qo.tradeId : '';
+      const quote = clamp(qo.quote, 200).replace(/^["“']+|["”']+$/g, '');
+      const source = notes.get(tradeId);
+      if (!source || norm(quote).length < 3 || !source.includes(norm(quote)) || quotes.some((x) => x.tradeId === tradeId)) continue;
+      quotes.push({ tradeId, quote });
+      if (quotes.length === MAX_QUOTES) break;
+    }
+    if (quotes.length) out.push({ theme, side, quotes });
+  }
+  return out;
+}
+
+const byKey = (raw: unknown): Map<string, unknown> =>
+  new Map((Array.isArray(raw) ? raw : []).filter((x) => x && typeof x === 'object').map((x) => [String((x as Record<string, unknown>).key), (x as Record<string, unknown>).text]));
+
+/** Sections for screens and the chat that read only `sections`, made from the review. */
+export function sectionsOf(r: Review): InsightSection[] {
+  const cur = r.currency;
+  const out: InsightSection[] = [];
+  for (const f of [r.theOne, ...r.more]) {
+    if (!f) continue;
+    out.push({ kind: 'leak', title: f.title.slice(0, 80), body: f.text, metric: { label: 'Cost', value: f.cost, unit: 'currency', display: fmt(f.cost, 'currency') }, ...(f.tradeIds.length ? { tradeIds: f.tradeIds.slice(0, SECTION_TRADES) } : {}) });
+  }
+  if (r.theOne) {
+    const rp = r.theOne.replay;
+    const replay = rp && rp.replayNet !== rp.actualNet ? ` Replayed with this rule, the period ends at ${money(rp.replayNet, cur)} instead of ${money(rp.actualNet, cur)}.` : '';
+    out.push({ kind: 'action', title: 'Rule to try', body: `${r.theOne.ruleText}${replay}` });
+  }
+  if (r.keepDoing) out.push({ kind: 'strength', title: r.keepDoing.title.slice(0, 80), body: r.keepDoing.text });
+  for (const w of r.watch) out.push({ kind: 'pattern', title: w.title.slice(0, 80), body: w.text, ...(w.tradeIds.length ? { tradeIds: w.tradeIds.slice(0, SECTION_TRADES) } : {}) });
+  return out.slice(0, MAX_SECTIONS);
 }
 
 /**
- * Turns the model's JSON into an Insight body. Anything the model cannot be trusted with is replaced by our data:
- * metric values come from `metrics`, trade ids are limited to the user's own, and a missing strength/leak/action
- * is filled from the deterministic candidates.
+ * Turns the model's JSON into the stored report. Every number and trade id comes from `c`; the model supplies wording
+ * only, and any text that fails `wording` is replaced by the code's sentence. Notes themes keep only quotes found in
+ * the trader's notes of the trades sent.
  */
-export function validateInsight(raw: unknown, c: Computed): { summary: string; sections: InsightSection[] } {
-  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-  const byFinding = new Map(c.candidates.map((f) => [f.id, f]));
-  const allCited = new Set(c.candidates.flatMap((f) => f.tradeIds));
-  const sections: InsightSection[] = [];
+export function validateInsight(raw: unknown, c: Computed, allowed: number[]): { summary: string; sections: InsightSection[]; review: Review } {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const review: Review = structuredClone(c.review);
+  const w = (model: unknown, fallback: string, max: number) => wording(model, fallback, max, allowed);
 
-  for (const s of Array.isArray(obj.sections) ? obj.sections : []) {
-    if (!s || typeof s !== 'object') continue;
-    const o = s as Record<string, unknown>;
-    if (!KINDS.includes(o.kind as SectionKind)) continue;
-    const title = clamp(o.title, 80);
-    const body = clamp(o.body, 600);
-    if (!title || !body) continue;
-    const finding = typeof o.findingId === 'string' ? byFinding.get(o.findingId) : undefined;
-    const ref = typeof o.metricRef === 'string' && c.metrics[o.metricRef] ? o.metricRef : finding?.metricRef;
-    const ids = finding ? finding.tradeIds : (Array.isArray(o.tradeIds) ? o.tradeIds : []).filter((t): t is string => typeof t === 'string' && c.tradeIds.has(t) && allCited.has(t)).slice(0, 5);
-    sections.push({ kind: o.kind as SectionKind, title, body, ...(ref ? { metric: c.metrics[ref] } : {}), ...(ids.length ? { tradeIds: ids } : {}) });
-    if (sections.length === MAX_SECTIONS) break;
-  }
-
-  const has = (k: SectionKind) => sections.some((s) => s.kind === k);
-  const fromFinding = (f: Finding, kind: SectionKind): InsightSection => ({ kind, title: f.title.slice(0, 80), body: f.detail.slice(0, 600), metric: c.metrics[f.metricRef], ...(f.tradeIds.length ? { tradeIds: f.tradeIds } : {}) });
-
-  if (!has('strength')) {
-    const f = c.candidates.find((x) => x.kind === 'strength');
-    const m = c.metrics.largestWin;
-    sections.push(
-      f
-        ? fromFinding(f, 'strength')
-        : m?.value != null
-          ? { kind: 'strength', title: 'Your best trade', body: `Your largest win in this period was ${m.display}. Review what you did right on it and repeat the process.`, metric: m }
-          : { kind: 'strength', title: 'You are keeping a journal', body: `${c.metrics.trades.display} trades are recorded for this period, which gives you data to review.`, metric: c.metrics.trades },
-    );
-  }
-  if (!has('leak')) {
-    const f = c.candidates.find((x) => x.kind === 'leak');
-    const m = c.metrics.largestLoss;
-    sections.push(
-      f
-        ? fromFinding(f, 'leak')
-        : m?.value != null
-          ? { kind: 'leak', title: 'Your largest loss', body: `Your largest loss in this period was ${m.display}. Check whether it followed your plan.`, metric: m }
-          : { kind: 'leak', title: 'No losing trades', body: 'There were no losing trades in this period; watch for overconfidence and keep sizing consistent.', metric: c.metrics.losses },
-    );
-  }
-  if (!has('action')) {
-    const f = c.candidates.find((x) => x.kind !== 'strength') ?? c.candidates[0];
-    const a = f ? actionFor(f) : { title: 'Review your worst trades', body: 'Before the next session, review your three worst trades from this period and note what you would change.' };
-    sections.push({ kind: 'action', ...a, ...(f ? { metric: c.metrics[f.metricRef] } : {}), ...(f?.tradeIds.length ? { tradeIds: f.tradeIds } : {}) });
-  }
-  while (sections.length < MIN_SECTIONS) {
-    const used = new Set(sections.map((s) => s.title));
-    const f = c.candidates.find((x) => !used.has(x.title.slice(0, 80)));
-    if (!f) break;
-    sections.push(fromFinding(f, f.kind));
-  }
+  review.verdict.text = w(obj.verdict, review.verdict.headline, 240);
+  const findings = byKey(obj.findings);
+  for (const f of [review.theOne, ...review.more]) if (f) f.text = w(findings.get(f.key), f.text, 500);
+  const watch = byKey(obj.watch);
+  for (const x of review.watch) x.text = w(watch.get(x.key), x.text, 400);
+  const different = byKey(obj.different);
+  for (const x of review.different) x.text = w(different.get(x.key), x.text, 300);
+  if (review.keepDoing) review.keepDoing.text = w(obj.keepDoing, review.keepDoing.text, 400);
+  if (review.fromNotes) review.fromNotes = themesOf(obj.fromNotes, c, allowed);
 
   const m = c.metrics;
-  const summary = clamp(obj.summary, 400) || `${m.trades.display} trades, net ${m.netPnl.display}, win rate ${m.winRate.display}.`;
-  // Over the cap, drop from the end the sections that are not the only strength, leak or action (so the fill-ins above survive).
-  const needed = (s: InsightSection, i: number) => (s.kind === 'strength' || s.kind === 'leak' || s.kind === 'action') && !sections.some((o, j) => j !== i && o.kind === s.kind);
-  while (sections.length > MAX_SECTIONS) {
-    let drop = sections.length - 1;
-    while (drop > 0 && needed(sections[drop], drop)) drop--;
-    sections.splice(drop, 1);
-  }
-  return { summary, sections };
+  const summary = w(obj.summary, `${review.verdict.headline} ${m.trades.display} trades, net ${money(m.netPnl.value ?? 0, review.currency)}.`, 400);
+  return { summary, sections: sectionsOf(review), review };
 }

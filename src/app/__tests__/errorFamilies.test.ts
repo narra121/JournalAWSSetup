@@ -53,7 +53,7 @@ async function expectContract(res: Response, status: number) {
 beforeEach(() => {
   ddbMock.reset();
   ddbMock.on(GetCommand, { TableName: 'test-trades' }).resolves({ Item: { userId: 'user-1', tradeId: 'trade-1', symbol: 'AAPL', side: 'BUY', quantity: 1, entryPrice: 1, images: [] } });
-  ddbMock.on(GetCommand, { TableName: 'test-subs' }).resolves({});
+  ddbMock.on(GetCommand, { TableName: 'test-subs' }).resolves({ Item: { userId: 'user-1', status: 'trial', trialEnd: new Date(Date.now() + 86400000).toISOString(), plansVersion: 2 } });
   ddbMock.on(QueryCommand).resolves({ Items: [] });
   ddbMock.on(UpdateCommand).resolves({ Attributes: { count: 1 } });
 });
@@ -130,15 +130,15 @@ describe('every family answers with the one error contract', () => {
     ddbMock.on(UpdateCommand).rejects(new ConditionalCheckFailedException({ message: 'The conditional request failed', $metadata: {} }));
     const b = await expectContract(await send('POST', '/v1/trades/extract', { textContent: 'AAPL buy' }), 402);
     expect(b.errorCode).toBe('QUOTA_EXCEEDED');
-    expect(b.error).toMatchObject({ code: 'QUOTA_EXCEEDED', feature: 'ai_extract', plan: 'free' });
+    expect(b.error).toMatchObject({ code: 'QUOTA_EXCEEDED', feature: 'ai_extract', plan: 'trial' });
     expect(b.message).toMatch(/^You've used all \d+ AI trade extractions this month\. Your limit resets on \d{4}-\d{2}-\d{2}\.$/);
   });
 
-  it('billing: a Pro-only feature is a 402 PLAN_REQUIRED', async () => {
-    const b = await expectContract(await send('GET', '/v1/stats?sections=advanced'), 402);
-    expect(b.errorCode).toBe('PLAN_REQUIRED');
-    expect(b.error).toMatchObject({ feature: 'advanced_analytics', requiredPlan: 'pro' });
-    expect(b.message).toBe('Advanced analytics is part of the Pro plan.');
+  it('billing: a write after the trial is a 402 TRIAL_EXPIRED with a readable sentence', async () => {
+    ddbMock.on(GetCommand, { TableName: 'test-subs' }).resolves({ Item: { userId: 'user-1', status: 'trial', trialEnd: new Date(Date.now() - 86400000).toISOString(), plansVersion: 2 } });
+    const b = await expectContract(await send('POST', '/v1/trades', { symbol: 'AAPL' }), 402);
+    expect(b.errorCode).toBe('TRIAL_EXPIRED');
+    expect(b.message).toBe('Your free trial has ended. Upgrade to Pro to add, edit or delete.');
   });
 
   it('features: chat validation and not-found use the same shape', async () => {

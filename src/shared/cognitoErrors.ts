@@ -1,15 +1,16 @@
 import { ErrorCodes, errorResponse } from './validation';
 import { PASSWORD_MIN } from './passwordValidation';
 
-export type AuthCall = 'signup' | 'confirm-signup' | 'forgot-password' | 'confirm-forgot-password' | 'refresh';
+export type AuthCall = 'login' | 'signup' | 'confirm-signup' | 'forgot-password' | 'confirm-forgot-password' | 'refresh';
 
 const CODE_INVALID = 'Invalid verification code. Check the email and enter it again.';
+const BAD_LOGIN = 'Invalid email or password';
 
 /**
- * A Cognito failure as an API error. Cognito's own wording is never sent: it is matched on `name`, logged by the
+ * A Cognito failure as an API error. Cognito's own wording is never sent: it is matched on `name` (and the `USER_EXISTS` marker), logged by the
  * caller, and answered with a sentence for the user; an unknown failure keeps the 400 these handlers always returned.
  */
-export function cognitoFailure(e: { name?: string } | undefined, call: AuthCall) {
+export function cognitoFailure(e: { name?: string; message?: string } | undefined, call: AuthCall) {
   if (e instanceof SyntaxError) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'The request body must be valid JSON.');
   switch (e?.name) {
     case 'TooManyRequestsException':
@@ -20,11 +21,20 @@ export function cognitoFailure(e: { name?: string } | undefined, call: AuthCall)
       return errorResponse(400, ErrorCodes.CODE_INVALID, CODE_INVALID);
     case 'ExpiredCodeException':
       return errorResponse(400, ErrorCodes.CODE_EXPIRED, 'That verification code has expired. Request a code again.');
+    case 'UserNotConfirmedException':
+      if (call !== 'login') break;
+      return errorResponse(403, ErrorCodes.EMAIL_NOT_VERIFIED, 'Please verify your email before logging in. Check your inbox for the verification code.');
+    case 'UserLambdaValidationException':
+      // The Pre sign-up trigger's refusal (auth-pre-signup); its other failures stay generic.
+      if (e?.message?.includes('USER_EXISTS')) return errorResponse(400, ErrorCodes.USER_EXISTS, 'An account with this email already exists. Please login instead.');
+      break;
     case 'UserNotFoundException':
       if (call === 'refresh') break;
+      if (call === 'login') return errorResponse(400, ErrorCodes.UNAUTHORIZED, BAD_LOGIN);
       return errorResponse(400, ErrorCodes.CODE_INVALID, CODE_INVALID);
     case 'NotAuthorizedException':
       if (call === 'refresh') break;
+      if (call === 'login') return errorResponse(400, ErrorCodes.UNAUTHORIZED, BAD_LOGIN);
       if (call === 'confirm-signup') return errorResponse(400, ErrorCodes.ALREADY_CONFIRMED, 'This email is already confirmed. You can log in.');
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, "We couldn't reset that password. Request a new code and try again.");
     case 'InvalidPasswordException':

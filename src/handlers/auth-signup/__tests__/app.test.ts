@@ -281,6 +281,57 @@ describe('auth-signup handler', () => {
     expect([200, 400]).toContain(res.statusCode);
   });
 
+  it('escapes backslash and quote in the ListUsers filter', async () => {
+    cognitoMock.on(SignUpCommand).resolves({ UserSub: 'u' });
+
+    await handler(makeEvent({ email: 'a\\"b@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {});
+
+    expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input.Filter).toBe('email = "a\\\\\\"b@example.com"');
+  });
+
+  it('answers the Pre sign-up refusal USER_EXISTS as an existing-account error', async () => {
+    const error = new Error('PreSignUp failed with error USER_EXISTS.');
+    (error as any).name = 'UserLambdaValidationException';
+    cognitoMock.on(SignUpCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errorCode).toBe('USER_EXISTS');
+  });
+
+  it('parses the request body once, including on the resend path', async () => {
+    const error = new Error('User already exists');
+    (error as any).name = 'UsernameExistsException';
+    cognitoMock.on(SignUpCommand).rejects(error);
+    cognitoMock.on(ResendConfirmationCodeCommand).resolves({});
+    const event = makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' });
+    const parse = vi.spyOn(JSON, 'parse');
+
+    const res = await handler(event, {} as any, () => {}) as any;
+
+    expect(JSON.parse(res.body).data.resent).toBe(true);
+    expect(parse.mock.calls.filter(([text]) => text === event.body)).toHaveLength(1);
+    parse.mockRestore();
+  });
+
+  it('never logs the email address', async () => {
+    const logs = [vi.spyOn(console, 'log'), vi.spyOn(console, 'info'), vi.spyOn(console, 'warn'), vi.spyOn(console, 'error')];
+    logs.forEach((spy) => spy.mockImplementation(() => {}));
+    cognitoMock.on(SignUpCommand).resolves({ UserSub: 'u' });
+    const error = new Error('User already exists');
+    (error as any).name = 'UsernameExistsException';
+
+    await handler(makeEvent({ email: 'private@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {});
+    cognitoMock.on(SignUpCommand).rejects(error);
+    cognitoMock.on(ResendConfirmationCodeCommand).resolves({});
+    await handler(makeEvent({ email: 'private@example.com', password: 'Password1!', name: 'Test' }), {} as any, () => {});
+
+    const logged = JSON.stringify(logs.flatMap((spy) => spy.mock.calls));
+    logs.forEach((spy) => spy.mockRestore());
+    expect(logged).not.toContain('private@example.com');
+  });
+
   it('returns 400 when body is not valid JSON', async () => {
     const event = makeEvent({ email: 'test@example.com', password: 'Password1!', name: 'Test' });
     event.body = '{not-valid-json';

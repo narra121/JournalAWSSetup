@@ -31,7 +31,7 @@ beforeEach(() => {
   portalCreate.mockReset().mockResolvedValue({ url: 'https://billing.stripe.com/p/session/x' });
   setStripeClient({ checkout: { sessions: { create: sessionsCreate } }, billingPortal: { sessions: { create: portalCreate } } } as any);
   setTokenVerifier({ verify: async () => ({ sub: 'u1', email: 'u@x.y' }) });
-  ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'trial', trialEnd: new Date(Date.now() + 86400000).toISOString() } });
+  ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'trial', trialEnd: new Date(Date.now() + 86400000).toISOString(), plansVersion: 2 } });
   ddb.on(UpdateCommand).resolves({});
   ssm.on(GetParameterCommand).callsFake(({ Name }) => {
     if (Name.includes('/price/pro_')) return { Parameter: { Value: `price_${Name.split('/').pop()}` } };
@@ -68,7 +68,7 @@ describe('POST /v1/billing/checkout', () => {
   });
 
   it('keeps the currency of an existing Stripe customer and reuses the customer', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'cancelled', stripeCustomerId: 'cus_1', currency: 'INR' } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'cancelled', stripeCustomerId: 'cus_1', currency: 'INR', plansVersion: 2 } });
     await post('/v1/billing/checkout', { interval: 'year' });
     const args = sessionsCreate.mock.calls[0][0];
     expect(args.line_items[0].price).toBe('price_pro_year_inr');
@@ -90,7 +90,7 @@ describe('POST /v1/billing/checkout', () => {
   it('rejects a bad interval with 400 and an active subscriber with 409 ALREADY_SUBSCRIBED', async () => {
     expect((await post('/v1/billing/checkout', { interval: 'week' })).status).toBe(400);
     expect((await post('/v1/billing/checkout')).status).toBe(400);
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active' } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     const res = await post('/v1/billing/checkout', { interval: 'month' });
     expect(res.status).toBe(409);
     expect((await res.json()).errorCode).toBe('ALREADY_SUBSCRIBED');
@@ -108,6 +108,7 @@ describe('POST /v1/billing/checkout', () => {
       stripeCustomerId: 'cus_1',
       stripeSubscriptionId: 'sub_1',
       currentEnd,
+      plansVersion: 2,
     });
 
     it('is sent to the billing portal and no second Checkout session is created', async () => {
@@ -142,7 +143,7 @@ describe('POST /v1/billing/portal', () => {
   });
 
   it('returns a portal url for a customer, with our configuration and /app/billing return url', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', stripeCustomerId: 'cus_1' } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', stripeCustomerId: 'cus_1', plansVersion: 2 } });
     const res = await post('/v1/billing/portal');
     expect(res.status).toBe(200);
     expect((await res.json()).data.url).toContain('billing.stripe.com');

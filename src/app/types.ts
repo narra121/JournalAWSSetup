@@ -8,6 +8,7 @@ export type GatedFeature = 'advanced_analytics' | 'tax_report' | 'unlimited_acco
 export type PlanStatus = 'free' | 'trialing' | 'active' | 'past_due' | 'canceling';
 
 export interface Entitlements {
+  /** `free` = no active plan (trial ended or Pro lapsed): read-only, see billing/entitlements.ts `isReadOnly`. */
   plan: 'free' | 'trial' | 'pro';
   status: PlanStatus;
   trialEndsAt?: string;
@@ -18,6 +19,8 @@ export interface Entitlements {
   renewsAt?: string;
   endsAt?: string;
   trialEndedAt?: string;
+  /** Read-only after a Pro subscription or admin grant: when it ended. */
+  proEndedAt?: string;
   /** True when the subscription is on a price that is no longer one of the current Pro prices. */
   legacyPrice?: boolean;
   limits: Record<QuotaFeature, number | null>;

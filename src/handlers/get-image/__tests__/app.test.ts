@@ -428,4 +428,16 @@ describe('get-image handler', () => {
     expect(res.statusCode).toBe(404);
     expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
   });
+
+  it('serves an unsaved upload (images/upload/<userId>/<file>) to its owner only', async () => {
+    s3Mock.on(GetObjectCommand).resolves({ Body: createReadableStream('shot') as any, ContentType: 'image/png' });
+    const own = (await handler(makeEvent('upload/acc1/a.png'), {} as any, () => {})) as any;
+    expect(own.statusCode).toBe(200);
+    expect(s3Mock.commandCalls(GetObjectCommand)[0].args[0].input.Key).toBe('images/upload/acc1/a.png');
+
+    s3Mock.resetHistory();
+    const other = (await handler(makeEvent('upload/someone-else/a.png'), {} as any, () => {})) as any;
+    expect(other.statusCode).toBe(404);
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
+  });
 });

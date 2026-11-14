@@ -270,6 +270,33 @@ describe('auth-pre-signup handler', () => {
     await expect(handler(event)).rejects.toThrow('Service unavailable');
   });
 
+  // --- Filter escaping: a backslash is escaped before the quote, or it would cancel the quote's escape ---
+
+  const TRICKY_EMAIL = 'a\\"b@example.com';
+  const TRICKY_FILTER = 'email = "a\\\\\\"b@example.com"';
+
+  it('escapes backslash and quote in the ListUsers filter for an email signup', async () => {
+    await handler({
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_SignUp',
+      userName: 'email-user',
+      request: { userAttributes: { email: TRICKY_EMAIL } },
+      response: {},
+    });
+    expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input.Filter).toBe(TRICKY_FILTER);
+  });
+
+  it('escapes backslash and quote in the ListUsers filter when linking a Google identity', async () => {
+    await handler({
+      userPoolId: TEST_POOL_ID,
+      triggerSource: 'PreSignUp_ExternalProvider',
+      userName: 'Google_888',
+      request: { userAttributes: { email: TRICKY_EMAIL, email_verified: 'true' } },
+      response: {},
+    });
+    expect(cognitoMock.commandCalls(ListUsersCommand)[0].args[0].input.Filter).toBe(TRICKY_FILTER);
+  });
+
   // --- Other trigger sources ---
 
   it('does not auto-confirm for admin create user', async () => {

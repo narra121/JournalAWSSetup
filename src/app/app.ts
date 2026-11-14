@@ -5,7 +5,7 @@ import { goalsHistoryRoutes } from './goals/history';
 import { uploadRoutes } from './uploads/routes';
 import { journalRoutes } from './journal/routes';
 import { accountRoutes } from './account/routes';
-import { withEntitlements } from './billing/middleware';
+import { readOnlyGuard, withEntitlements } from './billing/middleware';
 import { billingRoutes, meRoutes } from './billing/routes';
 import { apiGatewayCors } from './http/cors';
 import { lambdaRoute } from './http/adapter';
@@ -24,10 +24,10 @@ export interface AppOptions {
   featureRoutes?: FeatureRoute[];
 }
 
-/** Every signed-in route: the Cognito token first, then the per-user request ceiling. */
-const signedIn = (): MiddlewareHandler<AppEnv>[] => [requireUser(), userRateLimit()];
+/** Every signed-in route: the Cognito token, the per-user request ceiling, the plan, then the read-only write guard. */
+const signedIn = (): MiddlewareHandler<AppEnv>[] => [requireUser(), userRateLimit(), withEntitlements(), readOnlyGuard()];
 
-/** Middleware order: request log → CORS → error contract → per-route auth + per-user rate limit → entitlements/quota → handler; unknown routes and errors use the envelope. */
+/** Middleware order: request log → CORS → error contract → per-route auth + per-user rate limit → entitlements/quota → read-only guard → handler; unknown routes and errors use the envelope. */
 export function createApp({ featureRoutes = [] }: AppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use('*', requestLog());
@@ -56,13 +56,13 @@ export function createApp({ featureRoutes = [] }: AppOptions = {}): Hono<AppEnv>
   app.use('/v1/journal/*', ...signedIn());
   app.route('/v1/journal', journalRoutes);
 
-  app.use('/v1/me/*', ...signedIn(), withEntitlements());
+  app.use('/v1/me/*', ...signedIn());
   app.route('/v1', meRoutes);
-  app.use('/v1/billing/*', ...signedIn(), withEntitlements());
+  app.use('/v1/billing/*', ...signedIn());
   app.route('/v1', billingRoutes);
 
   for (const { basePath, app: feature } of featureRoutes) {
-    app.use(`/v1${basePath}/*`, ...signedIn(), withEntitlements());
+    app.use(`/v1${basePath}/*`, ...signedIn());
     app.route(`/v1${basePath}`, feature);
   }
 

@@ -12,34 +12,13 @@ const GOALS_TABLE = process.env.GOALS_TABLE!;
 const RULES_TABLE = process.env.RULES_TABLE!;
 
 /**
- * ProjectionExpression for DailyStats queries in this handler.
- * Only fetches fields needed by aggregateDailyRecords() — avoids transferring
- * the full 30+ attribute records when only aggregation fields are needed.
- *
- * Fields accessed by aggregation processors:
- *   CoreStats: tradeCount, wins, losses, breakeven, grossProfit, grossLoss, totalVolume
- *   Extremes: bestTrade, worstTrade
- *   RiskReward: sumRiskReward, riskRewardCount
- *   Duration: totalDurationHours, durationTradeCount, minDurationHours, maxDurationHours, durationBuckets
- *   Distributions: symbolDistribution, strategyDistribution, sessionDistribution, outcomeDistribution
- *   Hourly: hourlyBreakdown
- *   PnlSequence: pnlSequence, equityCurvePoints, date, totalPnl
- *   DayOfWeek: dayOfWeek, tradeCount, wins, totalPnl
- *   Mistakes: mistakesDistribution
- *   Lessons: lessonsDistribution
- *   BrokenRules: brokenRulesCounts, brokenRulesDistribution
+ * ProjectionExpression for the DailyStats queries of goals progress and goals history. periodProgress reads only the
+ * profit (grossProfit - grossLoss), win rate (wins / tradeCount), drawdown (pnlSequence in date order), trade count
+ * and brokenRulesCounts of the aggregate; every other aggregator treats a missing field as empty. `#sk` is listed
+ * because queryDailyStats defines both placeholders and DynamoDB rejects an unused one.
  */
 export const DAILY_STATS_PROJECTION = [
-  'userId', '#sk', '#date', 'accountId', 'dayOfWeek',
-  'tradeCount', 'wins', 'losses', 'breakeven', 'grossProfit', 'grossLoss', 'totalPnl', 'totalVolume',
-  'bestTrade', 'worstTrade',
-  'sumRiskReward', 'riskRewardCount',
-  'totalDurationHours', 'durationTradeCount', 'minDurationHours', 'maxDurationHours', 'durationBuckets',
-  'symbolDistribution', 'strategyDistribution', 'sessionDistribution', 'outcomeDistribution',
-  'hourlyBreakdown',
-  'pnlSequence',
-  'mistakesDistribution', 'lessonsDistribution',
-  'brokenRulesCounts', 'brokenRulesDistribution',
+  '#sk', '#date', 'tradeCount', 'wins', 'grossProfit', 'grossLoss', 'pnlSequence', 'brokenRulesCounts',
 ].join(', ');
 
 export const handler: ApiHandler = async (event) => {
@@ -218,42 +197,43 @@ async function queryRulesByPeriod(userId: string, periodKey: string): Promise<an
 }
 
 /**
- * Filter goals by period and account.
- * If accountId='ALL': group goals by goalType, sum targets across accounts.
- * If specific account: filter goals where accountId matches and period matches.
+ * Goals of `period` that apply to `accountId`; `accountId` null is the period default (`#default-<type>`).
+ * A default is only a fallback: it applies to a goal type only while no account goal of that type applies to the view.
+ * One account: its own goals, plus the defaults of the types it has no goal for.
+ * 'ALL': per type, the account goals summed (percentage types averaged), else the default.
  */
 const PERCENTAGE_GOAL_TYPES = new Set(['winRate', 'maxDrawdown']);
 
 function filterGoalsByPeriodAndAccount(goals: any[], period: string, accountId: string): any[] {
-  if (accountId === 'ALL') {
-    // Group goals by goalType; average percentage types, sum absolute types
-    const grouped = dict<any>();
-    const counts = dict<number>();
+  const ofPeriod = goals.filter((g: any) => g.period === period);
+  const owned = (g: any) => !!g.accountId && (accountId === 'ALL' || g.accountId === accountId);
+  const typesWithAccountGoal = new Set(ofPeriod.filter(owned).map((g: any) => g.goalType));
+  const applicable = ofPeriod.filter((g: any) => (g.accountId ? owned(g) : !typesWithAccountGoal.has(g.goalType)));
 
-    for (const g of goals) {
-      if (g.period !== period) continue;
+  if (accountId !== 'ALL') return applicable;
 
-      const type = g.goalType;
-      if (!grouped[type]) {
-        grouped[type] = { ...g, target: 0 };
-        counts[type] = 0;
-      }
-      grouped[type].target += (g.target || 0);
-      counts[type]++;
+  // Group goals by goalType; average percentage types, sum absolute types
+  const grouped = dict<any>();
+  const counts = dict<number>();
+
+  for (const g of applicable) {
+    const type = g.goalType;
+    if (!grouped[type]) {
+      grouped[type] = { ...g, target: 0 };
+      counts[type] = 0;
     }
-
-    // Average percentage-based types instead of leaving them summed
-    for (const type of Object.keys(grouped)) {
-      if (PERCENTAGE_GOAL_TYPES.has(type) && counts[type] > 1) {
-        grouped[type].target = grouped[type].target / counts[type];
-      }
-    }
-
-    return Object.values(grouped);
+    grouped[type].target += (g.target || 0);
+    counts[type]++;
   }
 
-  // Specific account: filter by accountId and period
-  return goals.filter((g: any) => g.accountId === accountId && g.period === period);
+  // Average percentage-based types instead of leaving them summed
+  for (const type of Object.keys(grouped)) {
+    if (PERCENTAGE_GOAL_TYPES.has(type) && counts[type] > 1) {
+      grouped[type].target = grouped[type].target / counts[type];
+    }
+  }
+
+  return Object.values(grouped);
 }
 
 /**

@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, DeleteCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, DeleteCommand, BatchWriteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 
 vi.stubEnv('TRADES_TABLE', 'test-trades');
 vi.stubEnv('ACCOUNTS_TABLE', 'test-accounts');
 vi.stubEnv('DAILY_STATS_TABLE', 'test-daily-stats');
+vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
 
 // The handler creates its own DocumentClient; the mock covers every instance.
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -229,7 +230,7 @@ describe('rebuild-stats-job handler', () => {
   // ── Balances (BE-029, BE-037) ──────────────────────────────────
 
   describe('account balances', () => {
-    const account = (over: Record<string, any> = {}) => ({ accountId: 'acc-1', initialBalance: 10000, balance: 10000, updatedAt: 'u1', ...over });
+    const account = (over: Record<string, any> = {}) => ({ accountId: 'acc-1', initialBalance: 10000, balance: 10000, tradeCount: 0, updatedAt: 'u1', ...over });
 
     it('balance = initialBalance + P&L of the live trades (BUY and SELL formulas)', async () => {
       stubWorld({
@@ -262,8 +263,8 @@ describe('rebuild-stats-job handler', () => {
       expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10000 });
     });
 
-    it('does not write an account whose balance is already right', async () => {
-      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 10100 })] } });
+    it('does not write an account whose balance and counters are already right', async () => {
+      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 10100, tradeCount: 1, lastTradeDate: '2026-04-06' })] } });
       await rebuildForUser('user-1');
       expect(balanceWrites()).toHaveLength(0);
     });
@@ -308,23 +309,45 @@ describe('rebuild-stats-job handler', () => {
       expect(balanceWrites().map((w) => w.ExpressionAttributeValues![':balance'])).toEqual([10100, 10200]);
     });
 
-    it('gives up after three attempts with a warning instead of looping', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // H6: an unsettled balance must keep the user flagged, so it fails the rebuild once the day records are written.
+    it('gives up after three attempts and fails the rebuild instead of looping or reporting success', async () => {
       stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
       ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('raced'), { name: 'ConditionalCheckFailedException' }));
-      await rebuildForUser('user-1');
+      await expect(rebuildForUser('user-1')).rejects.toThrow('balances of user-1 kept changing');
       expect(balanceWrites()).toHaveLength(3);
-      expect(warn).toHaveBeenCalled();
-      warn.mockRestore();
+      expect(putItems()).toHaveLength(1);
     });
 
-    it('logs a failing balance write and still rebuilds the daily stats', async () => {
+    it('a failing balance write is logged and fails the rebuild, after the other accounts and the daily stats were done', async () => {
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-      stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
-      ddbMock.on(UpdateCommand).rejects(new Error('throttled'));
-      await rebuildForUser('user-1');
+      stubWorld({
+        trades: { 'user-1': [makeTrade(), makeTrade({ tradeId: 't2', accountId: 'acc-2' })] },
+        accounts: { 'user-1': [account({ balance: 0 }), account({ accountId: 'acc-2', balance: 0 })] },
+      });
+      ddbMock.on(UpdateCommand).callsFake((input: any) => {
+        if (input.Key.accountId === 'acc-1') throw new Error('throttled');
+        return {};
+      });
+      await expect(rebuildForUser('user-1')).rejects.toThrow('throttled');
       expect(err).toHaveBeenCalledWith(expect.stringContaining('Failed to update balance for account acc-1'), expect.any(Error));
-      expect(putItems()).toHaveLength(1);
+      expect(balanceWrites().map((w) => w.Key!.accountId)).toEqual(['acc-1', 'acc-2']);
+      expect(putItems()).toHaveLength(2);
+      err.mockRestore();
+    });
+
+    it('the job keeps the #dirty flag of a user whose balances kept changing, and fails', async () => {
+      stubWorld({ dirty: dirty('user-1'), trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
+      ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('raced'), { name: 'ConditionalCheckFailedException' }));
+      await expect(handler()).rejects.toThrow('kept changing');
+      expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
+    });
+
+    it('the job keeps the #dirty flag of a user whose balance write failed, and fails', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      stubWorld({ dirty: dirty('user-1'), trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 0 })] } });
+      ddbMock.on(UpdateCommand).rejects(new Error('throttled'));
+      await expect(handler()).rejects.toThrow('throttled');
+      expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
       err.mockRestore();
     });
 
@@ -334,5 +357,55 @@ describe('rebuild-stats-job handler', () => {
       expect(balanceWrites()[0].ExpressionAttributeValues).toMatchObject({ ':balance': 10100 });
       expect(({} as any).totalPnl).toBeUndefined();
     });
+  });
+});
+
+describe('account trade count and last trade day (M1)', () => {
+  const account = (over: Record<string, any> = {}) => ({ accountId: 'acc-1', initialBalance: 10000, balance: 10000, updatedAt: 'u1', ...over });
+  const counters = () => balanceWrites().map((w) => ({
+    id: w.Key!.accountId,
+    count: w.ExpressionAttributeValues![':count'],
+    last: w.ExpressionAttributeValues![':lastDay'],
+  }));
+
+  it('sets tradeCount and lastTradeDate of an account that has neither (no manual backfill), with the balance in one conditional write', async () => {
+    stubWorld({
+      trades: { 'user-1': [makeTrade(), makeTrade({ tradeId: 't2', openDate: '2026-04-09T09:30:00Z' }), makeTrade({ tradeId: 't3', openDate: '2026-04-07T09:30:00Z' })] },
+      accounts: { 'user-1': [account({ balance: 10300 })] },
+    });
+    await rebuildForUser('user-1');
+    expect(counters()).toEqual([{ id: 'acc-1', count: 3, last: '2026-04-09' }]);
+    expect(balanceWrites()[0].UpdateExpression).toContain('#tradeCount = :count');
+    expect(balanceWrites()[0].ConditionExpression).toBe('#updatedAt = :seen');
+  });
+
+  it('counts only live trades of the account that fall on a real day, and takes the day in the user time zone', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { timeZone: 'Asia/Kolkata' } });
+    stubWorld({
+      trades: { 'user-1': [
+        makeTrade({ openDate: '2026-04-06T20:30:00Z' }), // 2026-04-07 in Kolkata
+        makeTrade({ tradeId: 'x', accountId: 'acc-2' }),
+        makeTrade({ tradeId: 'y', accountId: '-1' }),
+        makeTrade({ tradeId: 'z', openDate: 'garbage' }),
+      ] },
+      accounts: { 'user-1': [account({ balance: 10100 })] },
+    });
+    await rebuildForUser('user-1');
+    expect(counters()).toEqual([{ id: 'acc-1', count: 1, last: '2026-04-07' }]);
+  });
+
+  it('an account without trades gets tradeCount 0 and no lastTradeDate (the attribute is removed)', async () => {
+    stubWorld({ trades: { 'user-1': [] }, accounts: { 'user-1': [account({ tradeCount: 4, lastTradeDate: '2026-04-06' })] } });
+    await rebuildForUser('user-1');
+    const w = balanceWrites()[0];
+    expect(w.ExpressionAttributeValues).toMatchObject({ ':count': 0 });
+    expect(w.ExpressionAttributeValues).not.toHaveProperty(':lastDay');
+    expect(w.UpdateExpression).toContain('REMOVE #lastTradeDate');
+  });
+
+  it('a wrong stored count or last day is corrected even when the balance is already right', async () => {
+    stubWorld({ trades: { 'user-1': [makeTrade()] }, accounts: { 'user-1': [account({ balance: 10100, tradeCount: 9, lastTradeDate: '2026-01-01' })] } });
+    await rebuildForUser('user-1');
+    expect(counters()).toEqual([{ id: 'acc-1', count: 1, last: '2026-04-06' }]);
   });
 });

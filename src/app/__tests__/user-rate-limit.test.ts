@@ -38,7 +38,7 @@ afterEach(() => setTokenVerifier(undefined));
 
 describe('per-user request ceiling (BE-013)', () => {
   it('counts every signed-in request under user:<sub> with the fixed window, and lets a user at the limit through', async () => {
-    ddb.on(GetCommand).resolves({});
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     ddb.on(UpdateCommand).resolves(counted(USER_REQUESTS_PER_WINDOW));
     const res = await app.request('/v1/stub/whoami', { headers: as('u1') });
     expect(res.status).toBe(200);
@@ -50,7 +50,7 @@ describe('per-user request ceiling (BE-013)', () => {
   });
 
   it('keeps one bucket per user', async () => {
-    ddb.on(GetCommand).resolves({});
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     ddb.on(UpdateCommand).resolves(counted(1));
     await app.request('/v1/stub/whoami', { headers: as('u1') });
     await app.request('/v1/stub/whoami', { headers: as('u2') });
@@ -67,7 +67,7 @@ describe('per-user request ceiling (BE-013)', () => {
     ['billing', 'POST', '/v1/billing/portal'],
     ['feature route', 'GET', '/v1/stub/whoami'],
   ])('the request over the limit gets 429 RATE_LIMITED in the shared envelope on a %s', async (_name, method, path) => {
-    ddb.on(GetCommand).resolves({});
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     ddb.on(UpdateCommand).resolves(counted(USER_REQUESTS_PER_WINDOW + 1));
     const res = await app.request(path, { method, headers: as('u1') });
 
@@ -98,7 +98,7 @@ describe('per-user request ceiling (BE-013)', () => {
 
   it('lets the request through when the RateLimit table fails, and logs it', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    ddb.on(GetCommand).resolves({});
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     ddb.on(UpdateCommand).rejects(new Error('ProvisionedThroughputExceededException'));
     const res = await app.request('/v1/stub/whoami', { headers: as('u1') });
     expect(res.status).toBe(200);

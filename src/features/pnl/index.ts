@@ -41,19 +41,17 @@ export function computePnl(input: PnlInput): PnlResult {
   const grossPnl = round2(grossRaw);
   const fees = round2(input.fees ?? 0);
   const netPnl = round2(grossPnl - fees);
-  return { grossPnl, fees, netPnl, rMultiple: rMultiple({ ...input, multiplier: mult }, netPnl) };
+  return { grossPnl, fees, netPnl, rMultiple: rMultiple(input) };
 }
 
-/** Net P&L divided by initial risk (|entry - stop| × qty × multiplier). Null when no usable stop. */
-export function rMultiple(
-  t: { entryPrice: number; stopLoss?: number | null; quantity: number; multiplier?: number | null },
-  netPnl: number,
-): number | null {
+/**
+ * Realised R from prices: direction × (exit − entry) ÷ |entry − stop|, before fees (quantity and multiplier cancel out).
+ * Null when there is no usable stop or no exit price. Same formula as the backend's /stats and analysis.
+ */
+export function rMultiple(t: { side: Side; entryPrice: number; exitPrice: number; stopLoss?: number | null }): number | null {
   const stop = t.stopLoss;
-  if (stop == null || !(stop > 0) || stop === t.entryPrice) return null;
-  const mult = t.multiplier && t.multiplier > 0 ? t.multiplier : 1;
-  const risk = Math.abs(t.entryPrice - stop) * t.quantity * mult;
-  return risk > 0 ? round2(netPnl / risk) : null;
+  if (stop == null || !(stop > 0) || stop === t.entryPrice || !Number.isFinite(t.exitPrice)) return null;
+  return round2(((t.side === 'BUY' ? 1 : -1) * (t.exitPrice - t.entryPrice)) / Math.abs(t.entryPrice - stop));
 }
 
 const FX_CCY = new Set(['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'DKK', 'ZAR', 'MXN', 'TRY', 'PLN', 'CNH', 'INR']);

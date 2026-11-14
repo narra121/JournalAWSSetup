@@ -45,7 +45,8 @@ const existingTrade = {
 beforeEach(() => {
   ddbMock.reset();
   s3Mock.reset();
-  ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade } });
+  // A fresh item per read, like DynamoDB: the handler edits the item it reads, and a request that changes nothing writes nothing.
+  ddbMock.on(GetCommand).callsFake(() => ({ Item: { ...existingTrade } }));
   ddbMock.on(UpdateCommand).resolves({ Attributes: { ...existingTrade, updatedAt: '2024-06-16T00:00:00Z' } });
   ddbMock.on(PutCommand).resolves({});
   s3Mock.on(PutObjectCommand).resolves({});
@@ -293,7 +294,7 @@ describe('update-trade handler', () => {
     expect(body.success).toBe(false);
   });
 
-  it('returns 500 when S3 DeleteObjectsCommand fails while removing old images', async () => {
+  it('still returns 200 when S3 DeleteObjectsCommand fails after the update was stored', async () => {
     const tradeWithImages = {
       ...existingTrade,
       images: [
@@ -306,9 +307,9 @@ describe('update-trade handler', () => {
     // Send empty images array to trigger deletion of old-img-1
     const res = await handler(makeEvent('trade-1', { images: [] }), {} as any, () => {}) as any;
 
-    expect(res.statusCode).toBe(500);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(res.statusCode).toBe(200);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
   });
 
   // ── Partial close validation ──────────────────────────────────
@@ -565,6 +566,144 @@ describe('update-trade handler', () => {
     it('more than 50 entries are rejected', async () => {
       const many = Array.from({ length: 51 }, () => ({ quantity: 1, exitPrice: 1 }));
       expect(((await handler(makeEvent('trade-1', { partialCloses: many }), {} as any, () => {})) as any).statusCode).toBe(400);
+    });
+  });
+
+  // ── Ordering and no-op writes (H4, L1) ──────────────────────
+
+  describe('update order and unchanged requests', () => {
+    const stored = { ...existingTrade, pnl: 1000, netPnl: 1000, riskRewardRatio: null, riskAmount: 0, images: [], updatedAt: '2024-06-15T00:00:00Z' };
+    const conflict = () => Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', Item: { tradeId: { S: 'trade-1' } } });
+
+    it('the copy for a second account carries the recomputed P&L, net P&L and prices (H4a)', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored, fees: 5, netPnl: 995 } });
+      await handler(makeEvent('trade-1', { accountIds: ['acc-1', 'acc-2'], exitPrice: 200 }), {} as any, () => {});
+      const copy = (ddbMock.commandCalls(PutCommand)[0].args[0].input as any).Item;
+      expect(copy).toMatchObject({ accountId: 'acc-2', exitPrice: 200, pnl: 5000, netPnl: 4995 });
+      expect(written()).toMatchObject({ pnl: 5000, netPnl: 4995 });
+    });
+
+    it('removed screenshots are deleted after the update is stored, and a 409 leaves them alone (H4b)', async () => {
+      const own = { id: 'own', key: 'images/user-1/trade-1/own.png' };
+      ddbMock.on(GetCommand).callsFake(() => ({ Item: { ...stored, images: [own] } }));
+      let deletedBeforeWrite = true;
+      ddbMock.on(UpdateCommand).callsFake(() => {
+        deletedBeforeWrite = s3Mock.commandCalls(DeleteObjectsCommand).length > 0;
+        return { Attributes: { ...stored, images: [] } };
+      });
+      await handler(makeEvent('trade-1', { images: [] }), {} as any, () => {});
+      expect(deletedBeforeWrite).toBe(false);
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
+
+      s3Mock.resetHistory();
+      ddbMock.on(UpdateCommand).rejects(conflict());
+      const res = (await handler(makeEvent('trade-1', { images: [] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(409);
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+    });
+
+    it('partial closes are valued with the prices and quantity sent in the same request (H4c)', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored, partialCloses: [] } });
+      await handler(makeEvent('trade-1', { entryPrice: 100, partialCloses: [{ quantity: 50, exitPrice: 110, time: 't' }] }), {} as any, () => {});
+      expect(written()).toMatchObject({ realizedPartialPnl: 500, remainingQuantity: 50 });
+    });
+
+    it('a request that changes nothing writes nothing and returns the stored trade (L1)', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored, tradeNotes: 'x' } });
+      const res = (await handler(makeEvent('trade-1', { tradeNotes: 'x', symbol: 'AAPL', quantity: 100, entryPrice: 150, exitPrice: 160 }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(JSON.parse(res.body).data.trade).toMatchObject({ tradeId: 'trade-1', tradeNotes: 'x', updatedAt: '2024-06-15T00:00:00Z' });
+    });
+
+    it('a real change still writes, with a new updatedAt', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...stored, tradeNotes: 'x' } });
+      await handler(makeEvent('trade-1', { tradeNotes: 'y' }), {} as any, () => {});
+      expect(Object.keys(written()).sort()).toEqual(['tradeNotes', 'updatedAt']);
+    });
+  });
+
+  // ── Clearing optional fields (H5, backend) ───────────────────
+
+  describe('clearing optional fields', () => {
+    const options = { ...existingTrade, pnl: 1000, netPnl: 995, fees: 5, contractMultiplier: 50, optionType: 'call', strike: 150, expiry: '2026-12-31' };
+
+    it('null removes fees, strike, expiry, optionType and contractMultiplier', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...options } });
+      const res = (await handler(makeEvent('trade-1', { fees: null, strike: null, expiry: null, optionType: null, contractMultiplier: null }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      const removed = String(input.UpdateExpression).split(' REMOVE ')[1].split(', ').sort();
+      expect(removed).toEqual(['#contractMultiplier', '#expiry', '#fees', '#optionType', '#strike']);
+    });
+
+    it('clearing fees stops them being subtracted from net P&L', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...options } });
+      await handler(makeEvent('trade-1', { fees: null }), {} as any, () => {});
+      expect(written().netPnl).toBe(1000);
+    });
+  });
+
+  describe('the reviewed flag (CONTRACT I1)', () => {
+    it('sets reviewed and writes only it and updatedAt; the stored value comes back', async () => {
+      ddbMock.on(GetCommand).callsFake(() => ({ Item: { ...existingTrade, pnl: 1000, netPnl: 1000 } }));
+      ddbMock.on(UpdateCommand).callsFake((input) => ({ Attributes: { ...existingTrade, reviewed: input.ExpressionAttributeValues[':reviewed'] } }));
+      const res = (await handler(makeEvent('trade-1', { reviewed: true }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(200);
+      expect(Object.keys(written()).sort()).toEqual(['reviewed', 'updatedAt']);
+      expect(written().reviewed).toBe(true);
+      expect(JSON.parse(res.body).data.trade.reviewed).toBe(true);
+    });
+
+    it('false clears it, and a request without reviewed leaves the stored value alone', async () => {
+      ddbMock.on(GetCommand).callsFake(() => ({ Item: { ...existingTrade, reviewed: true } }));
+      await handler(makeEvent('trade-1', { reviewed: false }), {} as any, () => {});
+      expect(written().reviewed).toBe(false);
+
+      ddbMock.resetHistory();
+      await handler(makeEvent('trade-1', { tradeNotes: 'n' }), {} as any, () => {});
+      expect(Object.keys(written())).not.toContain('reviewed');
+    });
+
+    it('400 for a reviewed that is not true or false, and nothing is written', async () => {
+      const res = (await handler(makeEvent('trade-1', { reviewed: null }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(400);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+  });
+
+  // ── Screenshots from the upload prefix (H10) ─────────────────
+
+  describe('screenshots uploaded before the trade (H10)', () => {
+    const upload = 'images/upload/user-1/a.png';
+
+    it('copies an uploaded key under the trade before the write, stores the copy and leaves the upload for expiry', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      let copiedBeforeWrite = false;
+      ddbMock.on(UpdateCommand).callsFake(() => {
+        copiedBeforeWrite = s3Mock.commandCalls(CopyObjectCommand).length === 1;
+        return { Attributes: { ...existingTrade } };
+      });
+      await handler(makeEvent('trade-1', { images: [{ id: upload, key: upload }] }), {} as any, () => {});
+      expect(copiedBeforeWrite).toBe(true);
+      const copy = s3Mock.commandCalls(CopyObjectCommand)[0].args[0].input;
+      expect(copy).toMatchObject({ CopySource: `test-bucket/${upload}`, Key: 'images/user-1/trade-1/a.png' });
+      const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect((input.ExpressionAttributeValues as any)[':images'][0]).toMatchObject({ key: 'images/user-1/trade-1/a.png' });
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+    });
+
+    it("drops another user's upload key and copies nothing", async () => {
+      await handler(makeEvent('trade-1', { images: [{ id: 'x', key: 'images/upload/user-2/a.png' }] }), {} as any, () => {});
+      expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
+      expect(written().images).toBeUndefined();
+    });
+
+    it('a retried save does not copy again: the stored image is found by the id the client sent', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      ddbMock.on(GetCommand).resolves({ Item: { ...existingTrade, images: [{ id: upload, key: 'images/user-1/trade-1/a.png', timeframe: null, description: null }] } });
+      await handler(makeEvent('trade-1', { images: [{ id: upload, key: upload }] }), {} as any, () => {});
+      expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
     });
   });
 });

@@ -80,7 +80,7 @@ async function loadAccounts(userId: string): Promise<any[]> {
       TableName: ACCOUNTS_TABLE,
       KeyConditionExpression: 'userId = :u',
       ExpressionAttributeValues: { ':u': userId },
-      ProjectionExpression: 'accountId, initialBalance, balance, updatedAt',
+      ProjectionExpression: 'accountId, initialBalance, balance, tradeCount, lastTradeDate, updatedAt',
       ExclusiveStartKey: lastEvaluatedKey,
     }));
     accounts.push(...(resp.Items || []));
@@ -90,39 +90,58 @@ async function loadAccounts(userId: string): Promise<any[]> {
 }
 
 /**
- * Sets every account's balance to initialBalance + the P&L of its live trades. A write only lands if the account is
- * unchanged since `accounts` was read (a stream ADD or an edit in between bumps updatedAt); returns how many did not.
+ * Sets every account's balance to initialBalance + the P&L of its live trades, and its tradeCount and lastTradeDate to
+ * those of the trades that have a real day (the ones DailyStats holds). A write only lands if the account is unchanged
+ * since `accounts` was read (a stream ADD or an edit in between bumps updatedAt); returns how many did not. Any other
+ * failure is thrown after every account was tried.
  */
-async function updateBalances(userId: string, accounts: any[], trades: any[]): Promise<number> {
-  const accountPnL = new Map<string, number>();
+async function updateBalances(userId: string, accounts: any[], trades: any[], timeZone: string | null): Promise<number> {
+  const totals = new Map<string, { pnl: number; count: number; lastDay: string | null }>();
   for (const t of trades) {
     if (!isValidAccount(t.accountId)) continue;
+    const total = totals.get(t.accountId) ?? { pnl: 0, count: 0, lastDay: null };
     const pnl = calcPnL(t);
-    if (pnl != null) accountPnL.set(t.accountId, (accountPnL.get(t.accountId) || 0) + pnl);
+    if (pnl != null) total.pnl += pnl;
+    const day = dayOf(t.openDate, timeZone);
+    if (day && isCalendarDay(day)) {
+      total.count++;
+      if (!total.lastDay || day > total.lastDay) total.lastDay = day;
+    }
+    totals.set(t.accountId, total);
   }
 
   let conflicts = 0;
+  let failure: unknown;
   for (const account of accounts) {
-    const newBalance = Math.round(((account.initialBalance || 0) + (accountPnL.get(account.accountId) || 0)) * 100) / 100;
-    if (account.balance === newBalance) continue;
+    const total = totals.get(account.accountId);
+    const newBalance = Math.round(((account.initialBalance || 0) + (total?.pnl || 0)) * 100) / 100;
+    const count = total?.count ?? 0;
+    const lastDay = total?.lastDay ?? null;
+    if (account.balance === newBalance && account.tradeCount === count && (account.lastTradeDate ?? null) === lastDay) continue;
     try {
       await ddb.send(new UpdateCommand({
         TableName: ACCOUNTS_TABLE,
         Key: { userId, accountId: account.accountId },
-        UpdateExpression: 'SET #balance = :balance, #updatedAt = :updatedAt',
+        UpdateExpression: `SET #balance = :balance, #tradeCount = :count, #updatedAt = :updatedAt${lastDay ? ', #lastTradeDate = :lastDay' : ' REMOVE #lastTradeDate'}`,
         ConditionExpression: account.updatedAt === undefined ? 'attribute_not_exists(#updatedAt)' : '#updatedAt = :seen',
-        ExpressionAttributeNames: { '#balance': 'balance', '#updatedAt': 'updatedAt' },
+        ExpressionAttributeNames: { '#balance': 'balance', '#tradeCount': 'tradeCount', '#lastTradeDate': 'lastTradeDate', '#updatedAt': 'updatedAt' },
         ExpressionAttributeValues: {
           ':balance': newBalance,
+          ':count': count,
           ':updatedAt': new Date().toISOString(),
+          ...(lastDay ? { ':lastDay': lastDay } : {}),
           ...(account.updatedAt === undefined ? {} : { ':seen': account.updatedAt }),
         },
       }));
     } catch (e: any) {
       if (e.name === 'ConditionalCheckFailedException') conflicts++;
-      else console.error(`Failed to update balance for account ${account.accountId}`, e);
+      else {
+        console.error(`Failed to update balance for account ${account.accountId}`, e);
+        failure ??= e;
+      }
     }
   }
+  if (failure) throw failure;
   return conflicts;
 }
 
@@ -133,12 +152,22 @@ async function updateBalances(userId: string, accounts: any[], trades: any[]): P
 export async function rebuildForUser(userId: string, opts: { force?: boolean } = {}): Promise<void> {
   const timeZone = await getUserTimeZone(userId).catch(() => null);
 
+  // Daily stats are rebuilt even when the balances cannot be settled; the user then stays flagged and is retried.
   let trades: any[] = [];
+  let balanceFailure: unknown;
   for (let attempt = 1; attempt <= BALANCE_ATTEMPTS; attempt++) {
     const accounts = await loadAccounts(userId);
     trades = await loadTrades(userId);
-    if ((await updateBalances(userId, accounts, trades)) === 0) break;
-    if (attempt === BALANCE_ATTEMPTS) console.warn(`rebuild-stats-job: balances of ${userId} kept changing; the next rebuild corrects them`);
+    try {
+      if ((await updateBalances(userId, accounts, trades, timeZone)) === 0) {
+        balanceFailure = undefined;
+        break;
+      }
+      balanceFailure = new Error(`balances of ${userId} kept changing`);
+    } catch (e) {
+      balanceFailure = e;
+      break;
+    }
   }
 
   // --- Rebuild DailyStatsTable ---
@@ -188,6 +217,8 @@ export async function rebuildForUser(userId: string, opts: { force?: boolean } =
     tableName: DAILY_STATS_TABLE,
     keys: [...storedHashes.keys()].filter((sk) => !liveSks.has(sk)).map((sk) => ({ userId, sk })),
   });
+
+  if (balanceFailure) throw balanceFailure;
 }
 
 // ---------------------------------------------------------------------------

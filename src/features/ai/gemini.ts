@@ -1,193 +1,164 @@
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { SseParser } from './sse';
+import { ssmKey, type AiPurpose, type ContentPart, type FetchLike, type GeminiContent, type GeminiRequest, type GeminiUsage, type GenerateResult, type JsonSchema, type StreamChunk, type ToolCall } from './core';
+import { aiProvider } from '../../shared/gemini';
+import { openRouterProvider } from './openrouter';
+import { generateWith, streamWith, type Parsed, type Provider, type StreamState } from './runner';
+
+export * from './core';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-/** Primary then fallback (on 429/503/404); same model family and SSM key as handlers/extract-trades. */
-export const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
-const RETRYABLE = new Set([429, 500, 503, 404]);
-const KEY_TTL_MS = 3_600_000;
-/** After a failed first model, the fallback is only tried when at least this much of the deadline is left. */
-const MIN_FALLBACK_MS = 10_000;
-/** Overall deadline of a call that sets no `timeoutMs`: below CloudFront's 60 s origin timeout and the Web Function's 58 s (template.yaml `TimeoutSeconds`). */
-const DEFAULT_DEADLINE_MS = 50_000;
+/** Tried in order; the next model answers on 404/429/5xx, a network error, an empty reply or a 400 naming an unsupported field. */
+export const GEMINI_MODELS: Record<AiPurpose, readonly string[]> = {
+  report: ['gemini-3.5-flash-lite', 'gemini-2.5-flash-lite'],
+  chat: ['gemini-3.5-flash-lite', 'gemini-2.5-flash-lite'],
+  extract: ['gemini-2.5-flash-lite', 'gemini-3.5-flash-lite'],
+};
+/** Gemini's documented placeholder for a function call part that has no signature of its own (thought-signatures FAQ). */
+const SKIP_SIGNATURE = 'skip_thought_signature_validator';
 
-/** `model` and `status` are those of the last failed attempt (status 0 = network error/timeout); undefined for config errors. */
-export class AiUnavailableError extends Error {
-  constructor(message: string, readonly model?: string, readonly status?: number) {
-    super(message);
+const geminiKey = ssmKey('GEMINI_API_KEY_PARAM', 'Gemini');
+export const getGeminiKey = geminiKey.get;
+
+const isObj = (v: unknown): v is JsonSchema => typeof v === 'object' && v !== null && !Array.isArray(v);
+const COPIED = ['description', 'title', 'enum', 'minItems', 'maxItems', 'minimum', 'maximum', 'minLength', 'maxLength', 'pattern', 'propertyOrdering'];
+const FORMATS = new Set(['date-time', 'enum', 'float', 'double', 'int32', 'int64']);
+
+/** JSON Schema (or the Gemini dialect, unchanged) to the OpenAPI subset Gemini takes: upper-case types, `nullable`, no `additionalProperties`. */
+export function toGeminiSchema(schema: unknown): unknown {
+  if (!isObj(schema)) return schema;
+  const out: JsonSchema = {};
+  let nullable = schema.nullable === true;
+  let type = schema.type;
+  if (Array.isArray(type)) {
+    const real = type.filter((t) => t !== 'null');
+    nullable ||= real.length < type.length;
+    type = real[0];
   }
+  for (const k of COPIED) if (schema[k] !== undefined) out[k] = schema[k];
+  if (typeof schema.format === 'string' && FORMATS.has(schema.format)) out.format = schema.format;
+  if (Array.isArray(out.enum) && out.enum.includes(null)) {
+    out.enum = out.enum.filter((v) => v !== null);
+    nullable = true;
+  }
+  if (schema.const !== undefined && out.enum === undefined) out.enum = [schema.const];
+  if (isObj(schema.properties)) out.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, toGeminiSchema(v)]));
+  if (Array.isArray(schema.required)) out.required = schema.required;
+  if (schema.items !== undefined) out.items = toGeminiSchema(schema.items);
+  if (Array.isArray(schema.anyOf)) {
+    const branches = schema.anyOf.filter((b) => !(isObj(b) && b.type === 'null'));
+    nullable ||= branches.length < schema.anyOf.length;
+    if (branches.length === 1 && type === undefined) Object.assign(out, toGeminiSchema(branches[0]));
+    else out.anyOf = branches.map(toGeminiSchema);
+  }
+  if (typeof type === 'string') out.type = type.toUpperCase();
+  if (nullable) out.nullable = true;
+  return out;
 }
 
-let cachedKey: { value: string; expires: number } | null = null;
-const ssm = new SSMClient({});
-
-export async function getGeminiKey(): Promise<string> {
-  if (cachedKey && Date.now() < cachedKey.expires) return cachedKey.value;
-  const name = process.env.GEMINI_API_KEY_PARAM;
-  if (!name) throw new AiUnavailableError('GEMINI_API_KEY_PARAM not configured');
-  const res = await ssm.send(new GetParameterCommand({ Name: name, WithDecryption: true }));
-  const value = res.Parameter?.Value;
-  if (!value) throw new AiUnavailableError('Gemini API key parameter empty');
-  cachedKey = { value, expires: Date.now() + KEY_TTL_MS };
-  return value;
+/**
+ * Gemini 3 rejects a request whose model turn starts a function call without a thought signature (e.g. one served
+ * by the 2.5 fallback), so such parts get the placeholder; 2.5 does not need signatures and gets none.
+ */
+function contentsFor(contents: GeminiContent[], model: string | undefined): GeminiContent[] {
+  if (!model) return contents;
+  const legacy = model.startsWith('gemini-2.');
+  return contents.map((c) => {
+    if (c.role !== 'model' || !c.parts.some((p) => 'functionCall' in p)) return c;
+    let first = true;
+    const parts = c.parts.map((p): ContentPart => {
+      if (!('functionCall' in p)) return p;
+      const isFirst = first;
+      first = false;
+      if (legacy) return { functionCall: p.functionCall };
+      return isFirst && !p.thoughtSignature ? { ...p, thoughtSignature: SKIP_SIGNATURE } : p;
+    });
+    return { ...c, parts };
+  });
 }
 
-export interface GeminiContent {
-  role: 'user' | 'model';
-  parts: { text: string }[];
+function declaration(t: { name: string; description: string; parameters: JsonSchema }) {
+  const hasArgs = isObj(t.parameters?.properties) && Object.keys(t.parameters.properties).length > 0;
+  return { name: t.name, description: t.description, ...(hasArgs ? { parameters: toGeminiSchema(t.parameters) } : {}) };
 }
 
-export interface GeminiRequest {
-  system: string;
-  contents: GeminiContent[];
-  temperature: number;
-  maxOutputTokens: number;
-  /** Gemini Schema object (OpenAPI subset); sets responseMimeType application/json */
-  responseSchema?: unknown;
-  /** One deadline for the whole call, fallback model included (default `DEFAULT_DEADLINE_MS`). */
-  timeoutMs?: number;
-  /** Aborts the call as well, e.g. when the client that asked for it has gone. */
-  signal?: AbortSignal;
-}
-
-export interface GeminiUsage {
-  promptTokens: number;
-  outputTokens: number;
-}
-
-export function buildBody(req: GeminiRequest) {
+/** `model` adjusts thought signatures in function-call turns to what that model accepts. */
+export function buildBody(req: GeminiRequest, model?: string) {
   return {
     systemInstruction: { parts: [{ text: req.system }] },
-    contents: req.contents,
+    contents: contentsFor(req.contents, model),
+    ...(req.tools?.length ? { tools: [{ functionDeclarations: req.tools.map(declaration) }] } : {}),
     generationConfig: {
       temperature: req.temperature,
       maxOutputTokens: req.maxOutputTokens,
-      thinkingConfig: { thinkingBudget: 0 },
-      ...(req.responseSchema ? { responseMimeType: 'application/json', responseSchema: req.responseSchema } : {}),
+      ...(req.responseSchema ? { responseMimeType: 'application/json', responseSchema: toGeminiSchema(req.responseSchema) } : {}),
     },
   };
 }
 
 const usageOf = (u: any): GeminiUsage => ({ promptTokens: u?.promptTokenCount ?? 0, outputTokens: u?.candidatesTokenCount ?? 0 });
-const textOf = (data: any): string =>
-  (data?.candidates?.[0]?.content?.parts ?? []).map((p: any) => (typeof p?.text === 'string' && !p.thought ? p.text : '')).join('');
+const partsOf = (data: any): any[] => (Array.isArray(data?.candidates?.[0]?.content?.parts) ? data.candidates[0].content.parts : []);
+const textOf = (parts: any[]): string => parts.map((p) => (typeof p?.text === 'string' && !p.thought ? p.text : '')).join('');
+const callsOf = (parts: any[]): ToolCall[] =>
+  parts
+    .filter((p) => typeof p?.functionCall?.name === 'string')
+    .map((p) => ({
+      name: p.functionCall.name,
+      args: isObj(p.functionCall.args) ? p.functionCall.args : {},
+      ...(typeof p.functionCall.id === 'string' ? { id: p.functionCall.id } : {}),
+      ...(typeof p.thoughtSignature === 'string' ? { thoughtSignature: p.thoughtSignature } : {}),
+    }));
+const finishOf = (data: any): string | undefined => data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason;
 
-type FetchLike = typeof fetch;
-
-/** Signal for one attempt: the time left of the overall deadline, plus the caller's own signal. */
-function attemptSignal(req: GeminiRequest, left: number): AbortSignal {
-  const timeout = AbortSignal.timeout(left);
-  return req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
-}
-
-export async function generate(req: GeminiRequest, fetchImpl: FetchLike = fetch): Promise<{ text: string; model: string; usage: GeminiUsage }> {
-  const key = await getGeminiKey();
-  let lastErr = '';
-  let lastModel: string | undefined;
-  let lastStatus: number | undefined;
-  const deadline = Date.now() + (req.timeoutMs ?? DEFAULT_DEADLINE_MS);
-  for (const model of GEMINI_MODELS) {
-    const left = deadline - Date.now();
-    if (req.signal?.aborted) throw new AiUnavailableError('Request aborted', lastModel, lastStatus);
-    if (lastModel !== undefined && left < MIN_FALLBACK_MS) break;
-    const res = await fetchImpl(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify(buildBody(req)),
-      signal: attemptSignal(req, left),
-    }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as Response);
-    if (!res.ok) {
-      lastErr = `${model} ${res.status} ${(await res.text()).slice(0, 200)}`;
-      lastModel = model;
-      lastStatus = res.status;
-      if (RETRYABLE.has(res.status) || res.status === 0) continue;
-      throw new AiUnavailableError(lastErr, model, res.status);
-    }
-    const data = await res.json();
-    const text = textOf(data);
-    if (!text) {
-      lastErr = `${model} empty response (${data?.candidates?.[0]?.finishReason ?? 'no candidate'})`;
-      lastModel = model;
-      lastStatus = 200;
-      continue;
-    }
-    return { text, model, usage: usageOf(data.usageMetadata) };
-  }
-  throw new AiUnavailableError(lastErr || 'All Gemini models failed', lastModel, lastStatus);
-}
-
-export type StreamChunk = { type: 'text'; text: string } | { type: 'end'; model: string; usage: GeminiUsage; finishReason?: string };
-
-/**
- * Streams text via streamGenerateContent?alt=sse. Falls back to the next model only before the first byte;
- * a failure mid-stream throws (the caller already forwarded tokens).
- */
-export async function* stream(req: GeminiRequest, fetchImpl: FetchLike = fetch): AsyncGenerator<StreamChunk> {
-  const key = await getGeminiKey();
-  let lastErr = '';
-  let lastModel: string | undefined;
-  let lastStatus: number | undefined;
-  const deadline = Date.now() + (req.timeoutMs ?? DEFAULT_DEADLINE_MS);
-  for (const model of GEMINI_MODELS) {
-    const left = deadline - Date.now();
-    if (req.signal?.aborted) throw new AiUnavailableError('Request aborted', lastModel, lastStatus);
-    if (lastModel !== undefined && left < MIN_FALLBACK_MS) break;
-    const res = await fetchImpl(`${GEMINI_API_BASE}/models/${model}:streamGenerateContent?alt=sse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify(buildBody(req)),
-      signal: attemptSignal(req, left),
-    }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message, body: null }) as unknown as Response);
-    if (!res.ok || !res.body) {
-      lastErr = `${model} ${res.status} ${(await res.text()).slice(0, 200)}`;
-      lastModel = model;
-      lastStatus = res.status;
-      if (RETRYABLE.has(res.status) || res.status === 0) continue;
-      throw new AiUnavailableError(lastErr, model, res.status);
-    }
-    const parser = new SseParser();
-    const decoder = new TextDecoder();
+const geminiProvider: Provider = {
+  models: (purpose) => GEMINI_MODELS[purpose] ?? GEMINI_MODELS.chat,
+  key: getGeminiKey,
+  request: (model, req, key, stream) => ({
+    url: `${GEMINI_API_BASE}/models/${model}:${stream ? 'streamGenerateContent?alt=sse' : 'generateContent'}`,
+    init: { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(buildBody(req, model)) },
+  }),
+  parse(data): Parsed {
+    const parts = partsOf(data);
+    return { text: textOf(parts), toolCalls: callsOf(parts), usage: usageOf(data?.usageMetadata), finishReason: finishOf(data) };
+  },
+  streamState(): StreamState {
     let usage: GeminiUsage = { promptTokens: 0, outputTokens: 0 };
     let finishReason: string | undefined;
-    let sawText = false;
-    const reader = res.body.getReader();
-    const handle = function* (events: { data: string }[]) {
-      for (const ev of events) {
+    let failure: string | undefined;
+    const toolCalls: ToolCall[] = [];
+    return {
+      onEvent(ev) {
         let data: any;
         try {
           data = JSON.parse(ev.data);
         } catch {
-          continue;
+          return undefined;
         }
-        if (data.usageMetadata) usage = usageOf(data.usageMetadata);
-        finishReason = data?.candidates?.[0]?.finishReason ?? finishReason;
-        const t = textOf(data);
-        if (t) {
-          sawText = true;
-          yield { type: 'text' as const, text: t };
-        }
-      }
+        if (data?.error) failure = String(data.error.message ?? 'stream error').slice(0, 200);
+        if (data?.usageMetadata) usage = usageOf(data.usageMetadata);
+        finishReason = finishOf(data) ?? finishReason;
+        const parts = partsOf(data);
+        toolCalls.push(...callsOf(parts));
+        return textOf(parts) || undefined;
+      },
+      result: () => ({ toolCalls, usage, finishReason, failure, complete: true }),
     };
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      yield* handle(parser.push(decoder.decode(value, { stream: true })));
-    }
-    yield* handle(parser.end());
-    // A 200 with no text (a safety block, an empty candidate) is a failure like in generate(): nothing was forwarded, so the next model may answer.
-    if (!sawText && model !== GEMINI_MODELS[GEMINI_MODELS.length - 1]) {
-      lastErr = `${model} empty response (${finishReason ?? 'no candidate'})`;
-      lastModel = model;
-      lastStatus = 200;
-      continue;
-    }
-    yield { type: 'end', model, usage, finishReason };
-    return;
-  }
-  throw new AiUnavailableError(lastErr || 'All Gemini models failed', lastModel, lastStatus);
+  },
+};
+
+/** OpenRouter unless `AI_PROVIDER=gemini` (rules in shared/gemini.ts `aiProvider`). */
+function provider(): Provider {
+  return aiProvider() === 'gemini' ? geminiProvider : openRouterProvider;
+}
+
+export function generate(req: GeminiRequest, fetchImpl: FetchLike = fetch): Promise<GenerateResult> {
+  return generateWith(provider(), req, fetchImpl);
+}
+
+/** Streams text; tool calls, when the model makes them, arrive on the `end` chunk. */
+export function stream(req: GeminiRequest, fetchImpl: FetchLike = fetch): AsyncGenerator<StreamChunk> {
+  return streamWith(provider(), req, fetchImpl);
 }
 
 /** Test hook. */
 export function __resetGeminiKeyCache() {
-  cachedKey = null;
+  geminiKey.reset();
 }

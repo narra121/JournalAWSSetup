@@ -5,7 +5,7 @@ import { ddb } from '../../shared/dynamo';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { getStripe } from '../../shared/stripe-config';
-import { subscriptionStatus } from '../../shared/stripe-status';
+import { stripeSnapshotTime, subscriptionStatus } from '../../shared/stripe-status';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
 
@@ -87,6 +87,7 @@ async function handleGet(userId: string): Promise<APIGatewayProxyResult> {
 
   const stripeClient = await getStripe();
 
+  const readAt = stripeSnapshotTime();
   let stripeSub: Stripe.Subscription;
   try {
     stripeSub = await stripeClient.subscriptions.retrieve(stripeSubId);
@@ -99,18 +100,7 @@ async function handleGet(userId: string): Promise<APIGatewayProxyResult> {
   const syncedStatus = subscriptionStatus(stripeSub);
 
   if (syncedStatus !== record.status) {
-    await ddb.send(
-      new UpdateCommand({
-        TableName: SUBSCRIPTIONS_TABLE,
-        Key: { userId },
-        UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':status': syncedStatus,
-          ':updatedAt': new Date().toISOString(),
-        },
-      })
-    );
+    await storeStripeState(userId, stripeSubId, readAt, syncedStatus);
   }
 
   return envelope({
@@ -157,6 +147,15 @@ async function handlePut(userId: string, rawBody: string | null): Promise<APIGat
     return errorResponse(404, ErrorCodes.NOT_FOUND, 'No subscription found');
   }
 
+  // A paused subscription is stored as `paused`, which is not a paid status: pausing anything but a plain active
+  // subscription would hide a pending cancellation or a failed payment behind it.
+  if (action === 'pause' && record.status !== 'active') {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Only an active subscription can be paused');
+  }
+  if (action === 'resume' && record.status !== 'paused') {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is not paused');
+  }
+
   const stripeSubId = record.stripeSubscriptionId;
   if (!stripeSubId) {
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'No Stripe subscription linked');
@@ -173,36 +172,20 @@ async function handlePut(userId: string, rawBody: string | null): Promise<APIGat
     throw err;
   }
 
-  if (action === 'pause') {
-    await stripeClient.subscriptions.update(stripeSubId, {
-      pause_collection: { behavior: 'void' },
-    });
-
-    await updateSubscriptionStatus(userId, 'paused');
-
-    return envelope({
-      statusCode: 200,
-      data: {
-        message: 'Subscription paused successfully',
-        stripeSubscriptionId: stripeSubId,
-        status: 'paused',
-      },
-    });
-  }
-
-  // Resume
-  await stripeClient.subscriptions.update(stripeSubId, {
-    pause_collection: null, // Clear pause_collection to resume
-  });
-
-  await updateSubscriptionStatus(userId, 'active');
+  const changedAt = stripeSnapshotTime();
+  const updated = await stripeClient.subscriptions.update(
+    stripeSubId,
+    action === 'pause' ? { pause_collection: { behavior: 'void' } } : { pause_collection: null } // null clears the pause
+  );
+  const status = subscriptionStatus(updated);
+  await storeStripeState(userId, stripeSubId, changedAt, status);
 
   return envelope({
     statusCode: 200,
     data: {
-      message: 'Subscription resumed successfully',
+      message: action === 'pause' ? 'Subscription paused successfully' : 'Subscription resumed successfully',
       stripeSubscriptionId: stripeSubId,
-      status: 'active',
+      status,
     },
   });
 }
@@ -244,30 +227,21 @@ async function handlePatch(userId: string, rawBody: string | null): Promise<APIG
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Subscription is no longer active in Stripe');
   }
 
-  await stripeClient.subscriptions.update(stripeSubId, {
+  const changedAt = stripeSnapshotTime();
+  const updated = await stripeClient.subscriptions.update(stripeSubId, {
     cancel_at_period_end: false,
   });
 
-  // Remove cancelAt and set status back to active
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt REMOVE cancelAt',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': 'active',
-        ':updatedAt': new Date().toISOString(),
-      },
-    })
-  );
+  // Remove cancelAt and store the state Stripe now reports (active, or paused when a pause is still set)
+  const status = subscriptionStatus(updated);
+  await storeStripeState(userId, stripeSubId, changedAt, status, { remove: ['cancelAt'] });
 
   return envelope({
     statusCode: 200,
     data: {
       message: 'Cancellation undone. Your subscription will continue and you will be charged on the next billing date.',
       stripeSubscriptionId: stripeSubId,
-      status: 'active',
+      status,
     },
   });
 }
@@ -314,29 +288,20 @@ async function handleDelete(userId: string, rawBody: string | null): Promise<API
     }
   }
 
+  const changedAt = stripeSnapshotTime();
+
   if (stripeSubExists && cancelAtCycleEnd) {
-    await stripeClient.subscriptions.update(stripeSubId, {
+    const updated = await stripeClient.subscriptions.update(stripeSubId, {
       cancel_at_period_end: true,
     });
 
-    await ddb.send(
-      new UpdateCommand({
-        TableName: SUBSCRIPTIONS_TABLE,
-        Key: { userId },
-        UpdateExpression: 'SET #status = :status, cancelAt = :cancelAt, updatedAt = :updatedAt',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':status': 'cancellation_requested',
-          ':cancelAt': 'cycle_end',
-          ':updatedAt': new Date().toISOString(),
-        },
-      })
-    );
+    const status = subscriptionStatus(updated);
+    await storeStripeState(userId, stripeSubId, changedAt, status, { set: { cancelAt: 'cycle_end' } });
 
     return envelope({
       statusCode: 200,
       data: {
-        status: 'cancellation_requested',
+        status,
         message: 'Your subscription will remain active until the end of the current billing period.',
         stripeSubscriptionId: stripeSubId,
       },
@@ -348,20 +313,7 @@ async function handleDelete(userId: string, rawBody: string | null): Promise<API
     await stripeClient.subscriptions.cancel(stripeSubId);
   }
 
-  const now = new Date().toISOString();
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression: 'SET #status = :status, endedAt = :endedAt, updatedAt = :updatedAt',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': 'cancelled',
-        ':endedAt': now,
-        ':updatedAt': now,
-      },
-    })
-  );
+  await storeStripeState(userId, stripeSubId, changedAt, 'cancelled', { set: { endedAt: changedAt } });
 
   return envelope({
     statusCode: 200,
@@ -382,17 +334,39 @@ async function getSubscriptionRecord(userId: string): Promise<Record<string, any
   return result.Item;
 }
 
-async function updateSubscriptionStatus(userId: string, status: string): Promise<void> {
-  await ddb.send(
-    new UpdateCommand({
-      TableName: SUBSCRIPTIONS_TABLE,
-      Key: { userId },
-      UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': status,
-        ':updatedAt': new Date().toISOString(),
-      },
-    })
-  );
+/**
+ * Stores a status read from Stripe at `at`, guarded like the webhook's applyFresh: the row must still belong to
+ * `subscriptionId` and hold no Stripe event newer than `at` (a webhook or another request applied after the read).
+ * A skipped write is not an error: the newer state is the stored one. Returns whether it was written.
+ */
+async function storeStripeState(
+  userId: string,
+  subscriptionId: string,
+  at: string,
+  status: string,
+  extra: { set?: Record<string, string>; remove?: string[] } = {}
+): Promise<boolean> {
+  const set = ['lastStripeEventAt = :at', '#status = :status', 'updatedAt = :updatedAt'];
+  const values: Record<string, any> = { ':at': at, ':status': status, ':updatedAt': new Date().toISOString(), ':subId': subscriptionId };
+  for (const [name, value] of Object.entries(extra.set ?? {})) {
+    set.push(`${name} = :${name}`);
+    values[`:${name}`] = value;
+  }
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: SUBSCRIPTIONS_TABLE,
+        Key: { userId },
+        UpdateExpression: `SET ${set.join(', ')}${extra.remove?.length ? ` REMOVE ${extra.remove.join(', ')}` : ''}`,
+        ConditionExpression: 'stripeSubscriptionId = :subId AND (attribute_not_exists(lastStripeEventAt) OR lastStripeEventAt <= :at)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: values,
+      })
+    );
+    return true;
+  } catch (err: any) {
+    if (err.name !== 'ConditionalCheckFailedException') throw err;
+    console.log('stored subscription is newer or belongs to another subscription, write skipped', { userId });
+    return false;
+  }
 }

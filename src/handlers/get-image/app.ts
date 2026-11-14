@@ -49,8 +49,9 @@ export const handler = async (event: APIGatewayProxyEvent, _context?: unknown, _
       return errorResponse(400, ErrorCodes.VALIDATION_ERROR, "That image link isn't valid.");
     }
 
-    // Keys are images/<userId>/<tradeId>/<file>: only the owner may read them (other users get the same 404 as a missing image).
-    if (!getUserId(event) || pathParts[0] !== getUserId(event)) {
+    // Keys are images/<userId>/<tradeId>/<file>, or images/upload/<userId>/<file> before a trade saves them: only the owner may read them (other users get the same 404 as a missing image).
+    const owner = pathParts[0] === 'upload' ? pathParts[1] : pathParts[0];
+    if (!getUserId(event) || owner !== getUserId(event)) {
       return errorResponse(404, ErrorCodes.NOT_FOUND, IMAGE_NOT_FOUND);
     }
 

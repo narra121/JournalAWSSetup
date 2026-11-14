@@ -38,7 +38,7 @@ beforeEach(() => {
   ssmMock.reset();
   fetchMock.mockReset();
   ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: 'key' } });
-  ddbMock.on(GetCommand, { TableName: 'test-subs' }).resolves({});
+  ddbMock.on(GetCommand, { TableName: 'test-subs' }).resolves({ Item: { userId: 'user-1', status: 'trial', trialEnd: new Date(Date.now() + 86400000).toISOString(), plansVersion: 2 } });
   ddbMock.on(UpdateCommand).resolves({ Attributes: { count: 1 } });
 });
 
@@ -59,7 +59,7 @@ describe('POST /v1/enhance-text is metered (BE-008)', () => {
     const body = await res.json();
 
     expect(res.status).toBe(402);
-    expect(body.error).toMatchObject({ code: 'QUOTA_EXCEEDED', feature: 'ai_enhance', limit: 20, plan: 'free' });
+    expect(body.error).toMatchObject({ code: 'QUOTA_EXCEEDED', feature: 'ai_enhance', limit: 500, plan: 'trial' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

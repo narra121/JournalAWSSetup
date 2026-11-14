@@ -205,7 +205,7 @@ describe('extract-trades handler', () => {
       const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
       expect(res.statusCode).toBe(500);
       const hit = err.mock.calls.find((c) => c[0] === 'Gemini HTTP error');
-      expect(hit?.[1]).toEqual({ model: 'gemini-2.5-flash', status: 429, error: 'You exceeded your current quota' });
+      expect(hit?.[1]).toEqual({ model: 'gemini-3.5-flash-lite', status: 429, error: 'You exceeded your current quota' });
     } finally {
       err.mockRestore();
     }
@@ -350,12 +350,28 @@ describe('extract-trades handler', () => {
     expect(fetchUrl).toContain('gemini-2.5-flash-lite');
   });
 
-  it('sends thinkingBudget: 0 in generationConfig', async () => {
+  it('sends no thinkingConfig (gemini-3.5-flash-lite answers 400 to thinkingBudget)', async () => {
     mockGeminiSuccess();
     await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any);
 
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(fetchCallBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+    expect(fetchCallBody.generationConfig).toEqual({ temperature: 0, maxOutputTokens: 4096 });
+    expect(fetchMock.mock.calls[0][1].body).not.toMatch(/thinking/i);
+  });
+
+  it('falls back to gemini-3.5-flash-lite when gemini-2.5-flash-lite is gone (404) or names an unsupported field (400)', async () => {
+    for (const fail of [
+      { ok: false, status: 404, statusText: 'Not Found', text: async () => 'models/gemini-2.5-flash-lite is not found' },
+      { ok: false, status: 400, statusText: 'Bad Request', text: async () => JSON.stringify({ error: { code: 400, message: 'Invalid JSON payload received. Unknown name "foo": Cannot find field.' } }) },
+    ]) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(fail);
+      mockGeminiSuccess();
+      const res = await handler(makeEvent({ imageBase64: 'aGVsbG8=' }), {} as any) as any;
+      expect(res.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][0]).toContain('models/gemini-3.5-flash-lite:generateContent');
+    }
   });
 
   it('sends maxOutputTokens: 4096 in generationConfig', async () => {

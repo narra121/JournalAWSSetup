@@ -911,3 +911,104 @@ describe('get-goals-progress handler', () => {
     expect(dailyStatsCalls[0].args[0].input.IndexName).toBe('stats-by-date-gsi');
   });
 });
+
+// ─── Default goals are a fallback, never added to an account goal (M2) ───────
+
+describe('account goals and the period defaults (accountId null)', () => {
+  const goal = (goalId: string, goalType: string, target: number, accountId: string | null, period = 'weekly') =>
+    ({ userId: 'user-1', goalId: `week#2026-04-06#${goalId}`, goalType, period, target, accountId });
+  const defaults = [
+    goal('default-profit', 'profit', 500, null),
+    goal('default-winRate', 'winRate', 65, null),
+    goal('default-maxDrawdown', 'maxDrawdown', 3, null),
+    goal('default-maxTrades', 'maxTrades', 8, null),
+  ];
+  const progress = async (accountId: string, goals: any[]) => {
+    setupMocks({ dailyStats: [makeDailyRecord()], goals, rules: mockRules });
+    const res = await handler(makeEvent({ accountId, startDate: '2026-04-06', endDate: '2026-04-12', period: 'weekly', periodKey: 'week#2026-04-06' }));
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body!).data;
+  };
+  const targets = (data: any) => ({
+    profit: data.goalProgress.profit.target, winRate: data.goalProgress.winRate.target,
+    maxDrawdown: data.goalProgress.maxDrawdown.target, maxTrades: data.goalProgress.tradeCount.target,
+  });
+
+  it('an account without goals of its own uses the defaults, so its targets are not 0', async () => {
+    const data = await progress('acc1', defaults);
+    expect(targets(data)).toEqual({ profit: 500, winRate: 65, maxDrawdown: 3, maxTrades: 8 });
+    expect(data.goals.map((g: any) => g.goalId).sort()).toEqual(defaults.map((g) => g.goalId).sort());
+  });
+
+  it('an account goal replaces the default of its type only; the other types still fall back', async () => {
+    const data = await progress('acc1', [...defaults, goal('mine', 'profit', 900, 'acc1')]);
+    expect(targets(data)).toEqual({ profit: 900, winRate: 65, maxDrawdown: 3, maxTrades: 8 });
+    expect(data.goals.filter((g: any) => g.goalType === 'profit').map((g: any) => g.goalId)).toEqual(['week#2026-04-06#mine']);
+  });
+
+  it('goals of other accounts never apply to the account', async () => {
+    const data = await progress('acc1', [...defaults, goal('theirs', 'profit', 900, 'acc2')]);
+    expect(data.goalProgress.profit.target).toBe(500);
+  });
+
+  it('ALL: with no account goal of a type the default is the target', async () => {
+    expect(targets(await progress('ALL', defaults))).toEqual({ profit: 500, winRate: 65, maxDrawdown: 3, maxTrades: 8 });
+  });
+
+  it('ALL: the default is not added to the account goals of its type (it used to be summed: 500 + 900)', async () => {
+    const data = await progress('ALL', [...defaults, goal('a1', 'profit', 900, 'acc1')]);
+    expect(data.goalProgress.profit.target).toBe(900);
+    // Other types have no account goal: their defaults still count.
+    expect(data.goalProgress.winRate.target).toBe(65);
+  });
+
+  it('ALL: account goals are summed (profit) or averaged (percent) without the default', async () => {
+    const data = await progress('ALL', [
+      ...defaults,
+      goal('a1', 'profit', 900, 'acc1'), goal('a2', 'profit', 300, 'acc2'),
+      goal('w1', 'winRate', 50, 'acc1'), goal('w2', 'winRate', 70, 'acc2'),
+    ]);
+    expect(data.goalProgress.profit.target).toBe(1200);
+    expect(data.goalProgress.winRate.target).toBe(60);
+    expect(data.goals.filter((g: any) => g.goalType === 'winRate')).toHaveLength(1);
+  });
+
+  it('a default of the other period kind is never used', async () => {
+    const data = await progress('acc1', [goal('default-profit', 'profit', 2000, null, 'monthly'), ...defaults.filter((d) => d.goalType !== 'profit')]);
+    expect(data.goalProgress.profit.target).toBe(0);
+  });
+});
+
+// ─── The projection (M1): only what periodProgress reads ───────────────────
+
+describe('DAILY_STATS_PROJECTION', () => {
+  it('lists the fields the goal results and rule compliance need, and none of the others', async () => {
+    const { DAILY_STATS_PROJECTION } = await import('../app.ts');
+    const listed = DAILY_STATS_PROJECTION.split(', ');
+    expect(listed.sort()).toEqual(['#date', '#sk', 'brokenRulesCounts', 'grossLoss', 'grossProfit', 'pnlSequence', 'tradeCount', 'wins'].sort());
+  });
+
+  it('gives exactly the same results from the projected records as from the full ones, for every period it serves', async () => {
+    const { periodProgress, DAILY_STATS_PROJECTION } = await import('../app.ts');
+    const keep = DAILY_STATS_PROJECTION.split(', ').map((f) => f.replace('#', ''));
+    const project = (r: any) => Object.fromEntries(Object.entries(r).filter(([k]) => keep.includes(k)));
+    const full = [
+      makeDailyRecord({ date: '2026-04-06', sk: 'acc1#2026-04-06', pnlSequence: [120, -50, 80], dayOfWeek: 1, segments: { side: { BUY: { trades: 3 } } } }),
+      makeDailyRecord({ date: '2026-04-07', sk: 'acc1#2026-04-07', tradeCount: 2, wins: 0, losses: 2, grossProfit: 0, grossLoss: 90, totalPnl: -90, pnlSequence: [-40, -50], brokenRulesCounts: { r2: 1 } }),
+      makeDailyRecord({ date: '2026-04-07', sk: 'acc2#2026-04-07', accountId: 'acc2', tradeCount: 1, wins: 1, grossProfit: 30, grossLoss: 0, pnlSequence: [30], brokenRulesCounts: {} }),
+    ];
+    const goals = [
+      { goalId: 'w1', goalType: 'profit', period: 'weekly', target: 100, accountId: null },
+      { goalId: 'w2', goalType: 'maxDrawdown', period: 'weekly', target: 3, accountId: null },
+      { goalId: 'w3', goalType: 'winRate', period: 'weekly', target: 50, accountId: null },
+      { goalId: 'w4', goalType: 'maxTrades', period: 'weekly', target: 5, accountId: null },
+    ];
+    for (const capital of [undefined, 1000]) {
+      const a = periodProgress(full as any, goals, mockRules, [], 'weekly', 'ALL', capital);
+      const b = periodProgress(full.map(project) as any, goals, mockRules, [], 'weekly', 'ALL', capital);
+      expect(b).toEqual(a);
+      expect(a.goalProgress.profit.current).toBe(90); // grossProfit 230 - grossLoss 140
+    }
+  });
+});
+

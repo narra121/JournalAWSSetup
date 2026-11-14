@@ -28,6 +28,7 @@
     "accountId": { "type": ["string", "null"], "minLength": 1 },
     "accountIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 10 },
     "brokenRuleIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 50 },
+    "reviewed": { "type": "boolean" },
     "partialCloses": {
       "type": "array",
       "maxItems": 50,

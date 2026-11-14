@@ -12,7 +12,7 @@ import { getUserId } from '../../shared/auth';
 import { tagsError } from '../../shared/tags';
 import { contractFields } from '../../shared/tradeFields';
 import { calcPnL } from '../../shared/utils/pnl';
-import { copyImagesToTrade } from '../../shared/images';
+import { adoptUploads, copyImagesToTrade, ownsImageKey } from '../../shared/images';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -73,6 +73,7 @@ function buildItem(userId: string, t: any, o: { tradeId: string; accountId: stri
     outcome: t.outcome,
     tags: Array.isArray(t.tags) ? t.tags : [],
     brokenRuleIds: Array.isArray(t.brokenRuleIds) ? t.brokenRuleIds : [],
+    reviewed: t.reviewed === true,
     ...contractFields(t),
     images: o.images,
     createdAt: o.now,
@@ -185,7 +186,7 @@ export const handler: ApiHandler = async (event) => {
             } else if (img.key || img.url) {
               // A key from POST /uploads/images (or an internal import). Arbitrary external URLs are ignored on the bulk path.
               const uploaded = typeof img.key === 'string' ? img.key : img.url;
-              if (uploaded.startsWith(`images/${userId}/`)) {
+              if (ownsImageKey(userId, uploaded)) {
                 images.push({ id: imgId, key: uploaded, timeframe: img.timeframe || null, description: img.description || null });
               }
             }
@@ -201,10 +202,11 @@ export const handler: ApiHandler = async (event) => {
           }
           const nowLocal = new Date().toISOString();
           // The first account's trade owns the uploaded screenshots (images/<user>/<tradeId>/); the others get copies.
+          const ownImages = await adoptUploads(userId, images, tradeIdLocal);
           const itemsToCreate: any[] = [];
           for (const [i, accountId] of accountsToCreate.entries()) {
             const tradeId = i === 0 ? tradeIdLocal : uuid();
-            const itemImages = i === 0 ? images : await copyImagesToTrade(userId, images, tradeId);
+            const itemImages = i === 0 ? ownImages : await copyImagesToTrade(userId, ownImages, tradeId);
             itemsToCreate.push(buildItem(userId, t, { tradeId, accountId, images: itemImages, now: nowLocal, idempotencyKey: idemKeyItem || undefined }));
           }
 
@@ -323,7 +325,7 @@ export const handler: ApiHandler = async (event) => {
         uploadTasks.push({ imgId, key, buffer, contentType, timeframe: img.timeframe || null, description: img.description || null });
       } else if (img.key || img.url) {
         const keyCandidate = typeof img.key === 'string' ? img.key : normalizePotentialKey(img.url, IMAGES_BUCKET);
-        if (keyCandidate && keyCandidate.startsWith(`images/${userId}/`)) {
+        if (keyCandidate && ownsImageKey(userId, keyCandidate)) {
           images.push({ id: imgId, key: keyCandidate, timeframe: img.timeframe || null, description: img.description || null });
         }
       }
@@ -341,7 +343,7 @@ export const handler: ApiHandler = async (event) => {
 
     const now = new Date().toISOString();
     // The first created account's trade owns the uploaded screenshots (images/<user>/<tradeId>/); the others get copies.
-    const storedImages = images.map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null }));
+    const storedImages = (await adoptUploads(userId, images, tradeId)).map(im => ({ id: im.id, key: im.key, timeframe: im.timeframe ?? null, description: im.description ?? null }));
     const itemsToCreate: any[] = [];
     for (const [i, accountId] of toCreate.entries()) {
       const itemTradeId = i === 0 ? tradeId : uuid();

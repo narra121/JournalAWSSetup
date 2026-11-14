@@ -3,9 +3,10 @@ import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { handler as extractTrades } from '../handlers/extract-trades/app';
 import { defaultsFor, errorBody, normalizeErrorBody } from '../shared/apiError';
 import { ddb } from '../shared/dynamo';
-import { computeEntitlements } from './billing/entitlements';
+import { computeEntitlements, effectiveSubscription, isReadOnly } from './billing/entitlements';
 import { createQuota } from './billing/quota';
 import { extractUnits } from './billing/extractUnits';
+import { trialExpiredBody } from './billing/middleware';
 import { quotaExceededBody } from './billing/responses';
 import { stringifyClaims, type TokenVerifier } from './auth/cognito';
 
@@ -38,9 +39,10 @@ function fromProdPool(claims: Record<string, string>): boolean {
 }
 
 /**
- * Function URL entry for `POST /` of the old public extract endpoint: signature-verified JWT, plus the `ai_extract`
- * quota for dev-pool users. Prod-pool callers are not metered: their plan lives in prod, and a dev Free limit would cut
- * off paying users and hide their usage from prod's /v1/me/entitlements.
+ * Function URL entry for `POST /` of the old public extract endpoint: signature-verified JWT, plus the read-only check
+ * and the `ai_extract` quota for dev-pool users. This function can only read Subscriptions, so a record from before the
+ * trial and Pro plans is judged as the web app will store it (`effectiveSubscription`). Prod-pool callers are not
+ * checked: their plan lives in prod, and a dev limit would cut off paying users and hide their usage from prod.
  */
 export const legacyExtract = async (event: any, context?: any) => {
   const header: string | undefined = event?.headers?.authorization || event?.headers?.Authorization;
@@ -59,7 +61,8 @@ export const legacyExtract = async (event: any, context?: any) => {
   let units = 1;
   if (!fromProdPool(claims)) {
     const sub = (await ddb.send(new GetCommand({ TableName: process.env.SUBSCRIPTIONS_TABLE!, Key: { userId } }))).Item;
-    const entitlements = computeEntitlements(sub);
+    const entitlements = computeEntitlements(effectiveSubscription(sub));
+    if (isReadOnly(entitlements)) return json(402, trialExpiredBody());
     quota = createQuota(userId, entitlements);
     units = extractUnits(event.body);
     const taken = await quota.consume('ai_extract', units);

@@ -22,7 +22,8 @@ node scripts/stripe/create-live-prices.mjs --live --confirm   # creates the prod
 Creates (idempotent, found again by lookup key): product `TradeQut Pro`, prices `pro_month_usd`, `pro_year_usd`,
 `pro_month_inr`, `pro_year_inr`, and a Customer Portal configuration (update payment method, invoice history, cancel at
 period end, switch monthly ↔ yearly, customer e-mail/name). Writes `/tradequt/prod/stripe/price/pro_*` and
-`/tradequt/prod/stripe/portalConfigId`. Re-running updates the portal configuration.
+`/tradequt/prod/stripe/portalConfigId`. Re-running updates the portal configuration. A price under one of these lookup keys whose
+amount, currency or interval differs from the catalogue is replaced: a new price takes over the key and the old one is archived.
 
 Webhook endpoint (dashboard → Developers → Webhooks): `https://api.tradequt.com/v1/payments/webhook` with events
 `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,

@@ -6,7 +6,7 @@ import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { getUserId } from '../../shared/auth';
 import { loadFullRecords } from '../../shared/tradeRecords';
 import { presentTrade } from '../../shared/presentTrade';
-import { dayQueryRange, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
+import { dayOf, dayQueryRange, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 
@@ -64,8 +64,10 @@ export const handler: ApiHandler = async (event) => {
     const timeZone = isDay(startDate) || isDay(endDate) ? await getUserTimeZone(userId).catch(() => null) : null;
     const rangeStart = isDay(startDate) ? dayQueryRange(startDate, timeZone).start : startDate;
     const inclusiveEnd = isDay(endDate) ? dayQueryRange(endDate, timeZone).end : endDate;
-    const matches = (it: any) =>
-      !it.deletedAt && (!shouldFilterByAccount || it.accountId === accountId) && (!importBatchId || it.importBatchId === importBatchId);
+    // The query range can include neighbouring-day rows (see dayQueryRange): a bare-day bound keeps only that local day.
+    const inDays = (openDate: string) => (!isDay(startDate) || dayOf(openDate, timeZone) >= startDate) && (!isDay(endDate) || dayOf(openDate, timeZone) <= endDate);
+    const matches = (it: any, openDate: string) =>
+      !it.deletedAt && (!shouldFilterByAccount || it.accountId === accountId) && (!importBatchId || it.importBatchId === importBatchId) && inDays(openDate);
 
     // Walk the date index (keys only) page by page, load the full records, and stop as soon as `limit` records match.
     // The cursor is the index key of the last record consumed, so no record is skipped or repeated between pages.
@@ -94,7 +96,7 @@ export const handler: ApiHandler = async (event) => {
         const row = keyRows[i];
         lastConsumed = { userId: row.userId, tradeId: row.tradeId, openDate: row.openDate };
         const record = full.get(row.tradeId);
-        if (record && matches(record)) items.push(record);
+        if (record && matches(record, row.openDate)) items.push(record);
         if (items.length >= limit) {
           stoppedEarly = i < keyRows.length - 1;
           break;

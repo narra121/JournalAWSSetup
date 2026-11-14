@@ -71,6 +71,8 @@ beforeEach(() => {
   ddbMock.on(UpdateCommand).resolves({});
   ddbMock.on(PutCommand).resolves({});
   ddbMock.on(DeleteCommand).resolves({});
+  // The newest day record of an account (its lastTradeDate); tests that care override it.
+  ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [] });
 });
 
 describe('update-stats stream handler', () => {
@@ -366,7 +368,8 @@ describe('update-stats stream handler', () => {
     );
     expect(accountUpdate).toBeDefined();
     expect(accountUpdate!.args[0].input.UpdateExpression).toContain('ADD #balance :delta');
-    expect(accountUpdate!.args[0].input.ConditionExpression).toBe('attribute_exists(userId)');
+    // Counters are only ADDed to an account that has them (see "account trade count" below).
+    expect(accountUpdate!.args[0].input.ConditionExpression).toBe('attribute_exists(#tradeCount)');
   });
 
   // -- Skips records with no userId ------------------------------------------
@@ -934,6 +937,7 @@ describe('account balance with failed records and retries (BE-004)', () => {
 
   /** The day query for `failDay` throws, every other day returns its trade. */
   const stubDays = (trades: any[], failDay?: string) => {
+    ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [] });
     ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).callsFake((input: any) => {
       const start: string = input.ExpressionAttributeValues[':start'];
       if (failDay && start === failDay) throw new Error('throttled');
@@ -1063,5 +1067,232 @@ describe('dirty flag for the rebuild job (BE-009)', () => {
     ddbMock.on(UpdateCommand, { TableName: 'test-daily-stats' }).rejects(new Error('throttled'));
     const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', a, undefined, 's1')]), {} as any, () => {})) as any;
     expect(res.batchItemFailures).toEqual([]);
+  });
+});
+
+describe('incomplete trade loads (H6)', () => {
+  const unprocessed = { Responses: { 'test-trades': [] }, UnprocessedKeys: { 'test-trades': { Keys: [{ userId: 'user-1', tradeId: 'trade-1' }] } } };
+
+  it('a day whose trades could not all be loaded is not written or deleted, and its records are reported as failures', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const trade = makeTrade();
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: [{ userId: 'user-1', tradeId: 'trade-1' }] });
+    ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [] });
+    ddbMock.on(BatchGetCommand).resolves(unprocessed);
+
+    const res = (await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-partial')]), {} as any, () => {})) as any;
+
+    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'evt-partial' }]);
+    expect(ddbMock.commandCalls(BatchGetCommand)).toHaveLength(4);
+    expect(ddbMock.commandCalls(PutCommand).filter((c) => c.args[0].input.TableName === 'test-daily-stats')).toHaveLength(0);
+    expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
+    // Nothing is applied for a failed record: the redelivery applies it.
+    expect(ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-accounts')).toHaveLength(0);
+    err.mockRestore();
+  });
+
+  it('keys still unprocessed after the retries are retried again on redelivery, not dropped', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const trade = makeTrade();
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: [{ userId: 'user-1', tradeId: 'trade-1' }] });
+    ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [] });
+    ddbMock.on(BatchGetCommand).resolvesOnce(unprocessed).resolvesOnce(unprocessed).resolvesOnce(unprocessed).resolvesOnce(unprocessed)
+      .resolves({ Responses: { 'test-trades': [trade] } });
+    const batch = makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'evt-partial')]);
+
+    expect(((await handler(batch, {} as any, () => {})) as any).batchItemFailures).toHaveLength(1);
+    expect(((await handler(batch, {} as any, () => {})) as any).batchItemFailures).toEqual([]);
+    expect(ddbMock.commandCalls(PutCommand).filter((c) => c.args[0].input.TableName === 'test-daily-stats')).toHaveLength(1);
+    err.mockRestore();
+  });
+});
+
+describe('account trade count and last trade day (M1)', () => {
+  const t = (id: string, extra: Record<string, any> = {}) => makeTrade({ tradeId: id, side: 'BUY', entryPrice: 100, exitPrice: 110, quantity: 1, ...extra }); // +10
+  const accountWrites = () => ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-accounts').map((c) => c.args[0].input);
+  const stubLastDay = (date?: string) => ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: date ? [{ date }] : [] });
+  const stubDay = (trades: any[]) => {
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).resolves({ Items: trades.map((x) => ({ userId: x.userId, tradeId: x.tradeId })) });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': trades } });
+  };
+
+  it('a new trade adds 1 to tradeCount next to its P&L, and lastTradeDate becomes the newest day record of the account', async () => {
+    const trade = t('a');
+    stubDay([trade]);
+    stubLastDay('2026-04-06');
+    await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'e1')]), {} as any, () => {});
+
+    const [write] = accountWrites();
+    expect(write.UpdateExpression).toBe('ADD #balance :delta, #tradeCount :count SET #updatedAt = :now, #lastTradeDate = :lastDay');
+    expect(write.ConditionExpression).toBe('attribute_exists(#tradeCount)');
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':delta': 10, ':count': 1, ':lastDay': '2026-04-06' });
+    // lastTradeDate is read from the day records just written: newest first, one item.
+    const q = ddbMock.commandCalls(QueryCommand).map((c) => c.args[0].input).find((i) => i.TableName === 'test-daily-stats' && i.Limit === 1)!;
+    expect(q).toMatchObject({ ScanIndexForward: false, ExpressionAttributeValues: { ':userId': 'user-1', ':skStart': 'acc-1#0000-01-01', ':skEnd': 'acc-1#9999-12-31' } });
+  });
+
+  it('deleting the last trade removes lastTradeDate and subtracts 1 (a soft delete counts as a delete, a restore as an insert)', async () => {
+    const trade = t('a');
+    stubDay([]);
+    stubLastDay();
+    await handler(makeStreamEvent([makeStreamRecord('REMOVE', undefined, trade, 'e1')]), {} as any, () => {});
+    let [write] = accountWrites();
+    expect(write.UpdateExpression).toBe('ADD #balance :delta, #tradeCount :count SET #updatedAt = :now REMOVE #lastTradeDate');
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':delta': -10, ':count': -1 });
+    expect(write.ExpressionAttributeValues).not.toHaveProperty(':lastDay');
+
+    ddbMock.resetHistory();
+    await handler(makeStreamEvent([makeStreamRecord('MODIFY', { ...trade, deletedAt: 'x' }, trade, 'e2')]), {} as any, () => {});
+    [write] = accountWrites();
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':delta': -10, ':count': -1 });
+
+    ddbMock.resetHistory();
+    stubDay([trade]);
+    stubLastDay('2026-04-06');
+    await handler(makeStreamEvent([makeStreamRecord('MODIFY', trade, { ...trade, deletedAt: 'x' }, 'e3')]), {} as any, () => {});
+    [write] = accountWrites();
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':delta': 10, ':count': 1, ':lastDay': '2026-04-06' });
+  });
+
+  it('moving a trade to another account moves the count; the same day and account changes nothing', async () => {
+    const before = t('a');
+    const after = { ...before, accountId: 'acc-2' };
+    stubDay([after]);
+    stubLastDay('2026-04-06');
+    await handler(makeStreamEvent([makeStreamRecord('MODIFY', after, before, 'e1')]), {} as any, () => {});
+    const byAccount = Object.fromEntries(accountWrites().map((w) => [w.Key!.accountId, w.ExpressionAttributeValues]));
+    expect(byAccount['acc-1']).toMatchObject({ ':count': -1 });
+    expect(byAccount['acc-2']).toMatchObject({ ':count': 1 });
+
+    ddbMock.resetHistory();
+    const edited = { ...before, notes: 'changed' };
+    stubDay([edited]);
+    await handler(makeStreamEvent([makeStreamRecord('MODIFY', edited, before, 'e2')]), {} as any, () => {});
+    expect(accountWrites()).toHaveLength(0);
+  });
+
+  it('moving a trade to another day refreshes lastTradeDate without touching the count', async () => {
+    const before = t('a');
+    const after = { ...before, openDate: '2026-04-09T09:30:00Z' };
+    stubDay([after]);
+    stubLastDay('2026-04-09');
+    await handler(makeStreamEvent([makeStreamRecord('MODIFY', after, before, 'e1')]), {} as any, () => {});
+    const [write] = accountWrites();
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':count': 0, ':lastDay': '2026-04-09' });
+  });
+
+  it('an account created before the counters gets only its balance: an ADD would start the count at the delta', async () => {
+    const trade = t('a');
+    stubDay([trade]);
+    stubLastDay('2026-04-06');
+    ddbMock.on(UpdateCommand, { TableName: 'test-accounts', ConditionExpression: 'attribute_exists(#tradeCount)' })
+      .rejects(Object.assign(new Error('no counters'), { name: 'ConditionalCheckFailedException' }));
+    await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'e1')]), {} as any, () => {});
+
+    const writes = accountWrites();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toMatchObject({ UpdateExpression: 'ADD #balance :delta SET #updatedAt = :now', ConditionExpression: 'attribute_exists(userId)' });
+    expect(writes[1].UpdateExpression).not.toContain('tradeCount');
+  });
+
+  it('an account that no longer exists is ignored, and a failing write does not fail the batch', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const trade = t('a');
+    stubDay([trade]);
+    stubLastDay('2026-04-06');
+    ddbMock.on(UpdateCommand, { TableName: 'test-accounts' }).rejects(Object.assign(new Error('gone'), { name: 'ConditionalCheckFailedException' }));
+    expect(((await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'e1')]), {} as any, () => {})) as any).batchItemFailures).toEqual([]);
+
+    ddbMock.on(UpdateCommand, { TableName: 'test-accounts' }).rejects(new Error('throttled'));
+    expect(((await handler(makeStreamEvent([makeStreamRecord('INSERT', trade, undefined, 'e2')]), {} as any, () => {})) as any).batchItemFailures).toEqual([]);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('Failed to adjust account acc-1'), expect.any(Error));
+    err.mockRestore();
+  });
+
+  it('a trade on a day that is not real, or in the unassigned account, is not counted', async () => {
+    stubDay([]);
+    stubLastDay();
+    await handler(makeStreamEvent([
+      makeStreamRecord('INSERT', t('a', { openDate: 'garbage' }), undefined, 'e1'),
+      makeStreamRecord('INSERT', t('b', { accountId: '-1' }), undefined, 'e2'),
+    ]), {} as any, () => {});
+    expect(accountWrites().filter((w) => w.ExpressionAttributeValues![':count'])).toHaveLength(0);
+  });
+
+  it('records after the first failed one are applied by their redelivery, not twice', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const a = t('a');
+    const b = t('b', { openDate: '2026-04-07T09:30:00Z' });
+    ddbMock.on(QueryCommand, { TableName: 'test-daily-stats' }).resolves({ Items: [{ date: '2026-04-06' }] });
+    ddbMock.on(QueryCommand, { IndexName: 'trades-by-date-gsi' }).callsFake((input: any) => {
+      if (input.ExpressionAttributeValues[':start'] === '2026-04-07') throw new Error('throttled');
+      return { Items: [{ userId: 'user-1', tradeId: 'a' }] };
+    });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [a] } });
+    const res = (await handler(makeStreamEvent([
+      makeStreamRecord('INSERT', a, undefined, 'seq-1'),
+      makeStreamRecord('INSERT', b, undefined, 'seq-2'),
+    ]), {} as any, () => {})) as any;
+    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'seq-2' }]);
+    expect(accountWrites().map((w) => w.ExpressionAttributeValues![':count'])).toEqual([1]);
+    err.mockRestore();
+  });
+});
+
+describe('purge of a user or an account races its own stream records (M6)', () => {
+  const trade = makeTrade({ tradeId: 'a' });
+  const dirtyWrites = () => ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+  const dayWrites = () => ddbMock.commandCalls(PutCommand).filter((c) => c.args[0].input.TableName === 'test-daily-stats');
+  const noAccount = () => ddbMock.on(GetCommand, { TableName: 'test-accounts' }).resolves({});
+
+  beforeEach(() => {
+    ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'b' }] });
+    ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [makeTrade({ tradeId: 'b' })] } });
+  });
+
+  it('a hard REMOVE from an account that is gone only deletes its day: no rebuild, no #dirty flag, no balance write', async () => {
+    noAccount();
+    await handler(makeStreamEvent([makeStreamRecord('REMOVE', undefined, trade, 'e1')]), {} as any, () => {});
+
+    expect(ddbMock.commandCalls(DeleteCommand).map((c) => c.args[0].input)).toEqual([{ TableName: 'test-daily-stats', Key: { userId: 'user-1', sk: 'acc-1#2026-04-06' } }]);
+    expect(dayWrites()).toHaveLength(0);
+    expect(dirtyWrites()).toHaveLength(0);
+    expect(ddbMock.commandCalls(UpdateCommand).filter((c) => c.args[0].input.TableName === 'test-accounts')).toHaveLength(0);
+    expect(ddbMock.commandCalls(QueryCommand).filter((c) => c.args[0].input.IndexName === 'trades-by-date-gsi')).toHaveLength(0);
+    expect(ddbMock.commandCalls(GetCommand).find((c) => c.args[0].input.TableName === 'test-accounts')!.args[0].input.Key).toEqual({ userId: 'user-1', accountId: 'acc-1' });
+  });
+
+  it('a REMOVE from an account that still exists is rebuilt and flagged as before', async () => {
+    ddbMock.on(GetCommand, { TableName: 'test-accounts' }).resolves({ Item: { accountId: 'acc-1' } });
+    await handler(makeStreamEvent([makeStreamRecord('REMOVE', undefined, trade, 'e1')]), {} as any, () => {});
+    expect(dayWrites()).toHaveLength(1);
+    expect(dirtyWrites().map((c) => c.args[0].input.Key)).toEqual([{ userId: '#dirty', sk: 'user-1' }]);
+  });
+
+  it('an account is looked up once per batch, and not at all when the batch also inserts or modifies in it', async () => {
+    noAccount();
+    await handler(makeStreamEvent([
+      makeStreamRecord('REMOVE', undefined, trade, 'e1'),
+      makeStreamRecord('REMOVE', undefined, makeTrade({ tradeId: 'c' }), 'e2'),
+    ]), {} as any, () => {});
+    expect(ddbMock.commandCalls(GetCommand).filter((c) => c.args[0].input.TableName === 'test-accounts')).toHaveLength(1);
+
+    ddbMock.resetHistory();
+    noAccount();
+    await handler(makeStreamEvent([
+      makeStreamRecord('REMOVE', undefined, trade, 'e3'),
+      makeStreamRecord('INSERT', makeTrade({ tradeId: 'd' }), undefined, 'e4'),
+    ]), {} as any, () => {});
+    expect(ddbMock.commandCalls(GetCommand).filter((c) => c.args[0].input.TableName === 'test-accounts')).toHaveLength(0);
+    expect(dayWrites()).toHaveLength(1);
+  });
+
+  it('only the users with a live account are flagged when a batch mixes a purged user and an active one', async () => {
+    ddbMock.on(GetCommand, { TableName: 'test-accounts' }).callsFake((input: any) => (input.Key.userId === 'user-2' ? {} : { Item: { accountId: 'acc-1' } }));
+    await handler(makeStreamEvent([
+      makeStreamRecord('REMOVE', undefined, makeTrade({ userId: 'user-2' }), 'e1'),
+      makeStreamRecord('REMOVE', undefined, makeTrade({ userId: 'user-1' }), 'e2'),
+    ]), {} as any, () => {});
+    expect(dirtyWrites().map((c) => c.args[0].input.Key)).toEqual([{ userId: '#dirty', sk: 'user-1' }]);
   });
 });

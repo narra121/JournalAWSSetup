@@ -50,6 +50,12 @@ export function fyRange(fy: string): { from: string; to: string } | null {
   return { from: `${start}-04-01`, to: `${start + 1}-03-31` };
 }
 
+/** A trade counts in the FY of its close day (IST), or of its open day while it has no close. */
+export const countsInFy = (t: Pick<TradeRow, 'openDate' | 'closeDate'>, period: { from: string; to: string }): boolean => {
+  const day = istDate(t.closeDate ?? t.openDate);
+  return day >= period.from && day <= period.to;
+};
+
 const empty = (): Bucket => ({ trades: 0, wins: 0, losses: 0, grossPnl: 0, fees: 0, netPnl: 0 });
 const addTo = (b: Bucket, t: TradeRow) => {
   const gross = t.pnl + t.fees;
@@ -94,8 +100,8 @@ export function buildTaxReport(trades: TradeRow[], fy: string, accountId: string
   let totalFees = 0;
 
   for (const t of trades) {
+    if (!countsInFy(t, period)) continue;
     const closeIst = istDate(t.closeDate ?? t.openDate);
-    if (closeIst < period.from || closeIst > period.to) continue;
     const cls = t.assetClass ?? 'stock';
     const openIst = istDate(t.openDate);
     let sameDay = openIst === closeIst;

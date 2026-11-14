@@ -84,6 +84,29 @@ describe('list-trades handler', () => {
     expect(body.data.pagination.limit).toBe(50);
   });
 
+  it('west of UTC, a bare-day range keeps only trades whose local day is in the range', async () => {
+    vi.stubEnv('USER_PREFERENCES_TABLE', 'test-prefs');
+    try {
+      ddbMock.on(GetCommand).resolves({ Item: { timeZone: 'America/New_York' } });
+      // New York is UTC-5 in November: 2026-11-10 local = 05:00Z on the 10th to 04:59Z on the 11th.
+      const rows = [
+        { tradeId: 'prev-evening', openDate: '2026-11-10T02:00:00.000Z' },
+        { tradeId: 'morning', openDate: '2026-11-10T15:00:00.000Z' },
+        { tradeId: 'late-night', openDate: '2026-11-11T03:00:00.000Z' },
+        { tradeId: 'date-only', openDate: '2026-11-10' },
+      ].map((r) => ({ userId: 'user-1', accountId: 'acc-1', ...r }));
+      ddbMock.on(QueryCommand).resolves({ Items: rows.map(({ userId, tradeId, openDate }) => ({ userId, tradeId, openDate })) });
+      ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': rows } });
+
+      const res = await handler(makeEvent({ queryStringParameters: { accountId: 'acc-1', startDate: '2026-11-10', endDate: '2026-11-10' } }), {} as any, () => {}) as any;
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).data.trades.map((t: any) => t.tradeId).sort()).toEqual(['date-only', 'late-night', 'morning']);
+    } finally {
+      vi.stubEnv('USER_PREFERENCES_TABLE', '');
+    }
+  });
+
   it('returns empty list when no trades exist with pagination', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
@@ -274,8 +297,8 @@ describe('list-trades handler', () => {
 
   it('accountId=ALL uses correct key condition without accountId filter', async () => {
     const items = [
-      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', accountId: 'acc-1', images: [] },
-      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', accountId: 'acc-2', images: [] },
+      { userId: 'user-1', tradeId: 't1', symbol: 'AAPL', accountId: 'acc-1', openDate: '2024-03-01', images: [] },
+      { userId: 'user-1', tradeId: 't2', symbol: 'MSFT', accountId: 'acc-2', openDate: '2024-03-02', images: [] },
     ];
     ddbMock.on(QueryCommand).resolves({ Items: items });
     ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': items } });
@@ -692,7 +715,7 @@ describe('list-trades handler', () => {
     });
 
     it('returns the newest records first within a page', async () => {
-      ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'new' }, { userId: 'user-1', tradeId: 'old' }] });
+      ddbMock.on(QueryCommand).resolves({ Items: [{ userId: 'user-1', tradeId: 'new', openDate: '2026-06-01T00:00:00Z' }, { userId: 'user-1', tradeId: 'old', openDate: '2026-01-01T00:00:00Z' }] });
       ddbMock.on(BatchGetCommand).resolves({ Responses: { 'test-trades': [
         { userId: 'user-1', tradeId: 'old', accountId: 'a', openDate: '2026-01-01T00:00:00Z' },
         { userId: 'user-1', tradeId: 'new', accountId: 'a', openDate: '2026-06-01T00:00:00Z' },

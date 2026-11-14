@@ -111,15 +111,21 @@ describe('GET /reports/tax', () => {
     expect(longTerm.netPnl).toBeGreaterThanOrEqual(6000);
   });
 
-  it('the older-trades query keeps only trades that closed in the FY, before the cap counts them', async () => {
+  it('both queries keep only trades that count in the FY, before the cap counts them, so trades closed elsewhere cannot cause a 422', async () => {
     const seen: any[] = [];
     const source = { ...tradeSource(fixture), async loadTrades(_u: string, r: any) { seen.push(r); return { trades: [], truncated: false }; } };
     await app({ tax_report: true }, source as any).request('/tax?fy=2026-27');
     expect(seen).toHaveLength(2);
-    expect(seen[1]).toMatchObject({ from: '1970-01-01', to: '2025-02-24' });
-    expect(seen[1].filter({ closeDate: '2026-06-01T05:00:00.000Z' })).toBe(true);
-    expect(seen[1].filter({ closeDate: '2025-06-01T05:00:00.000Z' })).toBe(false);
-    expect(seen[1].filter({ closeDate: null })).toBe(false);
+    expect(seen[0]).toMatchObject({ from: '2025-02-25', to: '2027-03-31' });
+    expect(seen[1]).toMatchObject({ from: '2016-04-01', to: '2025-02-24' });
+    for (const { filter } of seen) {
+      expect(filter({ openDate: '2024-01-10T04:00:00.000Z', closeDate: '2026-06-01T05:00:00.000Z' })).toBe(true);
+      expect(filter({ openDate: '2026-05-04T04:00:00.000Z', closeDate: '2026-05-04T09:00:00.000Z' })).toBe(true);
+      expect(filter({ openDate: '2026-05-04T04:00:00.000Z', closeDate: null })).toBe(true);
+      expect(filter({ openDate: '2025-05-04T04:00:00.000Z', closeDate: '2025-06-01T05:00:00.000Z' })).toBe(false);
+      expect(filter({ openDate: '2026-12-04T04:00:00.000Z', closeDate: '2027-04-02T05:00:00.000Z' })).toBe(false);
+      expect(filter({ openDate: '2025-05-04T04:00:00.000Z', closeDate: null })).toBe(false);
+    }
   });
 
   it('truncated trade data → 422 DATA_TRUNCATED with the reason, no report', async () => {

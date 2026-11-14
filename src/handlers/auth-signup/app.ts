@@ -3,36 +3,28 @@ import { CognitoIdentityProviderClient, SignUpCommand, ResendConfirmationCodeCom
 import { checkRateLimit } from '../auth-rate-limit-wrapper/rateLimit';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { cognitoFailure } from '../../shared/cognitoErrors';
+import { cognitoFilterValue } from '../../shared/cognitoFilter';
 
 const client = new CognitoIdentityProviderClient({});
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID!;
 const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 export const handler: ApiHandler = async (event) => {
+  let email = '';
   try {
-    // Basic request logging (omit password contents for security)
-    try {
-      if (event.body) {
-        const tmp = JSON.parse(event.body);
-        console.log('Signup attempt', { email: tmp.email });
-      } else {
-        console.log('Signup attempt with empty body');
-      }
-    } catch (e) {
-      console.log('Failed to parse body for logging');
-    }
     if (!event.body) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Missing body');
-    const { email, password, name } = JSON.parse(event.body);
+    const body = JSON.parse(event.body);
+    const { password, name } = body;
+    email = body.email;
     if (!email || !password || !name) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'email, name, and password required');
     if (password.length < 8 || password.length > 128) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Password must be 8-128 characters');
     const rl = await checkRateLimit({ key: `signup:${email}`, limit: 5, windowSeconds: 3600 });
     if (!rl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: rl.retryAfter });
 
     // Check if a confirmed user with this email already exists (e.g. Google OAuth)
-    const safeEmail = email.replace(/"/g, '\\"');
     const existing = await client.send(new ListUsersCommand({
       UserPoolId: USER_POOL_ID,
-      Filter: `email = "${safeEmail}"`,
+      Filter: `email = "${cognitoFilterValue(email)}"`,
       Limit: 10,
     }));
     const confirmedUser = existing.Users?.find(u => u.UserStatus === 'CONFIRMED' || u.UserStatus === 'EXTERNAL_PROVIDER');
@@ -49,7 +41,6 @@ export const handler: ApiHandler = async (event) => {
     // If user already exists but is not confirmed, resend the confirmation code
     if (e.name === 'UsernameExistsException') {
       try {
-        const { email } = JSON.parse(event.body!);
         const resendRl = await checkRateLimit({ key: `resend:${email}`, limit: 3, windowSeconds: 900 });
         if (!resendRl.allowed) return errorResponse(429, ErrorCodes.RATE_LIMITED, 'Too many attempts', { retryAfter: resendRl.retryAfter });
         await client.send(new ResendConfirmationCodeCommand({ ClientId: CLIENT_ID, Username: email }));

@@ -38,51 +38,47 @@ export const handler: ApiHandler = async (event) => {
     }
   }
 
+  const flags = (['tradeReminders', 'weeklyReport', 'goalAlerts'] as const).filter((field) => data[field] !== undefined);
+  if (flags.length === 0) {
+    return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Provide at least one of tradeReminders, weeklyReport or goalAlerts');
+  }
+
   try {
-    const setExpressions: string[] = [];
-    const expressionAttributeNames: Record<string, string> = {};
-    const expressionAttributeValues: Record<string, any> = {};
-
-    if (data.tradeReminders !== undefined) {
-      setExpressions.push('#notifications.#tradeReminders = :tradeReminders');
-      expressionAttributeNames['#notifications'] = 'notifications';
-      expressionAttributeNames['#tradeReminders'] = 'tradeReminders';
-      expressionAttributeValues[':tradeReminders'] = data.tradeReminders;
-    }
-    if (data.weeklyReport !== undefined) {
-      setExpressions.push('#notifications.#weeklyReport = :weeklyReport');
-      expressionAttributeNames['#notifications'] = 'notifications';
-      expressionAttributeNames['#weeklyReport'] = 'weeklyReport';
-      expressionAttributeValues[':weeklyReport'] = data.weeklyReport;
-    }
-    if (data.goalAlerts !== undefined) {
-      setExpressions.push('#notifications.#goalAlerts = :goalAlerts');
-      expressionAttributeNames['#notifications'] = 'notifications';
-      expressionAttributeNames['#goalAlerts'] = 'goalAlerts';
-      expressionAttributeValues[':goalAlerts'] = data.goalAlerts;
-    }
-
+    const setExpressions = flags.map((field) => `#notifications.#${field} = :${field}`);
     setExpressions.push('#updatedAt = :updatedAt');
-    expressionAttributeNames['#updatedAt'] = 'updatedAt';
-    expressionAttributeValues[':updatedAt'] = new Date().toISOString();
+    const expressionAttributeNames: Record<string, string> = { '#notifications': 'notifications', '#updatedAt': 'updatedAt' };
+    const expressionAttributeValues: Record<string, any> = { ':updatedAt': new Date().toISOString() };
+    for (const field of flags) {
+      expressionAttributeNames[`#${field}`] = field;
+      expressionAttributeValues[`:${field}`] = data[field];
+    }
 
-    // Nested SET fails on a missing map, so make sure `notifications` exists first (creates the item for new users).
-    await ddb.send(new UpdateCommand({
-      TableName: USER_PREFERENCES_TABLE,
-      Key: { userId },
-      UpdateExpression: 'SET #notifications = if_not_exists(#notifications, :empty)',
-      ExpressionAttributeNames: { '#notifications': 'notifications' },
-      ExpressionAttributeValues: { ':empty': {} },
-    }));
-
-    const result = await ddb.send(new UpdateCommand({
+    const update = () => ddb.send(new UpdateCommand({
       TableName: USER_PREFERENCES_TABLE,
       Key: { userId },
       UpdateExpression: `SET ${setExpressions.join(', ')}`,
+      // A nested SET fails on a missing map.
+      ConditionExpression: 'attribute_exists(#notifications)',
       ExpressionAttributeNames: expressionAttributeNames,
       ExpressionAttributeValues: expressionAttributeValues,
       ReturnValues: 'ALL_NEW'
     }));
+
+    let result;
+    try {
+      result = await update();
+    } catch (e: any) {
+      if (e.name !== 'ConditionalCheckFailedException') throw e;
+      // First write for this user: create the `notifications` map (and the item) once, then set the flags.
+      await ddb.send(new UpdateCommand({
+        TableName: USER_PREFERENCES_TABLE,
+        Key: { userId },
+        UpdateExpression: 'SET #notifications = if_not_exists(#notifications, :empty)',
+        ExpressionAttributeNames: { '#notifications': 'notifications' },
+        ExpressionAttributeValues: { ':empty': {} },
+      }));
+      result = await update();
+    }
 
     const notifications = result.Attributes?.notifications;
 

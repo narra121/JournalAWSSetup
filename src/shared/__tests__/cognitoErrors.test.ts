@@ -22,6 +22,12 @@ describe('cognitoFailure: Cognito wording never reaches the user', () => {
     ['NotAuthorizedException', 'refresh', 400, 'UNAUTHORIZED', /session has ended/i],
     ['SomethingNewException', 'refresh', 400, 'UNAUTHORIZED', /session has ended/i],
     ['SomethingNewException', 'signup', 400, 'VALIDATION_ERROR', /couldn't complete that request/i],
+    ['UserNotConfirmedException', 'login', 403, 'EMAIL_NOT_VERIFIED', /verify your email/i],
+    ['NotAuthorizedException', 'login', 400, 'UNAUTHORIZED', /invalid email or password/i],
+    ['UserNotFoundException', 'login', 400, 'UNAUTHORIZED', /invalid email or password/i],
+    ['TooManyRequestsException', 'login', 429, 'RATE_LIMITED', /too many attempts/i],
+    ['InternalErrorException', 'login', 400, 'VALIDATION_ERROR', /couldn't complete that request/i],
+    ['UserNotConfirmedException', 'forgot-password', 400, 'VALIDATION_ERROR', /couldn't complete that request/i],
   ] as const)('%s on %s -> %i %s', (name, call, status, code, message) => {
     const b = body(named(name), call);
     expect(b.status).toBe(status);
@@ -29,6 +35,19 @@ describe('cognitoFailure: Cognito wording never reaches the user', () => {
     expect(b.message).toMatch(message);
     expect(b.errorMessage).toBe(b.message);
     expect(b.raw).not.toMatch(/arn:aws|Cognito|userpool/);
+  });
+
+  it('the Pre sign-up refusal USER_EXISTS is an existing-account error, not a generic failure', () => {
+    const b = body(named('UserLambdaValidationException', 'PreSignUp failed with error USER_EXISTS.'), 'signup');
+    expect(b.status).toBe(400);
+    expect(b.errorCode).toBe('USER_EXISTS');
+    expect(b.message).toMatch(/already exists/i);
+    expect(b.raw).not.toMatch(/PreSignUp/);
+  });
+
+  it('any other Pre sign-up lambda failure stays generic', () => {
+    const b = body(named('UserLambdaValidationException', 'PreSignUp failed with error Internal.'), 'signup');
+    expect(b.errorCode).toBe('VALIDATION_ERROR');
   });
 
   it('malformed JSON is a 400 about the body, not a Cognito error', () => {

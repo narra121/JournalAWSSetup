@@ -26,26 +26,29 @@ const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
 
 describe('computeEntitlements', () => {
   it.each([
-    ['no record', undefined, 'free', 5],
+    ['no record', undefined, 'free', 0],
     ['active', { status: 'active' }, 'pro', 200],
     ['past_due keeps Pro', { status: 'past_due' }, 'pro', 200],
     ['cancellation_requested inside the period', { status: 'cancellation_requested', currentEnd: iso(day) }, 'pro', 200],
-    ['cancellation_requested after the period', { status: 'cancellation_requested', currentEnd: iso(-day) }, 'free', 5],
+    ['cancellation_requested after the period', { status: 'cancellation_requested', currentEnd: iso(-day) }, 'free', 0],
     ['trial running', { status: 'trial', trialEnd: iso(day) }, 'trial', 200],
-    ['trial expired', { status: 'trial', trialEnd: iso(-day) }, 'free', 5],
+    ['trial expired', { status: 'trial', trialEnd: iso(-day) }, 'free', 0],
     ['cancelled with a running trial', { status: 'cancelled', trialEnd: iso(day) }, 'trial', 200],
-    ['cancelled', { status: 'cancelled' }, 'free', 5],
+    ['cancelled', { status: 'cancelled' }, 'free', 0],
     ['admin grant still valid', { status: 'active', source: 'admin_grant', periodEnd: iso(day) }, 'pro', 200],
-    ['admin grant expired', { status: 'active', source: 'admin_grant', periodEnd: iso(-day) }, 'free', 5],
+    ['admin grant expired', { status: 'active', source: 'admin_grant', periodEnd: iso(-day) }, 'free', 0],
   ])('%s → %s', (_n, sub, plan, extract) => {
     const e = computeEntitlements(sub as any);
     expect(e.plan).toBe(plan);
     expect(e.limits.ai_extract).toBe(extract);
-    expect(Object.values(e.features).every((v) => v === (plan !== 'free'))).toBe(true);
+    expect(e.features).toEqual(plan === 'free'
+      ? { advanced_analytics: true, tax_report: true, unlimited_accounts: true, auto_sync: false }
+      : { advanced_analytics: true, tax_report: true, unlimited_accounts: true, auto_sync: true });
   });
 
-  it('free limits are 5/1/10/3 and trial/pro 200/30/500/200', () => {
-    expect(computeEntitlements(undefined).limits).toEqual({ ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3, ai_enhance: 20 });
+  it('read-only limits are 0 and trial/pro 200/30/500/200', () => {
+    expect(computeEntitlements(undefined).limits).toEqual({ ai_extract: 0, ai_insight: 0, ai_chat: 0, broker_import: 0, ai_enhance: 0 });
+    expect(computeEntitlements({ status: 'trial', trialEnd: iso(day) }).limits).toEqual({ ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 });
     expect(computeEntitlements({ status: 'active' }).limits).toEqual({ ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 });
   });
 });
@@ -97,7 +100,7 @@ describe('plan status and billing facts (BE-E5)', () => {
 });
 
 describe('quota', () => {
-  const free = computeEntitlements(undefined);
+  const free = { ...computeEntitlements(undefined), limits: { ai_extract: 5, ai_insight: 1, ai_chat: 10, broker_import: 3, ai_enhance: 20 } };
 
   it('returns ok:false with the next month reset when the condition fails', async () => {
     ddb.on(UpdateCommand).rejects(new ConditionalCheckFailedException({ message: 'x', $metadata: {} }));

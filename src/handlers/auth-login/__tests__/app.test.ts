@@ -168,14 +168,28 @@ describe('auth-login handler', () => {
     expect(body.errorCode).toBe('UNAUTHORIZED');
   });
 
-  it('returns 400 when Cognito throws InternalErrorException', async () => {
-    cognitoMock.on(InitiateAuthCommand).rejects(new Error('InternalErrorException'));
+  it('does not report a Cognito service failure as a wrong password', async () => {
+    const error = new Error('We encountered an unexpected condition at arn:aws:cognito-idp:us-east-1:123:userpool/x');
+    (error as any).name = 'InternalErrorException';
+    cognitoMock.on(InitiateAuthCommand).rejects(error);
 
     const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('UNAUTHORIZED');
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(res.body).not.toMatch(/arn:aws|invalid email or password/i);
+  });
+
+  it('returns 429 RATE_LIMITED when Cognito throttles the sign-in', async () => {
+    const error = new Error('Rate exceeded');
+    (error as any).name = 'TooManyRequestsException';
+    cognitoMock.on(InitiateAuthCommand).rejects(error);
+
+    const res = await handler(makeEvent({ email: 'test@example.com', password: 'Password1!' }), {} as any, () => {}) as any;
+
+    expect(res.statusCode).toBe(429);
+    expect(JSON.parse(res.body).errorCode).toBe('RATE_LIMITED');
   });
 
   // ── Missing individual fields ───────────────────────────────
@@ -232,6 +246,7 @@ describe('auth-login handler', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.errorCode).toBe('UNAUTHORIZED');
+    expect(body.errorCode).toBe('VALIDATION_ERROR');
+    expect(body.message).toBe('The request body must be valid JSON.');
   });
 });

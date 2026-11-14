@@ -1,4 +1,5 @@
 import { AdminUserGlobalSignOutCommand, CognitoIdentityProviderClient, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +15,7 @@ vi.mock('../../shared/account-data', () => ({
 }));
 
 const cognito = mockClient(CognitoIdentityProviderClient);
+mockClient(DynamoDBDocumentClient).on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
 const { createApp } = await import('../app');
 const { setTokenVerifier } = await import('../auth/cognito');
 const app = createApp();

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 
 // Mock environment variables before importing handler
@@ -51,6 +51,7 @@ function makeEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayP
 beforeEach(() => {
   ddbMock.reset();
   ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [] });
+  ddbMock.on(UpdateCommand).resolves({});
 });
 
 describe('list-accounts handler', () => {
@@ -309,54 +310,94 @@ describe('list-accounts handler', () => {
     expect(data).toMatchObject({ totalBalance: 150, totalPnl: 20, totalsByCurrency: { INR: { balance: 150, pnl: 20 } } });
   });
 
-  // ── Trade counts (DailyStats) ───────────────────────────────
+  // ── Trade counts (M1) ───────────────────────────────────────
 
   describe('trade count per account', () => {
-    const accounts = [
-      { userId: 'user-1', accountId: 'a', name: 'A', balance: 1, initialBalance: 1 },
-      { userId: 'user-1', accountId: 'b', name: 'B', balance: 1, initialBalance: 1 },
-      { userId: 'user-1', accountId: 'c', name: 'C', balance: 1, initialBalance: 1 },
-    ];
+    const stored = (id: string, over: Record<string, any> = {}) => ({ userId: 'user-1', accountId: id, name: id.toUpperCase(), balance: 1, initialBalance: 1, ...over });
+    const statsQueries = () => ddbMock.commandCalls(QueryCommand).map((c) => c.args[0].input).filter((i) => i.TableName === 'test-stats');
+    const heals = () => ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+    const accountsOf = async () => {
+      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+      return Object.fromEntries(JSON.parse(res.body).data.accounts.map((a: any) => [a.accountId, a]));
+    };
 
-    it('sums the daily rows of each account and names its latest day; an account without rows has 0 and null', async () => {
-      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
-      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [
-        { accountId: 'a', date: '2026-11-03', tradeCount: 2 },
-        { accountId: 'a', date: '2026-11-10', tradeCount: 5 },
-        { accountId: 'a', date: '2026-10-30', tradeCount: 1 },
-        { accountId: 'b', date: '2026-09-01', tradeCount: 4 },
-        { accountId: 'gone', date: '2026-09-01', tradeCount: 9 },
+    it('returns the stored tradeCount and lastTradeDate without touching DailyStats', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [
+        stored('a', { tradeCount: 8, lastTradeDate: '2026-11-10' }),
+        stored('b', { tradeCount: 0 }),
       ] });
 
-      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+      const byId = await accountsOf();
 
-      const byId = Object.fromEntries(JSON.parse(res.body).data.accounts.map((a: any) => [a.accountId, a]));
       expect(byId.a).toMatchObject({ name: 'A', tradeCount: 8, lastTradeDate: '2026-11-10' });
-      expect(byId.b).toMatchObject({ tradeCount: 4, lastTradeDate: '2026-09-01' });
-      expect(byId.c).toMatchObject({ tradeCount: 0, lastTradeDate: null });
+      expect(byId.b).toMatchObject({ tradeCount: 0, lastTradeDate: null });
+      expect(statsQueries()).toHaveLength(0);
+      expect(heals()).toHaveLength(0);
     });
 
-    it('reads every day of the user in one pass over the date index, following the pages', async () => {
-      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
-      ddbMock.on(QueryCommand, { TableName: 'test-stats' })
-        .resolvesOnce({ Items: [{ accountId: 'a', date: '2026-11-03', tradeCount: 2 }], LastEvaluatedKey: { k: 1 } })
-        .resolvesOnce({ Items: [{ accountId: 'a', date: '2026-11-04', tradeCount: 3 }] });
+    it('an account created before the counters is summed from its own day records and stored once (no manual backfill)', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [stored('a'), stored('b', { tradeCount: 3, lastTradeDate: '2026-09-01' })] });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [
+        { date: '2026-11-03', tradeCount: 2 },
+        { date: '2026-11-10', tradeCount: 5 },
+        { date: '2026-10-30', tradeCount: 1 },
+      ] });
 
-      const res = (await handler(makeEvent(), {} as any, () => {})) as any;
+      const byId = await accountsOf();
 
-      expect(JSON.parse(res.body).data.accounts[0].tradeCount).toBe(5);
-      const stats = ddbMock.commandCalls(QueryCommand).map((c) => c.args[0].input).filter((i) => i.TableName === 'test-stats');
-      expect(stats).toHaveLength(2);
-      expect(stats[0]).toMatchObject({
-        IndexName: 'stats-by-date-gsi',
-        ExpressionAttributeValues: { ':userId': 'user-1', ':startDate': '0000-01-01', ':endDate': '9999-12-31' },
-        ProjectionExpression: '#sk, #date, accountId, tradeCount',
+      expect(byId.a).toMatchObject({ tradeCount: 8, lastTradeDate: '2026-11-10' });
+      expect(byId.b).toMatchObject({ tradeCount: 3, lastTradeDate: '2026-09-01' });
+      // Only account a is read, by its sort-key range in the main table: not the whole user partition.
+      expect(statsQueries()).toHaveLength(1);
+      expect(statsQueries()[0]).toMatchObject({
+        KeyConditionExpression: 'userId = :userId AND #sk BETWEEN :skStart AND :skEnd',
+        ExpressionAttributeValues: { ':userId': 'user-1', ':skStart': 'a#0000-01-01', ':skEnd': 'a#9999-12-31' },
+      });
+      expect(statsQueries()[0].IndexName).toBeUndefined();
+      expect(heals()).toHaveLength(1);
+      expect(heals()[0]).toMatchObject({
+        TableName: 'test-accounts',
+        Key: { userId: 'user-1', accountId: 'a' },
+        UpdateExpression: 'SET #tradeCount = :count, #lastTradeDate = :last',
+        ConditionExpression: 'attribute_exists(userId) AND attribute_not_exists(#tradeCount)',
+        ExpressionAttributeValues: { ':count': 8, ':last': '2026-11-10' },
       });
     });
 
-    it('ignores rows without a positive count and leaves the other fields of the response as they were', async () => {
-      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [{ userId: 'user-1', accountId: 'a', currency: 'USD', balance: 7, initialBalance: 5 }] });
-      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [{ accountId: 'a', date: '2026-11-03', tradeCount: 0 }, { accountId: 'a', date: '2026-11-04' }] });
+    it('a legacy account without any day record gets 0 and null, and 0 is stored so it is not summed again', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [stored('c')] });
+
+      const byId = await accountsOf();
+
+      expect(byId.c).toMatchObject({ tradeCount: 0, lastTradeDate: null });
+      expect(heals()[0]).toMatchObject({ UpdateExpression: 'SET #tradeCount = :count', ExpressionAttributeValues: { ':count': 0 } });
+    });
+
+    it('follows the pages of the day records, and ignores rows without a positive count', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [stored('a')] });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' })
+        .resolvesOnce({ Items: [{ date: '2026-11-03', tradeCount: 2 }, { date: '2026-12-01', tradeCount: 0 }], LastEvaluatedKey: { k: 1 } })
+        .resolvesOnce({ Items: [{ date: '2026-11-04', tradeCount: 3 }, { date: '2026-12-02' }] });
+
+      const byId = await accountsOf();
+
+      expect(byId.a).toMatchObject({ tradeCount: 5, lastTradeDate: '2026-11-04' });
+      expect(statsQueries()).toHaveLength(2);
+    });
+
+    it('does not fail the request when the counters cannot be stored, nor when another writer stored them first', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [stored('a')] });
+      ddbMock.on(QueryCommand, { TableName: 'test-stats' }).resolves({ Items: [{ date: '2026-11-03', tradeCount: 2 }] });
+
+      ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('raced'), { name: 'ConditionalCheckFailedException' }));
+      expect((await accountsOf()).a).toMatchObject({ tradeCount: 2 });
+
+      ddbMock.on(UpdateCommand).rejects(new Error('throttled'));
+      expect((await accountsOf()).a).toMatchObject({ tradeCount: 2 });
+    });
+
+    it('leaves the other fields of the response as they were', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [{ userId: 'user-1', accountId: 'a', currency: 'USD', balance: 7, initialBalance: 5, tradeCount: 0 }] });
 
       const data = JSON.parse(((await handler(makeEvent(), {} as any, () => {})) as any).body).data;
 
@@ -364,8 +405,8 @@ describe('list-accounts handler', () => {
       expect(data).toMatchObject({ totalBalance: 7, totalPnl: 2, totalsByCurrency: { USD: { balance: 7, pnl: 2 } } });
     });
 
-    it('returns 500 when the DailyStats query fails', async () => {
-      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: accounts });
+    it('returns 500 when the day records of a legacy account cannot be read', async () => {
+      ddbMock.on(QueryCommand, { TableName: 'test-accounts' }).resolves({ Items: [stored('a')] });
       ddbMock.on(QueryCommand, { TableName: 'test-stats' }).rejects(new Error('stats timeout'));
 
       const res = (await handler(makeEvent(), {} as any, () => {})) as any;
@@ -374,4 +415,3 @@ describe('list-accounts handler', () => {
     });
   });
 });
-

@@ -57,6 +57,36 @@ describe('GET /stats sections=advanced (B-107)', () => {
   });
 });
 
+describe('GET /stats realised R (A-03)', () => {
+  const accounts = { Items: [{ accountId: 'usd1', currency: 'USD' }, { accountId: 'inr1', currency: 'INR' }] };
+
+  it('returns avgR, sdR and rCount from prices, overall and per currency', async () => {
+    ddb.on(QueryCommand).callsFake((input) =>
+      input.TableName === 'accounts'
+        ? accounts
+        : { Items: [
+          day('usd1', [t({ quantity: undefined, pnl: 10 }), t({ exitPrice: 90, pnl: -10 })]), // +2, −2
+          day('inr1', [t({ side: 'SELL', stopLoss: 104, exitPrice: 98, pnl: 200 })]), // +0.5
+        ] },
+    );
+    const data = await call({ accountId: 'ALL', startDate: '2026-11-01', endDate: '2026-11-30' });
+    expect(data.rCount).toBe(3);
+    expect(data.avgR).toBeCloseTo(0.5 / 3, 10);
+    expect(data.sdR).toBeCloseTo(Math.sqrt((4 + 4 + 0.25 - 3 * (0.5 / 3) ** 2) / 2), 10);
+    expect(data.byCurrency.USD).toMatchObject({ avgR: 0, rCount: 2 });
+    expect(data.byCurrency.USD.sdR).toBeCloseTo(Math.sqrt(8), 10);
+    expect(data.byCurrency.INR).toMatchObject({ avgR: 0.5, sdR: null, rCount: 1 });
+  });
+
+  it('sends null and 0 when no trade has a stop, and for a range without trades', async () => {
+    ddb.on(QueryCommand).callsFake((input) => (input.TableName === 'accounts' ? accounts : { Items: [day('usd1', [t({ stopLoss: null })])] }));
+    expect(await call({ accountId: 'usd1', startDate: '2026-11-01', endDate: '2026-11-30' })).toMatchObject({ avgR: null, sdR: null, rCount: 0 });
+    ddb.on(QueryCommand).callsFake((input) => (input.TableName === 'accounts' ? accounts : { Items: [] }));
+    const empty = await call({ accountId: 'ALL', startDate: '2026-11-01', endDate: '2026-11-30' });
+    expect(empty).toMatchObject({ totalTrades: 0, avgR: null, sdR: null, rCount: 0 });
+  });
+});
+
 describe('GET /stats max drawdown base (BE-036)', () => {
   const losing = (accountId: string) => day(accountId, [t({ pnl: -10 }), t({ pnl: 5, exitPrice: 115 })]);
 

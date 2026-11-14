@@ -11,7 +11,9 @@ const TRADES_TABLE = process.env.TRADES_TABLE!;
 
 export const MAX_BULK_UPDATE = 200;
 /** Scalar fields `set` may change, and the list fields `add` / `remove` may change. */
-export const SETTABLE_FIELDS = ['setupType', 'tradingSession', 'marketCondition', 'tradeNotes', 'outcome', 'accountId'] as const;
+export const SETTABLE_FIELDS = ['setupType', 'tradingSession', 'marketCondition', 'tradeNotes', 'outcome', 'accountId', 'reviewed'] as const;
+/** `set` fields that take true / false; every other `set` field takes a string or null. */
+const BOOLEAN_FIELDS: readonly string[] = ['reviewed'];
 export const LIST_FIELDS = ['mistakes', 'lessons', 'tags', 'newsEvents', 'brokenRuleIds'] as const;
 
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
@@ -68,6 +70,10 @@ export const handler: ApiHandler = async (event) => {
       if (unknown.length) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `${name} cannot change: ${unknown.join(', ')}`);
     }
     for (const k of Object.keys(set)) {
+      if (BOOLEAN_FIELDS.includes(k)) {
+        if (typeof set[k] !== 'boolean') return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `set.${k} must be true or false`);
+        continue;
+      }
       if (set[k] !== null && typeof set[k] !== 'string') return errorResponse(400, ErrorCodes.VALIDATION_ERROR, `set.${k} must be a string or null`);
       // A trade without an account drops out of every balance and statistic, so accountId is never cleared in bulk.
       if (k === 'accountId' && set[k] === null) return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'set.accountId must be an account id');

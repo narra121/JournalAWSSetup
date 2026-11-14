@@ -23,3 +23,11 @@ export function subscriptionStatus(subscription: Pick<Stripe.Subscription, 'stat
   if (subscription.cancel_at_period_end) return 'cancellation_requested';
   return status;
 }
+
+/**
+ * `lastStripeEventAt` for a state about to be read from Stripe. Stripe stamps events to the second and the write guards
+ * accept `lastStripeEventAt <= eventAt`, so rounding down keeps an event of the same second applicable.
+ */
+export function stripeSnapshotTime(): string {
+  return new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+}

@@ -34,3 +34,30 @@ export async function queryDailyStats(
   } while (exclusiveStartKey);
   return records;
 }
+
+/** Trade count and latest trade day of one account, summed from all its day records. */
+export async function accountTally(userId: string, accountId: string): Promise<{ tradeCount: number; lastTradeDate: string | null }> {
+  const days = await queryDailyStats(userId, accountId, '0000-01-01', '9999-12-31', '#date, tradeCount');
+  let tradeCount = 0;
+  let lastTradeDate: string | null = null;
+  for (const day of days) {
+    if (!(day.tradeCount > 0)) continue;
+    tradeCount += day.tradeCount;
+    if (!lastTradeDate || day.date > lastTradeDate) lastTradeDate = day.date;
+  }
+  return { tradeCount, lastTradeDate };
+}
+
+/** Latest day with trades of one account (its newest day record), or null. */
+export async function latestTradeDay(userId: string, accountId: string): Promise<string | null> {
+  const result = await ddb.send(new QueryCommand({
+    TableName: process.env.DAILY_STATS_TABLE!,
+    KeyConditionExpression: 'userId = :userId AND #sk BETWEEN :skStart AND :skEnd',
+    ProjectionExpression: '#date',
+    ExpressionAttributeNames: { '#sk': 'sk', '#date': 'date' },
+    ExpressionAttributeValues: { ':userId': userId, ':skStart': `${accountId}#0000-01-01`, ':skEnd': `${accountId}#9999-12-31` },
+    ScanIndexForward: false,
+    Limit: 1,
+  }));
+  return result.Items?.[0]?.date ?? null;
+}

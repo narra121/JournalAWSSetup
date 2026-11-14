@@ -175,6 +175,28 @@ describe('stripe-webhook handler', () => {
     expect(updateInput.UpdateExpression).toContain('paidCount');
   });
 
+  it('upgrades a read-only user: the stored record becomes Pro and writes are allowed again', async () => {
+    const { computeEntitlements, isReadOnly } = await import('../../../app/billing/entitlements');
+    const expired = { userId: 'user-1', status: 'trial', trialEnd: '2026-01-01T00:00:00.000Z', plansVersion: 2 };
+    expect(isReadOnly(computeEntitlements(expired))).toBe(true);
+    mockConstructEvent.mockReturnValue(makeWebhookEvent('checkout.session.completed', { id: 'cs_1', metadata: { userId: 'user-1' }, subscription: 'sub_1', customer: 'cus_1' }));
+    mockSubscriptionsRetrieve.mockResolvedValue({
+      id: 'sub_1',
+      status: 'active',
+      metadata: { userId: 'user-1' },
+      items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+      current_period_start: 1700000000,
+      current_period_end: 1702592000,
+    });
+
+    expect(((await handler(makeEvent('{"raw":"body"}'))) as any).statusCode).toBe(200);
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).not.toMatch(/plansVersion|trialEnd/);
+    const stored = { ...expired, status: input.ExpressionAttributeValues![':status'], stripeSubscriptionId: 'sub_1' };
+    expect(computeEntitlements(stored).plan).toBe('pro');
+    expect(isReadOnly(computeEntitlements(stored))).toBe(false);
+  });
+
   // ── invoice.paid ───────────────────────────────────────────
 
   it('handles invoice.paid and increments paidCount with period dates', async () => {

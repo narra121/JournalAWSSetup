@@ -51,7 +51,8 @@ beforeEach(() => {
     return {};
   });
   s3.on(ListObjectsV2Command).callsFake((input) => {
-    if (input.Bucket === 'images-bucket') return { Contents: [{ Key: 'images/u1/t1/a.png' }] };
+    if (input.Bucket === 'images-bucket' && input.Prefix === 'images/u1/') return { Contents: [{ Key: 'images/u1/t1/a.png' }] };
+    if (input.Bucket === 'images-bucket' && input.Prefix === 'images/upload/u1/') return { Contents: [{ Key: 'images/upload/u1/pending.png' }] };
     if (input.Prefix === 'errors/u1/') return { Contents: [{ Key: 'errors/u1/2026-11-01/x.json' }] };
     if (input.Prefix === `errors/${daysAgo(3)}/u1/`) return { Contents: [{ Key: `errors/${daysAgo(3)}/u1/old.json` }] };
     return {};
@@ -72,14 +73,40 @@ describe('purgeUser', () => {
     const result = await purgeUser('u1');
     expect(subscriptionsCancel).toHaveBeenCalledWith('sub_1');
     expect(customersDel).toHaveBeenCalledWith('cus_1');
-    expect(order.filter((o) => o.startsWith('ddb:')).map((o) => o.split(':')[1])).toEqual(['trades', 'accounts', 'goals', 'rules', 'stats', 'ai', 'usage']);
-    expect(order.filter((o) => o.startsWith('del:')).map((o) => o.split(':')[1])).toEqual(['subs', 'prefs', 'opts']);
-    expect(order).toContain('s3:images-bucket:images/u1/t1/a.png');
+    expect(order.filter((o) => o.startsWith('ddb:')).map((o) => o.split(':')[1])).toEqual(['accounts', 'trades', 'goals', 'rules', 'stats', 'ai', 'usage']);
+    expect(order.filter((o) => o.startsWith('del:')).map((o) => o.split(':')[1])).toEqual(['stats', 'subs', 'prefs', 'opts']);
+    expect(order).toContain('s3:images-bucket:images/u1/t1/a.png,images/upload/u1/pending.png');
     expect(order.some((o) => o.startsWith('s3:errors-bucket:') && o.includes('errors/u1/2026-11-01/x.json'))).toBe(true);
     expect(order.some((o) => o.startsWith('s3:errors-bucket:') && o.includes(`errors/${daysAgo(3)}/u1/old.json`))).toBe(true);
     expect(order[order.length - 1]).toBe('cognito:Google_111');
-    expect(result).toMatchObject({ images: 1, errorReports: 2, stripeSubscriptionCancelled: true });
+    expect(result).toMatchObject({ images: 2, errorReports: 2, stripeSubscriptionCancelled: true });
     expect(result.deleted.trades).toBe(1);
+  });
+
+  it('purges the accounts before the trades, so the trade REMOVE records of the purge find no account (M6)', async () => {
+    await purgeUser('u1');
+    const tables = order.filter((o) => o.startsWith('ddb:')).map((o) => o.split(':')[1]);
+    expect(tables.indexOf('accounts')).toBeLessThan(tables.indexOf('trades'));
+  });
+
+  it('deletes the #dirty flag that update-stats set for the user, after the day records of the user (M6)', async () => {
+    const dirty: any[] = [];
+    ddb.on(DeleteCommand).callsFake((input) => {
+      order.push(`del:${input.TableName}`);
+      dirty.push(input);
+      return {};
+    });
+    await purgeUser('u1');
+    expect(dirty[0]).toEqual({ TableName: 'stats', Key: { userId: '#dirty', sk: 'u1' } });
+    expect(order.indexOf('ddb:stats:1')).toBeLessThan(order.indexOf('del:stats'));
+  });
+
+  it('also removes uploads that were never attached to a trade (H10)', async () => {
+    const result = await purgeUser('u1');
+    const prefixes = s3.commandCalls(ListObjectsV2Command).filter((c) => c.args[0].input.Bucket === 'images-bucket').map((c) => c.args[0].input.Prefix);
+    expect(prefixes).toEqual(['images/u1/', 'images/upload/u1/']);
+    expect(order.some((o) => o.startsWith('s3:images-bucket:') && o.includes('images/upload/u1/pending.png'))).toBe(true);
+    expect(result.images).toBe(2);
   });
 
   it('lists error reports by the user prefix instead of scanning every report (BE-073)', async () => {

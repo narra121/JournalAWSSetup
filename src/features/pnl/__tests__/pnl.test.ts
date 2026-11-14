@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { computePnl, outcomeFromPnl, pipSize, round2, type PnlInput } from '../index';
 
 // Must equal the hash pinned in TradeFlow src/lib/pnl/__tests__/pnl.test.ts (same vectors file).
-const VECTORS_SHA256 = '83a091169fefcbd552737322cbff48cffd2a4832b9ed69bc0f78df0d261f08e2';
+const VECTORS_SHA256 = 'b712a25dab08805ca8dfa716e73d86f7eb15dcc51a768748abc09f74ec384352';
 
 const raw = readFileSync(fileURLToPath(new URL('../vectors.json', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 const vectors = JSON.parse(raw) as {

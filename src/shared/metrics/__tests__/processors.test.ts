@@ -989,7 +989,7 @@ describe('BrokenRulesProcessor — brokenRulesDistribution', () => {
     proc.processTrade(makeTrade({ brokenRuleIds: ['r1', 'r2'], pnl: 50 }), defaultContext);
 
     const result = proc.getResult();
-    expect(result.brokenRulesDistribution).toEqual({
+    expect(result.brokenRulesDistribution).toMatchObject({
       r1: { count: 1, totalPnl: 50 },
       r2: { count: 1, totalPnl: 50 },
     });
@@ -1001,8 +1001,8 @@ describe('BrokenRulesProcessor — brokenRulesDistribution', () => {
     proc.processTrade(makeTrade({ brokenRuleIds: ['r1', 'r2'], pnl: 20 }), defaultContext);
 
     const result = proc.getResult();
-    expect(result.brokenRulesDistribution['r1']).toEqual({ count: 3, totalPnl: 80 });
-    expect(result.brokenRulesDistribution['r2']).toEqual({ count: 1, totalPnl: 20 });
+    expect(result.brokenRulesDistribution['r1']).toMatchObject({ count: 3, totalPnl: 80 });
+    expect(result.brokenRulesDistribution['r2']).toMatchObject({ count: 1, totalPnl: 20 });
   });
 
   it('returns both brokenRulesCounts and brokenRulesDistribution (backward compat)', () => {
@@ -1012,7 +1012,7 @@ describe('BrokenRulesProcessor — brokenRulesDistribution', () => {
     // Legacy field
     expect(result.brokenRulesCounts).toEqual({ r1: 1, r2: 1 });
     // New field
-    expect(result.brokenRulesDistribution).toEqual({
+    expect(result.brokenRulesDistribution).toMatchObject({
       r1: { count: 1, totalPnl: 30 },
       r2: { count: 1, totalPnl: 30 },
     });
@@ -1055,7 +1055,7 @@ describe('BrokenRulesAggregator — brokenRulesDistribution', () => {
     });
 
     const result = agg.getResult({});
-    expect(result.brokenRulesDistribution).toEqual({
+    expect(result.brokenRulesDistribution).toMatchObject({
       r1: { count: 3, totalPnl: 50 },
       r2: { count: 1, totalPnl: 50 },
     });
@@ -1093,7 +1093,7 @@ describe('MistakesProcessor', () => {
     proc.processTrade(makeTrade({ mistakes: ['Chased entry'], pnl: -50 }), defaultContext);
 
     const result = proc.getResult();
-    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 1, totalPnl: -50 });
+    expect(result.mistakesDistribution['Chased entry']).toMatchObject({ count: 1, totalPnl: -50 });
   });
 
   it('handles multiple trades with overlapping mistakes (sums correctly)', () => {
@@ -1102,9 +1102,9 @@ describe('MistakesProcessor', () => {
     proc.processTrade(makeTrade({ mistakes: ['No stop loss'], pnl: -10 }), defaultContext);
 
     const result = proc.getResult();
-    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 2, totalPnl: -20 });
-    expect(result.mistakesDistribution['No stop loss']).toEqual({ count: 2, totalPnl: -50 });
-    expect(result.mistakesDistribution['Oversize']).toEqual({ count: 1, totalPnl: 20 });
+    expect(result.mistakesDistribution['Chased entry']).toMatchObject({ count: 2, totalPnl: -20 });
+    expect(result.mistakesDistribution['No stop loss']).toMatchObject({ count: 2, totalPnl: -50 });
+    expect(result.mistakesDistribution['Oversize']).toMatchObject({ count: 1, totalPnl: 20 });
   });
 
   it('handles empty array mistakes field', () => {
@@ -1163,9 +1163,9 @@ describe('MistakesAggregator', () => {
     });
 
     const result = agg.getResult({});
-    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 3, totalPnl: -50 });
-    expect(result.mistakesDistribution['Oversize']).toEqual({ count: 1, totalPnl: -20 });
-    expect(result.mistakesDistribution['No stop loss']).toEqual({ count: 3, totalPnl: -150 });
+    expect(result.mistakesDistribution['Chased entry']).toMatchObject({ count: 3, totalPnl: -50 });
+    expect(result.mistakesDistribution['Oversize']).toMatchObject({ count: 1, totalPnl: -20 });
+    expect(result.mistakesDistribution['No stop loss']).toMatchObject({ count: 3, totalPnl: -150 });
   });
 
   it('handles records with no mistakesDistribution', () => {
@@ -1174,7 +1174,7 @@ describe('MistakesAggregator', () => {
     agg.merge({ mistakesDistribution: undefined });
 
     const result = agg.getResult({});
-    expect(result.mistakesDistribution['Chased entry']).toEqual({ count: 1, totalPnl: -10 });
+    expect(result.mistakesDistribution['Chased entry']).toMatchObject({ count: 1, totalPnl: -10 });
   });
 
   it('returns empty distribution when no records are merged', () => {

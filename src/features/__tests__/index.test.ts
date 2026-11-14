@@ -5,8 +5,8 @@ import { fakeQuota } from './helpers';
 import { featureRoutes } from '../index';
 
 describe('featureRoutes', () => {
-  it('exposes import, insights, chat and reports under their base paths', () => {
-    expect(featureRoutes.map((r) => r.basePath)).toEqual(['/import', '/insights', '/chat', '/reports']);
+  it('exposes import, insights, chat, reports and analysis under their base paths', () => {
+    expect(featureRoutes.map((r) => r.basePath)).toEqual(['/import', '/insights', '/chat', '/reports', '/analysis']);
   });
 
   it('mounts under /v1 like src/app does and serves a route with no AWS access', async () => {

@@ -26,6 +26,15 @@ Parameters:
     Type: String
     Default: /tradequt/geminiApiKey
     Description: Name of SSM SecureString parameter storing the Gemini API key.
+  AiProvider:
+    Type: String
+    Default: openrouter
+    AllowedValues: [openrouter, gemini]
+    Description: AI route. openrouter = one OpenRouter key for every model (reports openai/gpt-6.1-terra, chat openai/gpt-6-luna, extraction and enhance-text google/gemini-3.5-flash-lite); gemini = the direct Gemini API (rollback).
+  OpenRouterApiKeyParamName:
+    Type: String
+    Default: /tradequt/openrouterApiKey
+    Description: Name of SSM SecureString parameter storing the OpenRouter API key (read only when AiProvider is openrouter).
   StripeSecretKeyParamName:
     Type: String
     Description: Name of SSM SecureString parameter storing the Stripe secret key (/tradequt/<stage>/stripeSecretKey). No default, so a stack can never fall back to another stage's key; scripts/deploy.mjs refuses prod unless it is under /tradequt/prod/.
@@ -255,69 +264,91 @@ Resources:
           - IsProd
           - - https://tradequt.com/login
             - https://tradequt.com/login?view=logged-out
+            - https://tradequt.com/login?view=logged-out&scope=all
             - https://tradequt.com/
             - https://www.tradequt.com/login
             - https://www.tradequt.com/login?view=logged-out
+            - https://www.tradequt.com/login?view=logged-out&scope=all
             - https://www.tradequt.com/
           - - https://dev.tradequt.com/login
             - https://dev.tradequt.com/login?view=logged-out
+            - https://dev.tradequt.com/login?view=logged-out&scope=all
             - https://dev.tradequt.com/
             - http://localhost:8080/login
             - http://localhost:8080/login?view=logged-out
+            - http://localhost:8080/login?view=logged-out&scope=all
             - http://localhost:8080/
             - http://localhost:8081/login
             - http://localhost:8081/login?view=logged-out
+            - http://localhost:8081/login?view=logged-out&scope=all
             - http://localhost:8081/
             - http://localhost:8090/login
             - http://localhost:8090/login?view=logged-out
+            - http://localhost:8090/login?view=logged-out&scope=all
             - http://localhost:8090/
             - http://localhost:8091/login
             - http://localhost:8091/login?view=logged-out
+            - http://localhost:8091/login?view=logged-out&scope=all
             - http://localhost:8091/
             - http://localhost:8095/login
             - http://localhost:8095/login?view=logged-out
+            - http://localhost:8095/login?view=logged-out&scope=all
             - http://localhost:8095/
             - http://localhost:5173/login
             - http://localhost:5173/login?view=logged-out
+            - http://localhost:5173/login?view=logged-out&scope=all
             - http://localhost:5173/
             - http://localhost:5180/login
             - http://localhost:5180/login?view=logged-out
+            - http://localhost:5180/login?view=logged-out&scope=all
             - http://localhost:5180/
             - http://localhost:5181/login
             - http://localhost:5181/login?view=logged-out
+            - http://localhost:5181/login?view=logged-out&scope=all
             - http://localhost:5181/
             - http://localhost:5182/login
             - http://localhost:5182/login?view=logged-out
+            - http://localhost:5182/login?view=logged-out&scope=all
             - http://localhost:5182/
             - http://localhost:5183/login
             - http://localhost:5183/login?view=logged-out
+            - http://localhost:5183/login?view=logged-out&scope=all
             - http://localhost:5183/
             - http://localhost:5184/login
             - http://localhost:5184/login?view=logged-out
+            - http://localhost:5184/login?view=logged-out&scope=all
             - http://localhost:5184/
             - http://localhost:5185/login
             - http://localhost:5185/login?view=logged-out
+            - http://localhost:5185/login?view=logged-out&scope=all
             - http://localhost:5185/
             - http://localhost:5187/login
             - http://localhost:5187/login?view=logged-out
+            - http://localhost:5187/login?view=logged-out&scope=all
             - http://localhost:5187/
             - http://localhost:5190/login
             - http://localhost:5190/login?view=logged-out
+            - http://localhost:5190/login?view=logged-out&scope=all
             - http://localhost:5190/
             - http://localhost:5191/login
             - http://localhost:5191/login?view=logged-out
+            - http://localhost:5191/login?view=logged-out&scope=all
             - http://localhost:5191/
             - http://localhost:5192/login
             - http://localhost:5192/login?view=logged-out
+            - http://localhost:5192/login?view=logged-out&scope=all
             - http://localhost:5192/
             - http://localhost:4173/login
             - http://localhost:4173/login?view=logged-out
+            - http://localhost:4173/login?view=logged-out&scope=all
             - http://localhost:4173/
             - http://localhost:4174/login
             - http://localhost:4174/login?view=logged-out
+            - http://localhost:4174/login?view=logged-out&scope=all
             - http://localhost:4174/
             - http://localhost:4199/login
             - http://localhost:4199/login?view=logged-out
+            - http://localhost:4199/login?view=logged-out&scope=all
             - http://localhost:4199/
         - - http://localhost:8080/
 
@@ -410,6 +441,11 @@ Resources:
               - TransitionInDays: 90
                 StorageClass: GLACIER_IR
             ExpirationInDays: 1825
+          # Screenshots uploaded before a trade took them (src/shared/images.ts uploadPrefix); a saved trade holds its own copy.
+          - Id: ExpireUnsavedUploads
+            Status: Enabled
+            Prefix: images/upload/
+            ExpirationInDays: 1
 
   # Explicit bucket policy to enforce secure transport only
   ImagesBucketPolicy:
@@ -775,6 +811,7 @@ Resources:
                 Action: ssm:GetParameter
                 Resource:
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OpenRouterApiKeyParamName}"
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParamName}"
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeWebhookSecretParamName}"
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminSecretParamName}"
@@ -852,6 +889,8 @@ Resources:
           LOG_LEVEL: info
           GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
           GEMINI_REQUEST_TIMEOUT_MS: "50000"
+          AI_PROVIDER: !Ref AiProvider
+          OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParamName
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParamName
           STRIPE_WEBHOOK_SECRET_PARAM: !Ref StripeWebhookSecretParamName
           ADMIN_SECRET_PARAM: !Ref AdminSecretParamName
@@ -1063,6 +1102,8 @@ Resources:
           USER_POOL_ID_PARAM: !Sub "/tradequt/${Environment}/userPoolId"
           GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
           GEMINI_REQUEST_TIMEOUT_MS: "55000"
+          AI_PROVIDER: !Ref AiProvider
+          OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParamName
           STAGE_NAME: !Ref Environment
           FROM_EMAIL: !Sub "TradeQut <noreply@${AppDomain}>"
           APP_URL: !Sub "https://${AppHost}"
@@ -1077,6 +1118,7 @@ Resources:
               Resource:
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tradequt/${Environment}/userPoolId"
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OpenRouterApiKeyParamName}"
             - Effect: Allow
               Action: kms:Decrypt
               Resource: "*"
@@ -1241,6 +1283,8 @@ Resources:
           USAGE_TABLE: !Ref UsageTable
           GEMINI_API_KEY_PARAM: !Ref GeminiApiKeyParamName
           GEMINI_REQUEST_TIMEOUT_MS: "55000"
+          AI_PROVIDER: !Ref AiProvider
+          OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParamName
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SubscriptionsTable
@@ -1249,7 +1293,9 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: ssm:GetParameter
-              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiApiKeyParamName}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OpenRouterApiKeyParamName}"
             - Effect: Allow
               Action: kms:Decrypt
               Resource: "*"

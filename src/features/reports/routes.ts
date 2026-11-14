@@ -2,9 +2,8 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../../app/types';
 import { planRequired } from '../../app/billing/responses';
 import { fail, ok } from '../http';
-import { dynamoTradeSource, MAX_LOADED_TRADES, type TradeSource } from '../trades-repo';
-import { istDate } from '../import/table';
-import { buildTaxReport, fyRange } from './tax';
+import { dynamoTradeSource, MAX_LOADED_TRADES, type TradeRow, type TradeSource } from '../trades-repo';
+import { buildTaxReport, countsInFy, fyRange } from './tax';
 
 export interface ReportDeps {
   trades: TradeSource;
@@ -12,6 +11,8 @@ export interface ReportDeps {
 
 /** Delivery trades can open long before the FY they close in; the lookback covers the long-term threshold. */
 const LOOKBACK_DAYS = 400;
+/** Older positions are read back this many years before the FY: one held longer than that is not in the report. */
+const MAX_HOLDING_YEARS = 10;
 
 export function reportsApp(deps: ReportDeps = { trades: dynamoTradeSource }): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -29,11 +30,12 @@ export function reportsApp(deps: ReportDeps = { trades: dynamoTradeSource }): Ho
 
     const from = new Date(Date.parse(`${range.from}T00:00:00Z`) - LOOKBACK_DAYS * 86_400_000).toISOString().slice(0, 10);
     const userId = c.get('userId');
-    const inRange = await deps.trades.loadTrades(userId, { from, to: range.to, accountId: accountId ?? null });
+    const inFy = (t: TradeRow) => countsInFy(t, range);
+    const inRange = await deps.trades.loadTrades(userId, { from, to: range.to, accountId: accountId ?? null, filter: inFy });
     // A delivery position can be held for years: trades opened before the lookback that closed in this FY.
     const dayBeforeFrom = new Date(Date.parse(`${from}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    const closedInFy = (t: { closeDate: string | null }) => !!t.closeDate && istDate(t.closeDate) >= range.from && istDate(t.closeDate) <= range.to;
-    const older = await deps.trades.loadTrades(userId, { from: '1970-01-01', to: dayBeforeFrom, accountId: accountId ?? null, filter: closedInFy });
+    const oldest = `${Number(range.from.slice(0, 4)) - MAX_HOLDING_YEARS}-04-01`;
+    const older = await deps.trades.loadTrades(userId, { from: oldest, to: dayBeforeFrom, accountId: accountId ?? null, filter: inFy });
     const loaded = {
       trades: [...new Map([...older.trades, ...inRange.trades].map((t) => [t.id, t])).values()],
       truncated: inRange.truncated || older.truncated,

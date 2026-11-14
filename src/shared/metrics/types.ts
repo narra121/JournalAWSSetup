@@ -112,7 +112,13 @@ export interface AggregatedStats {
   avgWin: number;
   avgLoss: number;
   expectancy: number;
+  /** Average planned R:R of the trades that recorded one (a plan, not a result). */
   avgRiskReward: number;
+  /** Realised R from prices (CONTRACT I2) over the `rCount` trades with a stop and an exit price; null when none. */
+  avgR?: number | null;
+  /** Sample standard deviation of realised R; null below 2 trades with an R. */
+  sdR?: number | null;
+  rCount?: number;
 
   bestTrade: number;
   worstTrade: number;

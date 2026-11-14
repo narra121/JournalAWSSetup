@@ -163,6 +163,9 @@
       },
       "maxItems": 50
     },
+    "reviewed": {
+      "type": "boolean"
+    },
     "images": {
       "type": "array",
       "maxItems": 6,

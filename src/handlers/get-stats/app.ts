@@ -8,7 +8,7 @@ import { queryDailyStats } from '../../shared/dailyStats';
 import { getUserId } from '../../shared/auth';
 import { envelope, errorResponse, ErrorCodes } from '../../shared/validation';
 import { aggregateDailyRecords } from '../../shared/stats-aggregator';
-import { DailyStatsRecord } from '../../shared/metrics/types';
+import { AggregatedStats, AggregationContext, DailyStatsRecord } from '../../shared/metrics/types';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const userId = getUserId(event);
@@ -41,7 +41,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
 
-    const stats = aggregateDailyRecords(records, { totalCapital, includeEquityCurve });
+    const stats = aggregate(records, { totalCapital, includeEquityCurve });
 
     // All accounts: also one aggregate per account currency (amounts in different currencies must not be summed).
     let perCurrency: Record<string, unknown> = {};
@@ -53,7 +53,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         groups.set(currency, [...(groups.get(currency) ?? []), record]);
       }
       perCurrency = {
-        byCurrency: Object.fromEntries([...groups].map(([currency, rows]) => [currency, aggregateDailyRecords(rows, { totalCapital, includeEquityCurve })])),
+        byCurrency: Object.fromEntries([...groups].map(([currency, rows]) => [currency, aggregate(rows, { totalCapital, includeEquityCurve })])),
         currencies: [...groups.keys()].sort(),
       };
     }
@@ -73,6 +73,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve stats');
   }
 };
+
+/** The realised-R fields are present (null / 0) even for a range without daily records. */
+function aggregate(records: DailyStatsRecord[], options: AggregationContext): AggregatedStats {
+  return { avgR: null, sdR: null, rCount: 0, ...aggregateDailyRecords(records, options) };
+}
 
 async function accountInitialBalance(userId: string, accountId: string): Promise<number | undefined> {
   try {

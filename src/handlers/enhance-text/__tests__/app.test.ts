@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
@@ -6,6 +6,8 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 // Stub env before importing handler
 vi.stubEnv('GEMINI_API_KEY_PARAM', '/test/gemini-key');
 vi.stubEnv('GEMINI_REQUEST_TIMEOUT_MS', '5000');
+// The direct Gemini rollback path; the OpenRouter default is covered at the end of the file.
+vi.stubEnv('AI_PROVIDER', 'gemini');
 
 // Mock SSM
 const ssmMock = mockClient(SSMClient);
@@ -141,7 +143,7 @@ describe('enhance-text handler', () => {
   });
 
   it('returns 502 when AI model returns empty response', async () => {
-    fetchMock.mockResolvedValueOnce({
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         candidates: [{ content: { parts: [{ text: '' }] } }],
@@ -150,6 +152,7 @@ describe('enhance-text handler', () => {
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
@@ -266,46 +269,49 @@ describe('enhance-text handler', () => {
   // ── Gemini API returns empty/null response structures ──
 
   it('returns 502 when AI response has no candidates array', async () => {
-    fetchMock.mockResolvedValueOnce({
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({}),
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
 
   it('returns 502 when AI response has empty candidates array', async () => {
-    fetchMock.mockResolvedValueOnce({
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ candidates: [] }),
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
 
   it('returns 502 when AI response candidate has null content', async () => {
-    fetchMock.mockResolvedValueOnce({
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ candidates: [{ content: null }] }),
     });
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
   });
 
   it('returns 502 when AI response content is whitespace-only', async () => {
-    fetchMock.mockResolvedValueOnce({
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         candidates: [{ content: { parts: [{ text: '   \n\t  ' }] } }],
@@ -315,6 +321,7 @@ describe('enhance-text handler', () => {
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
     // The handler trims the content — whitespace-only becomes empty string
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
@@ -412,12 +419,13 @@ describe('enhance-text handler', () => {
     expect(fetchUrl).toContain('gemini-2.5-flash-lite');
   });
 
-  it('sends thinkingBudget: 0 in generationConfig', async () => {
+  it('sends no thinkingConfig (gemini-3.5-flash-lite answers 400 to thinkingBudget)', async () => {
     mockFetchSuccess('Enhanced text.');
     await handler(makeEvent({ text: 'test text' }), {} as any);
 
     const fetchCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(fetchCallBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+    expect(fetchCallBody.generationConfig).toEqual({ temperature: 0.2, maxOutputTokens: 8192 });
+    expect(fetchMock.mock.calls[0][1].body).not.toMatch(/thinking/i);
   });
 
   it('allows an output as long as a 10,000-character note (maxOutputTokens 8192)', async () => {
@@ -452,7 +460,7 @@ describe('enhance-text handler', () => {
 
   // ── Model fallback ──────────────────────────────────────────
 
-  it('falls back to gemini-2.5-flash on 429 from primary model', async () => {
+  it('falls back to gemini-3.5-flash-lite on 429 from primary model', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 429,
@@ -466,10 +474,10 @@ describe('enhance-text handler', () => {
     const body = JSON.parse(res.body);
     expect(body.data.enhancedText).toBe('Enhanced from fallback.');
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1][0]).toContain('gemini-2.5-flash');
+    expect(fetchMock.mock.calls[1][0]).toContain('gemini-3.5-flash-lite');
   });
 
-  it('falls back to gemini-2.5-flash on 503 from primary model', async () => {
+  it('falls back to gemini-3.5-flash-lite on 503 from primary model', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 503,
@@ -485,6 +493,33 @@ describe('enhance-text handler', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('falls back when the first model answers 400 naming an unsupported field', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: { code: 400, message: 'Request contains an invalid argument.', status: 'INVALID_ARGUMENT' } }),
+    });
+    mockFetchSuccess('Enhanced from fallback.');
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(fetchMock.mock.calls[1][0]).toContain('gemini-3.5-flash-lite');
+  });
+
+  it('a 400 that names no unsupported field fails fast', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } }),
+    });
+
+    const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
+
+    expect(res.statusCode).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry on non-retryable error (e.g. 401)', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
@@ -494,6 +529,67 @@ describe('enhance-text handler', () => {
 
     const res = await handler(makeEvent({ text: 'test text' }), {} as any) as any;
 
+    expect(res.statusCode).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('enhance-text via OpenRouter (AI_PROVIDER=openrouter)', () => {
+  const routerReply = (content: string, finish = 'stop') => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ model: 'google/gemini-3.5-flash-lite', choices: [{ finish_reason: finish, message: { role: 'assistant', content } }], usage: { prompt_tokens: 9, completion_tokens: 3, cost: 0.00001 } }),
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('AI_PROVIDER', 'openrouter');
+    vi.stubEnv('OPENROUTER_API_KEY_PARAM', '/tradequt/openrouterApiKey');
+    ssmMock.on(GetParameterCommand, { Name: '/tradequt/openrouterApiKey' }).resolves({ Parameter: { Value: 'router-key' } });
+  });
+  afterEach(() => {
+    vi.stubEnv('AI_PROVIDER', 'gemini');
+    vi.stubEnv('OPENROUTER_API_KEY_PARAM', undefined);
+  });
+
+  it('sends the text to google/gemini-3.5-flash-lite with data_collection deny and returns the corrected text', async () => {
+    fetchMock.mockResolvedValueOnce(routerReply('I bought two lots.'));
+    const res = (await handler(makeEvent({ text: 'i buyed two lot' }), {} as any)) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.enhancedText).toBe('I bought two lots.');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(init.headers.Authorization).toBe('Bearer router-key');
+    const sent = JSON.parse(init.body);
+    expect(sent).toMatchObject({ model: 'google/gemini-3.5-flash-lite', temperature: 0.2, max_tokens: 8192, provider: { data_collection: 'deny' } });
+    expect(sent.messages).toHaveLength(1);
+    expect(sent.messages[0]).toMatchObject({ role: 'user', content: expect.stringContaining('i buyed two lot') });
+    expect(init.body).not.toMatch(/thinking|reasoning/i);
+    expect(res.body).not.toContain('router-key');
+  });
+
+  it('a reply cut at the token limit (finish_reason length) is a 502, not a partial note', async () => {
+    fetchMock.mockResolvedValueOnce(routerReply('Half of the', 'length'));
+    const res = (await handler(makeEvent({ text: 'a long note' }), {} as any)) as any;
+    expect(res.statusCode).toBe(502);
+  });
+
+  it('429 and 402 (no credits) are a 502 after one call: there is no second model', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 429, statusText: 'Too Many Requests', text: async () => 'Rate limited' });
+    const limited = (await handler(makeEvent({ text: 'fix' }), {} as any)) as any;
+    expect(limited.statusCode).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 402, statusText: 'Payment Required', text: async () => '{"error":{"code":402,"message":"Insufficient credits"}}' });
+    const res = (await handler(makeEvent({ text: 'fix' }), {} as any)) as any;
+    expect(res.statusCode).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('an empty answer is a 502 after one call', async () => {
+    fetchMock.mockResolvedValue(routerReply(''));
+    const res = (await handler(makeEvent({ text: 'fix' }), {} as any)) as any;
     expect(res.statusCode).toBe(502);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

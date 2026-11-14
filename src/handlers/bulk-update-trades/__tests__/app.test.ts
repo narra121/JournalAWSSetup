@@ -38,6 +38,16 @@ describe('bulk-update-trades', () => {
     expect(Object.keys(byTrade.t1)).not.toContain('accountId');
   });
 
+  it('marks many trades reviewed (or not) in one request, alongside other fields', async () => {
+    const res = await call(event({ tradeIds: ['t1', 't2'], set: { reviewed: true, outcome: 'TP' } }));
+    expect(JSON.parse(res.body).data).toMatchObject({ updated: 2, updatedIds: ['t1', 't2'], notFound: [], failed: [] });
+    expect([written(0), written(1)]).toEqual([{ reviewed: true, outcome: 'TP' }, { reviewed: true, outcome: 'TP' }]);
+
+    ddb.resetHistory();
+    await call(event({ tradeIds: ['t1'], set: { reviewed: false } }));
+    expect(written(0)).toEqual({ reviewed: false });
+  });
+
   it('every update is scoped to the caller and conditional on the trade existing', async () => {
     await call(event({ tradeIds: ['t1'], set: { tradeNotes: 'x' } }));
     expect(input(0)).toMatchObject({ Key: { userId: 'u1', tradeId: 't1' }, ConditionExpression: 'attribute_exists(tradeId) AND attribute_not_exists(deletedAt)' });
@@ -65,6 +75,8 @@ describe('bulk-update-trades', () => {
     ['a list field in set', { tradeIds: ['t1'], set: { mistakes: ['x'] } }],
     ['non-string list entries', { tradeIds: ['t1'], add: { tags: [1] } }],
     ['a non-string scalar', { tradeIds: ['t1'], set: { setupType: 5 } }],
+    ['a reviewed that is not true or false', { tradeIds: ['t1'], set: { reviewed: 'yes' } }],
+    ['a null reviewed', { tradeIds: ['t1'], set: { reviewed: null } }],
   ])('400 for %s', async (_n, body) => {
     expect((await call(event(body))).statusCode).toBe(400);
     expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);

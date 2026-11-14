@@ -14,6 +14,7 @@ const ssmMock = mockClient(SSMClient);
 
 // ─── Mock Stripe ────────────────────────────────────────────────
 const mockSessionsRetrieve = vi.fn();
+const mockSubscriptionsRetrieve = vi.fn();
 
 vi.mock('stripe', () => {
   return {
@@ -24,6 +25,7 @@ vi.mock('stripe', () => {
             retrieve: mockSessionsRetrieve,
           },
         },
+        subscriptions: { retrieve: mockSubscriptionsRetrieve },
       };
     }),
   };
@@ -87,10 +89,13 @@ function makeStripeSession(overrides: Record<string, any> = {}): any {
     customer: 'cus_test_abc',
     subscription: {
       id: 'sub_test_xyz',
+      status: 'active',
+      pause_collection: null,
+      cancel_at_period_end: false,
       current_period_start: Math.floor(Date.now() / 1000) - 86400 * 15,
       current_period_end: Math.floor(Date.now() / 1000) + 86400 * 15,
       items: {
-        data: [{ price: { id: 'price_pro_monthly' } }],
+        data: [{ price: { id: 'price_pro_monthly', currency: 'usd', unit_amount: 499, recurring: { interval: 'month' } } }],
       },
     },
     ...overrides,
@@ -103,6 +108,7 @@ beforeEach(() => {
   ddbMock.reset();
   ssmMock.reset();
   mockSessionsRetrieve.mockReset();
+  mockSubscriptionsRetrieve.mockReset();
 
   // Default SSM returns a valid Stripe key
   ssmMock.on(GetParameterCommand).resolves({
@@ -232,7 +238,7 @@ describe('verify-checkout-session handler', () => {
     expect(input.TableName).toBe('test-subscriptions');
     expect(input.Key).toEqual({ userId: 'user-1' });
     expect(input.ExpressionAttributeValues).toMatchObject({
-      ':active': 'active',
+      ':status': 'active',
       ':subId': 'sub_test_xyz',
       ':custId': 'cus_test_abc',
       ':planId': 'price_pro_monthly',
@@ -257,39 +263,27 @@ describe('verify-checkout-session handler', () => {
     expect(input.ExpressionAttributeValues![':custId']).toBe('cus_object_123');
   });
 
-  it('handles subscription as string ID in response data', async () => {
-    // When subscription is a string (not expanded), the response should still return it
-    mockSessionsRetrieve.mockResolvedValue(makeStripeSession({
-      subscription: 'sub_string_only',
-      status: 'complete',
-      payment_status: 'paid',
-    }));
+  it('a subscription that came back as an id is retrieved, then stored like an expanded one', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession({ subscription: 'sub_string_only' }));
+    mockSubscriptionsRetrieve.mockResolvedValue({ ...makeStripeSession().subscription, id: 'sub_string_only' });
 
-    const event = makeEvent({ session_id: 'cs_test_123' });
-    const res = await handler(event) as any;
+    const res = await handler(makeEvent({ session_id: 'cs_test_123' })) as any;
 
     expect(res.statusCode).toBe(200);
+    expect(mockSubscriptionsRetrieve).toHaveBeenCalledWith('sub_string_only');
     const body = JSON.parse(res.body);
-    expect(body.data.status).toBe('active');
-    // When subscription is a string, DDB update is skipped (no sub.id)
-    // But the response should still include the subscription ID
+    expect(body.data).toMatchObject({ status: 'active', subscriptionId: 'sub_string_only' });
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues).toMatchObject({ ':subId': 'sub_string_only' });
   });
 
-  it('does not update DDB when subscription is null on complete+paid session', async () => {
-    mockSessionsRetrieve.mockResolvedValue(makeStripeSession({
-      subscription: null,
-    }));
+  it('a paid session without a subscription is pending, not active, and writes nothing (M7)', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession({ subscription: null }));
 
-    const event = makeEvent({ session_id: 'cs_test_123' });
-    const res = await handler(event) as any;
+    const res = await handler(makeEvent({ session_id: 'cs_test_123' })) as any;
 
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.data.status).toBe('active');
-
-    // Verify DDB was NOT called since subscription is null
-    const updateCalls = ddbMock.commandCalls(UpdateCommand);
-    expect(updateCalls).toHaveLength(0);
+    expect(JSON.parse(res.body).data.status).toBe('pending');
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
   it('converts period timestamps from seconds to ISO strings', async () => {
@@ -504,9 +498,64 @@ describe('verify-checkout-session handler', () => {
     mockSessionsRetrieve.mockResolvedValue(makeStripeSession());
     await handler(makeEvent({ session_id: 'cs_test_123' }));
     const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
-    expect(input.ConditionExpression).toBe('checkoutSessionId = :sid');
+    expect(input.ConditionExpression).toBe('checkoutSessionId = :sid AND (attribute_not_exists(lastStripeEventAt) OR lastStripeEventAt <= :readAt)');
     expect(input.ExpressionAttributeValues![':sid']).toBe('cs_test_123');
     expect(input.UpdateExpression).toContain('REMOVE checkoutSessionId');
+  });
+
+  // ── Same state as the webhook's checkout.session.completed (M7) ──
+
+  it('stores what handleCheckoutSessionCompleted stores: currency, interval, amount, paidCount, status and the Stripe snapshot time', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession());
+
+    await handler(makeEvent({ session_id: 'cs_test_123' }));
+
+    const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':currency': 'USD',
+      ':interval': 'month',
+      ':amount': 499,
+      ':paidCount': 1,
+      ':status': 'active',
+      ':planId': 'price_pro_monthly',
+    });
+    for (const attribute of ['currency', 'amount', 'stripeSubscriptionId', 'stripeCustomerId', 'planId', 'currentStart', 'currentEnd', 'chargeAt', 'paidCount', 'lastStripeEventAt', 'updatedAt']) {
+      expect(input.UpdateExpression).toMatch(new RegExp(`\\b${attribute} = :`));
+    }
+    expect(input.UpdateExpression).toContain('#interval = :interval');
+    expect(input.UpdateExpression).toContain('#status = :status');
+    expect(input.UpdateExpression).toContain('REMOVE checkoutSessionId, checkoutUrl, #src, periodEnd');
+    expect(input.ExpressionAttributeNames).toEqual({ '#status': 'status', '#src': 'source', '#interval': 'interval' });
+  });
+
+  it('lastStripeEventAt is the time before the session was read, to the second, so later Stripe events still apply', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-13T05:00:07.450Z'));
+    try {
+      mockSessionsRetrieve.mockImplementation(async () => {
+        vi.setSystemTime(new Date('2026-11-13T05:00:09.100Z'));
+        return makeStripeSession();
+      });
+      await handler(makeEvent({ session_id: 'cs_test_123' }));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues![':readAt']).toBe('2026-11-13T05:00:07.000Z');
+  });
+
+  it('a stored Stripe event newer than the session read makes the write fail its condition; the stored state is reported', async () => {
+    const err = new Error('cond');
+    err.name = 'ConditionalCheckFailedException';
+    ddbMock.on(UpdateCommand).rejects(err);
+    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', status: 'past_due' } });
+    const res = (await handler(makeEvent({ session_id: 'cs_test_123' }))) as any;
+    expect(JSON.parse(res.body).data.status).toBe('pending');
+  });
+
+  it('a subscription Stripe reports as paused or cancelling is stored with that status, as the webhook would', async () => {
+    mockSessionsRetrieve.mockResolvedValue(makeStripeSession({ subscription: { ...makeStripeSession().subscription, cancel_at_period_end: true } }));
+    await handler(makeEvent({ session_id: 'cs_test_123' }));
+    expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input.ExpressionAttributeValues![':status']).toBe('cancellation_requested');
   });
 
   it('a replayed old session (condition fails) does not re-activate a cancelled user', async () => {

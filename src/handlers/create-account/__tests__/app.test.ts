@@ -90,6 +90,8 @@ describe('create-account handler', () => {
     const putInput = putCalls[0].args[0].input;
     expect(putInput.TableName).toBe('test-accounts');
     expect(putInput.Item?.name).toBe('My Trading Account');
+    // update-stats ADDs to the counter, so a new account starts it at 0.
+    expect(putInput.Item?.tradeCount).toBe(0);
   });
 
   it('creates default goals for the new account', async () => {

@@ -12,7 +12,7 @@ import { tagsError } from '../../shared/tags';
 import { tradeUpdateSchema } from '../../schemas';
 import { calcPnL } from '../../shared/utils/pnl';
 import { CONTRACT_FIELDS, contractFields } from '../../shared/tradeFields';
-import { copyImagesToTrade } from '../../shared/images';
+import { adoptUploads, copyImagesToTrade, ownsImageKey } from '../../shared/images';
 
 const TRADES_TABLE = process.env.TRADES_TABLE!;
 const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
@@ -50,32 +50,8 @@ export const handler: ApiHandler = async (event) => {
     // Serialized before any change, so the update writes only the attributes this request changed.
     const before = new Map(Object.entries(existing).map(([k, v]) => [k, JSON.stringify(v)]));
 
-    // partialCloses replaces the stored list (a retried PUT must not record a close twice).
-    if (Array.isArray(data.partialCloses)) {
-      existing.partialCloses = data.partialCloses
-        .filter((pc: any) => pc && pc.quantity != null && pc.exitPrice != null)
-        .map((pc: any) => ({ quantity: Number(pc.quantity), exitPrice: Number(pc.exitPrice), time: pc.time || new Date().toISOString() }));
-      // Recalculate realizedPnL across partials; remaining position quantity.
-      const entryPriceNum = existing.entryPrice != null ? Number(existing.entryPrice) : null;
-      if (entryPriceNum != null) {
-        let remaining = Number(existing.quantity);
-        let realized = 0;
-        for (const leg of existing.partialCloses) {
-          if (remaining <= 0) break;
-          const legQty = Math.min(remaining, Number(leg.quantity));
-          realized += calcPnL({ ...existing, pnl: null, exitPrice: leg.exitPrice, quantity: legQty }) ?? 0;
-          remaining -= legQty;
-        }
-        existing.realizedPartialPnl = realized;
-        existing.remainingQuantity = remaining;
-        if (remaining <= 0 && existing.exitPrice == null) {
-          // If fully closed via partials set synthetic exitPrice = weighted average of closes
-          const totalClosedQty = existing.partialCloses.reduce((a: number, l: any) => a + Number(l.quantity), 0);
-          const weightedSum = existing.partialCloses.reduce((a: number, l: any) => a + Number(l.exitPrice) * Number(l.quantity), 0);
-          if (totalClosedQty > 0) existing.exitPrice = Number((weightedSum / totalClosedQty).toFixed(5));
-        }
-      }
-    }
+    // Objects of images this request removes: deleted only once the update is stored, so a conflict leaves the trade whole.
+    let staleKeys: { Key: string }[] = [];
 
     // Handle images with diff (full replacement semantics except unchanged-by-id kept).
     if (Array.isArray(data.images)) {
@@ -111,14 +87,14 @@ export const handler: ApiHandler = async (event) => {
           continue;
         } else if (typeof raw.key === 'string' && !existingImg) {
           // A key from POST /uploads/images: only the caller's own prefix may be attached.
-          if (!raw.key.startsWith(`images/${userId}/`)) continue;
+          if (!ownsImageKey(userId, raw.key)) continue;
           finalImages.push({ id: imgId, key: raw.key, timeframe: raw.timeframe || null, description: raw.description || null });
           continue;
         } else if (raw.url) {
           // If incoming raw.url is actually an S3 key keep as key
           if (raw.url.startsWith('images/')) {
             // A key outside the caller's own prefix is dropped, never attached.
-            if (!raw.url.startsWith(`images/${userId}/`)) continue;
+            if (!ownsImageKey(userId, raw.url)) continue;
             finalImages.push({ id: existingImg?.id ?? imgId, key: raw.url, timeframe: raw.timeframe || existingImg?.timeframe || null, description: raw.description || existingImg?.description || null });
             continue;
           } else {
@@ -136,27 +112,24 @@ export const handler: ApiHandler = async (event) => {
       }
       // Determine deletions: any previous image id not present in final list -> delete object
       const finalImageIds = new Set(finalImages.map(img => img.id));
-      const toDeleteKeys = prevImages
+      staleKeys = prevImages
         .filter(img => !finalImageIds.has(img.id))
         .map(img => {
           const k = img.key || normalizePotentialKey(img.url, IMAGES_BUCKET);
           return k ? { Key: k } : null;
         })
         .filter((entry): entry is { Key: string } => !!entry && (entry.Key.startsWith(`images/${userId}/${tradeId}/`) || entry.Key.startsWith(`images/${userId}/upload/`)));
-      if (toDeleteKeys.length) {
-        await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: toDeleteKeys } }));
-      }
       // Final sanitization: strip any base64/data URI remnants before persisting
-      existing.images = finalImages.map(im => {
+      existing.images = await adoptUploads(userId, finalImages.map(im => {
         const cleaned: any = { ...im };
         if (cleaned.base64Data) delete cleaned.base64Data;
         if (typeof cleaned.url === 'string' && /^data:image\//i.test(cleaned.url)) delete cleaned.url;
         return cleaned;
-      });
+      }), tradeId);
     }
 
     // Direct field mapping helper - only fields from UI
-    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','setupType','tradingSession','marketCondition','tradeNotes'];
+    const mapable = ['symbol','side','quantity','openDate','closeDate','entryPrice','exitPrice','stopLoss','takeProfit','outcome','setupType','tradingSession','marketCondition','tradeNotes','reviewed'];
 
     // Normalize numeric fields if provided as string
     if (data.pnl !== undefined) {
@@ -176,33 +149,39 @@ export const handler: ApiHandler = async (event) => {
     const removedFields = CONTRACT_FIELDS.filter((f) => f in data && (data[f] === null || data[f] === ''));
     for (const f of removedFields) delete existing[f];
 
-    // Handle accountIds: if multiple accounts provided, handle multi-account logic
+    // partialCloses replaces the stored list (a retried PUT must not record a close twice).
+    if (Array.isArray(data.partialCloses)) {
+      existing.partialCloses = data.partialCloses
+        .filter((pc: any) => pc && pc.quantity != null && pc.exitPrice != null)
+        .map((pc: any) => ({ quantity: Number(pc.quantity), exitPrice: Number(pc.exitPrice), time: pc.time || new Date().toISOString() }));
+      // Recalculate realizedPnL across partials; remaining position quantity.
+      const entryPriceNum = existing.entryPrice != null ? Number(existing.entryPrice) : null;
+      if (entryPriceNum != null) {
+        let remaining = Number(existing.quantity);
+        let realized = 0;
+        for (const leg of existing.partialCloses) {
+          if (remaining <= 0) break;
+          const legQty = Math.min(remaining, Number(leg.quantity));
+          realized += calcPnL({ ...existing, pnl: null, exitPrice: leg.exitPrice, quantity: legQty }) ?? 0;
+          remaining -= legQty;
+        }
+        existing.realizedPartialPnl = realized;
+        existing.remainingQuantity = remaining;
+        if (remaining <= 0 && existing.exitPrice == null) {
+          // If fully closed via partials set synthetic exitPrice = weighted average of closes
+          const totalClosedQty = existing.partialCloses.reduce((a: number, l: any) => a + Number(l.quantity), 0);
+          const weightedSum = existing.partialCloses.reduce((a: number, l: any) => a + Number(l.exitPrice) * Number(l.quantity), 0);
+          if (totalClosedQty > 0) existing.exitPrice = Number((weightedSum / totalClosedQty).toFixed(5));
+        }
+      }
+    }
+
+    // The first of the requested accounts keeps this trade; the others get copies (made below, once P&L is final).
+    // No accountIds in the body: the stored accountId stays as it is.
     const incomingAccountIds: string[] = Array.isArray(data.accountIds) && data.accountIds.length > 0 
       ? data.accountIds 
       : (data.accountId ? [data.accountId] : []);
-    
-    let additionalTrades: any[] = [];
-    
-    if (incomingAccountIds.length > 1) {
-      // Multiple accounts selected: update existing trade with first accountId, create new trades for rest
-      existing.accountId = incomingAccountIds[0];
-      
-      // Create additional trades for remaining accountIds
-      for (let i = 1; i < incomingAccountIds.length; i++) {
-        const { idempotencyKey: _idempotencyKey, ...copy } = existing;
-        additionalTrades.push({
-          ...copy,
-          tradeId: uuid(),
-          accountId: incomingAccountIds[i],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-      }
-    } else if (incomingAccountIds.length === 1) {
-      // Single account: just update the accountId
-      existing.accountId = incomingAccountIds[0];
-    }
-    // No accountIds in the body: the stored accountId stays as it is.
+    if (incomingAccountIds.length > 0) existing.accountId = incomingAccountIds[0];
 
     // Recompute derived fields if relevant, but respect values passed in request
     // If request body includes pnl/netPnl, use those; otherwise calculate
@@ -217,7 +196,7 @@ export const handler: ApiHandler = async (event) => {
     }
     if ('netPnl' in data) {
       existing.netPnl = data.netPnl === null || data.netPnl === '' ? null : Number(data.netPnl);
-    } else if (existing.pnl != null && (pnlChanged || existing.netPnl == null)) {
+    } else if (existing.pnl != null && (pnlChanged || 'fees' in data || existing.netPnl == null)) {
       const commission = existing.commission ? Number(existing.commission) : 0;
       const fees = existing.fees ? Number(existing.fees) : 0;
       existing.netPnl = existing.pnl - (commission + fees);
@@ -226,26 +205,45 @@ export const handler: ApiHandler = async (event) => {
     // Calculate riskRewardRatio: use existing.pnl if present
     if (existing.pnl != null && riskAmount > 0) existing.riskRewardRatio = Number((existing.pnl / riskAmount).toFixed(4));
   // Do not auto-set outcome; keep whatever currently stored / provided
-    existing.updatedAt = new Date().toISOString();
-    const sets: string[] = []; const names: Record<string,string> = {}; const values: Record<string,any> = { ':u': userId };
-    for (const [k,v] of Object.entries(existing)) {
-      if (k === 'userId' || k === 'tradeId' || before.get(k) === JSON.stringify(v)) continue;
-      names[`#${k}`] = k; values[`:${k}`] = v; sets.push(`#${k} = :${k}`);
-    }
+
+    const additionalTrades = incomingAccountIds.slice(1).map((accountId) => {
+      const { idempotencyKey: _idempotencyKey, ...copy } = existing;
+      const now = new Date().toISOString();
+      return { ...copy, tradeId: uuid(), accountId, createdAt: now, updatedAt: now };
+    });
+
     const removes = removedFields.filter((f) => before.has(f));
-    for (const f of removes) names[`#${f}`] = f;
-    // Refuse to write over a concurrent edit or a soft delete that landed after the read above.
-    if (prevUpdatedAt !== undefined) values[':prevUpdatedAt'] = prevUpdatedAt;
-    const result = await ddb.send(new UpdateCommand({
-      TableName: TRADES_TABLE,
-      Key: { userId, tradeId },
-      ConditionExpression: `userId = :u AND attribute_exists(tradeId) AND attribute_not_exists(deletedAt) AND ${prevUpdatedAt !== undefined ? 'updatedAt = :prevUpdatedAt' : 'attribute_not_exists(updatedAt)'}`,
-      UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.map((f) => `#${f}`).join(', ')}` : ''}`,
-      ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
-      ReturnValues: 'ALL_NEW',
-      ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
-    }));
+    const changedKeys = Object.keys(existing).filter((k) => k !== 'userId' && k !== 'tradeId' && before.get(k) !== JSON.stringify(existing[k]));
+    // A request that changes nothing writes nothing, so updatedAt stays and the stream does not rebuild the day's statistics.
+    let stored: Record<string, any> = existing;
+    if (changedKeys.length > 0 || removes.length > 0) {
+      existing.updatedAt = new Date().toISOString();
+      const sets: string[] = []; const names: Record<string,string> = {}; const values: Record<string,any> = { ':u': userId };
+      for (const [k,v] of Object.entries(existing)) {
+        if (k === 'userId' || k === 'tradeId' || before.get(k) === JSON.stringify(v)) continue;
+        names[`#${k}`] = k; values[`:${k}`] = v; sets.push(`#${k} = :${k}`);
+      }
+      for (const f of removes) names[`#${f}`] = f;
+      // Refuse to write over a concurrent edit or a soft delete that landed after the read above.
+      if (prevUpdatedAt !== undefined) values[':prevUpdatedAt'] = prevUpdatedAt;
+      const result = await ddb.send(new UpdateCommand({
+        TableName: TRADES_TABLE,
+        Key: { userId, tradeId },
+        ConditionExpression: `userId = :u AND attribute_exists(tradeId) AND attribute_not_exists(deletedAt) AND ${prevUpdatedAt !== undefined ? 'updatedAt = :prevUpdatedAt' : 'attribute_not_exists(updatedAt)'}`,
+        UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.map((f) => `#${f}`).join(', ')}` : ''}`,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+        ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
+      }));
+      stored = result.Attributes || {};
+
+      // The update is stored: now the removed screenshots can go. A storage hiccup must not turn the committed save into a 500.
+      if (staleKeys.length > 0) {
+        await s3.send(new DeleteObjectsCommand({ Bucket: IMAGES_BUCKET, Delete: { Objects: staleKeys } }))
+          .catch((e: any) => log.error('removed screenshots not deleted', { tradeId, count: staleKeys.length, error: e.message }));
+      }
+    }
 
     // Safe logging: omit large arrays / images content
     const safeLog = {
@@ -272,7 +270,7 @@ export const handler: ApiHandler = async (event) => {
       }
     }
 
-    const saved = presentTrade(result.Attributes || {});
+    const saved = presentTrade(stored);
     const created = createdTrades.map(presentTrade);
 
     return envelope({ 

@@ -84,7 +84,8 @@ export function trade(p: Partial<TradeRow> & { pnl: number; openDate: string }):
   n++;
   return {
     id: `t${n}`, accountId: 'acc1', symbol: 'NIFTY', side: 'BUY', quantity: 10, entryPrice: 100, exitPrice: 100, stopLoss: 95, fees: 0, contractMultiplier: null,
-    closeDate: new Date(Date.parse(p.openDate) + 30 * 60_000).toISOString(), setupType: 'Breakout', tradingSession: 'Morning', assetClass: 'options', mistakes: [], brokenRuleIds: [], tags: [], ...p,
+    closeDate: new Date(Date.parse(p.openDate) + 30 * 60_000).toISOString(), setupType: 'Breakout', tradingSession: 'Morning', assetClass: 'options', mistakes: [], brokenRuleIds: [], tags: [],
+    takeProfit: null, riskRewardRatio: null, marketCondition: null, newsEvents: [], outcome: null, notes: null, lessons: [], optionType: null, expiry: null, reviewed: false, ...p,
   };
 }
 

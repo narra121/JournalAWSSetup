@@ -1,8 +1,12 @@
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb } from '../shared/dynamo';
+import { dayOf, dayQueryRange } from '../shared/timezone';
 import { loadFullRecords } from '../shared/tradeRecords';
 
-/** The Trades attributes the AI features read. Notes, lessons, images and account names are never loaded into prompts. */
+/**
+ * The Trades attributes the analysis and AI features read. Notes and lessons reach a prompt only when the user has
+ * switched that on; images and account names never do.
+ */
 export interface TradeRow {
   id: string;
   accountId: string | null;
@@ -24,12 +28,27 @@ export interface TradeRow {
   mistakes: string[];
   brokenRuleIds: string[];
   tags: string[];
+  takeProfit: number | null;
+  /** planned reward ÷ risk as entered (older trades may hold the achieved ratio) */
+  riskRewardRatio: number | null;
+  marketCondition: string | null;
+  newsEvents: string[];
+  outcome: string | null;
+  /** stored as `tradeNotes` */
+  notes: string | null;
+  lessons: string[];
+  optionType: 'call' | 'put' | null;
+  /** YYYY-MM-DD; for monthly contracts read from the symbol it is the month's last day, not the exchange expiry */
+  expiry: string | null;
+  reviewed: boolean;
 }
 
 export interface TradeRange {
-  /** ISO instant, or a date (YYYY-MM-DD) meaning that whole IST day; inclusive */
+  /** ISO instant, or a date (YYYY-MM-DD) meaning that whole day in `timeZone`; inclusive */
   from: string;
   to: string;
+  /** IANA zone of the date bounds; null/absent = Asia/Kolkata */
+  timeZone?: string | null;
   accountId?: string | null;
   /** Applied before the MAX_LOADED_TRADES cap counts a trade (for callers that only want some of the range). */
   filter?: (trade: TradeRow) => boolean;
@@ -53,10 +72,14 @@ export interface TradeSource {
 export const MAX_LOADED_TRADES = 5000;
 /** Index rows read per request. The index holds every account and soft-deleted trade, so this bounds the work, not the result. */
 export const MAX_SCANNED_KEYS = 50_000;
-const IST_OFFSET = '+05:30';
-const DAY_MS = 86_400_000;
+export const DEFAULT_TIME_ZONE = 'Asia/Kolkata';
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+const optionType = (v: unknown): 'call' | 'put' | null => {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return s === 'call' || s === 'ce' ? 'call' : s === 'put' || s === 'pe' ? 'put' : null;
+};
 
 export function toTradeRow(it: Record<string, any>): TradeRow {
   return {
@@ -76,9 +99,19 @@ export function toTradeRow(it: Record<string, any>): TradeRow {
     setupType: str(it.setupType),
     tradingSession: str(it.tradingSession),
     assetClass: str(it.assetClass),
-    mistakes: Array.isArray(it.mistakes) ? it.mistakes.map(String) : [],
-    brokenRuleIds: Array.isArray(it.brokenRuleIds) ? it.brokenRuleIds.map(String) : [],
-    tags: Array.isArray(it.tags) ? it.tags.map(String) : [],
+    mistakes: strs(it.mistakes),
+    brokenRuleIds: strs(it.brokenRuleIds),
+    tags: strs(it.tags),
+    takeProfit: num(it.takeProfit),
+    riskRewardRatio: num(it.riskRewardRatio),
+    marketCondition: str(it.marketCondition),
+    newsEvents: strs(it.newsEvents),
+    outcome: str(it.outcome),
+    notes: str(it.tradeNotes),
+    lessons: strs(it.lessons),
+    optionType: optionType(it.optionType),
+    expiry: str(it.expiry),
+    reviewed: it.reviewed === true,
   };
 }
 
@@ -88,12 +121,7 @@ const env = (n: string) => {
   return v;
 };
 
-/** A date bound is an IST calendar day (the day every metric and report uses); an instant is used as it is. */
-function istBound(value: string, edge: 'start' | 'end'): string {
-  if (value.length !== 10) return value;
-  const start = Date.parse(`${value}T00:00:00${IST_OFFSET}`);
-  return new Date(edge === 'start' ? start : start + DAY_MS - 1).toISOString();
-}
+const isDay = (v: string) => v.length === 10;
 
 export const dynamoTradeSource: TradeSource = {
   /**
@@ -102,8 +130,15 @@ export const dynamoTradeSource: TradeSource = {
    */
   async loadTrades(userId, range) {
     const TRADES = env('TRADES_TABLE');
-    const from = istBound(range.from, 'start');
-    const to = istBound(range.to, 'end');
+    const tz = range.timeZone || DEFAULT_TIME_ZONE;
+    // Date bounds are whole local days. The query range can reach into the neighbouring days (date-only openDate
+    // values sort before the instant of local midnight), so those rows are dropped by their local day below.
+    const from = isDay(range.from) ? dayQueryRange(range.from, tz).start : range.from;
+    const to = isDay(range.to) ? dayQueryRange(range.to, tz).end : range.to;
+    const outside = (openDate: string) => {
+      const day = dayOf(openDate, tz);
+      return (isDay(range.from) && day < range.from) || (isDay(range.to) && day > range.to);
+    };
     const wanted = range.accountId && range.accountId !== 'ALL' ? range.accountId : null;
     const rows: TradeRow[] = [];
     let scanned = 0;
@@ -130,6 +165,7 @@ export const dynamoTradeSource: TradeSource = {
           if (!it || it.deletedAt) continue;
           const row = toTradeRow(it);
           if (wanted && row.accountId !== wanted) continue;
+          if (outside(row.openDate)) continue;
           if (range.filter && !range.filter(row)) continue;
           if (rows.length >= MAX_LOADED_TRADES) {
             truncated = true;
@@ -151,7 +187,7 @@ export const dynamoTradeSource: TradeSource = {
       const r = await ddb.send(
         new QueryCommand({ TableName: env('RULES_TABLE'), KeyConditionExpression: 'userId = :u', ExpressionAttributeValues: { ':u': userId }, ExclusiveStartKey: startKey }),
       );
-      for (const it of r.Items ?? []) if (typeof it.text === 'string') out.set(String(it.ruleId), it.text);
+      for (const it of r.Items ?? []) if (typeof it.rule === 'string') out.set(String(it.ruleId), it.rule);
       startKey = r.LastEvaluatedKey;
     } while (startKey);
     return out;

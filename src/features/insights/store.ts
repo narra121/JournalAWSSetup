@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor, type AiItem, type AiStore } from '../store';
+import type { FindingKey, Review } from './types';
 import type { InsightSection } from './validate';
 
 export interface Insight {
@@ -12,6 +13,14 @@ export interface Insight {
   tradeCount: number;
   /** present (true) when the period held more trades than could be loaded: the insight covers the oldest ones only */
   truncated?: boolean;
+  /** the weekly review blocks; absent on insights made before it existed, which carry `sections` only */
+  review?: Review;
+  /** currency of every amount (absent on old insights) */
+  currency?: string | null;
+  /** IANA zone the days and hours follow (absent on old insights) */
+  timeZone?: string;
+  /** the trader's answers per finding key: true = useful */
+  feedback?: Record<FindingKey, boolean>;
 }
 
 export const INSIGHT_ID = /^\d{8}T\d{9}Z_[0-9a-f]{8}$/;
@@ -67,8 +76,26 @@ export async function listInsights(store: AiStore, userId: string, o: { accountI
 }
 
 /** Latest stored insight with the same inputs and the same metrics: regenerating would only repeat it. */
-export async function findCached(store: AiStore, userId: string, q: { accountId: string | null; from: string; to: string; metricsHash: string }): Promise<Insight | null> {
+export async function findCached(store: AiStore, userId: string, q: { accountId: string | null; currency: string | null; from: string; to: string; metricsHash: string }): Promise<Insight | null> {
   const r = await store.query(userId, { prefix: PREFIX, limit: 20, newestFirst: true });
-  const hit = r.items.find((i) => i.metricsHash === q.metricsHash && (i.accountId ?? null) === q.accountId && (i.period as Insight['period']).from === q.from && (i.period as Insight['period']).to === q.to);
+  const hit = r.items.find((i) => i.metricsHash === q.metricsHash && (i.accountId ?? null) === q.accountId && (i.currency ?? null) === q.currency && (i.period as Insight['period']).from === q.from && (i.period as Insight['period']).to === q.to);
   return hit ? toInsight(hit) : null;
+}
+
+/** Records the trader's answer on the stored insight; false when the insight does not exist. */
+export async function setFeedback(store: AiStore, userId: string, id: string, key: FindingKey, useful: boolean): Promise<boolean> {
+  const it = INSIGHT_ID.test(id) ? await store.get(userId, `${PREFIX}${id}`) : null;
+  if (!it) return false;
+  await store.patch(userId, `${PREFIX}${id}`, { feedback: { ...((it.feedback as Record<string, boolean>) ?? {}), [key]: useful } });
+  return true;
+}
+
+/** Every key a trader can answer "useful / not useful" on. */
+export function reviewKeys(r: Review): FindingKey[] {
+  return [
+    ...[r.theOne, ...r.more].filter((f) => f != null).map((f) => f.key),
+    ...(r.keepDoing ? [r.keepDoing.key] : []),
+    ...r.different.map((d) => d.key),
+    ...r.watch.map((w) => w.key),
+  ];
 }

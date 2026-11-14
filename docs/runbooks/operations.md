@@ -61,6 +61,15 @@ The stack outputs and `aws cloudformation describe-stack-resources` list the phy
   resend the webhook event from Stripe.
 - **Stats look wrong:** invoke the rebuild: `aws lambda invoke --function-name tradequt-<stage>-events
   --cli-binary-format raw-in-base64-out --payload '{"job":"rebuild-stats"}' out.json` (it rebuilds users with recent changes).
+  That job only rebuilds users flagged dirty and skips every day whose trade hash (tradeId | pnl | updatedAt) is unchanged,
+  so after a change to how a daily record is computed (for example realised R from prices) every user needs a forced
+  rebuild, `rebuildForUser(userId, { force: true })` from `src/handlers/rebuild-stats-job/app.ts`. Back up first
+  (`node scripts/backup.mjs --stage <stage> --out backups/<stage>`), then from the repo root with `AWS_PROFILE`, `AWS_REGION`, `TRADES_TABLE`, `ACCOUNTS_TABLE`,
+  `DAILY_STATS_TABLE` and `USER_PREFERENCES_TABLE` set for the stage:
+  ```
+  bun -e "import { DynamoDBClient } from '@aws-sdk/client-dynamodb'; import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb'; import { rebuildForUser } from './src/handlers/rebuild-stats-job/app.ts'; const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({})); const users = new Set(); let key; do { const r = await ddb.send(new ScanCommand({ TableName: process.env.ACCOUNTS_TABLE, ProjectionExpression: 'userId', ExclusiveStartKey: key })); for (const it of r.Items ?? []) users.add(it.userId); key = r.LastEvaluatedKey; } while (key); for (const u of users) { await rebuildForUser(u, { force: true }); console.log('rebuilt', u); } console.log('done', users.size);"
+  ```
+  Check: `GET /v1/stats?accountId=ALL&startDate=…&endDate=…` returns a numeric `avgR` and `rCount` > 0 for a user whose trades have stops.
 - **E-mails not arriving:** SES sandbox / unverified identity (ACCESS-NEEDED #10); failures are logged as
   `lifecycle_email_failed` / `payment_failed_email_error`.
 - **Abuse or traffic spike:** the endpoint caps requests (`RateLimit` 100/s dev, 300/s prod) and environments (2 / 10); raise in

@@ -55,8 +55,7 @@ import { handler as updateUserPreferences } from '../handlers/update-user-prefer
 import { handler as updateUserProfile } from '../handlers/update-user-profile/app';
 import { handler as verifyCheckoutSession } from '../handlers/verify-checkout-session/app';
 import { optionalUser } from './auth/cognito';
-import { accountLimit, accountsInAccountUpdate, accountsInBulkUpdate, accountsInCreateBody, accountsInTradeDelete, accountsInTradeIds, accountsInTradeUpdate, writableGuard } from './billing/accounts';
-import { advancedAnalyticsGate, metered, withEntitlements } from './billing/middleware';
+import { advancedAnalyticsGate, metered } from './billing/middleware';
 import { extractUnits } from './billing/extractUnits';
 import type { LegacyHandler } from './http/adapter';
 import type { AppEnv } from './types';
@@ -84,10 +83,10 @@ const r = (
 /** Every HTTP route of the original API Gateway template. */
 export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/accounts', 'cognito', listAccounts),
-  r('POST', '/v1/accounts', 'cognito', createAccount, [withEntitlements(), accountLimit()]),
+  r('POST', '/v1/accounts', 'cognito', createAccount),
   r('DELETE', '/v1/accounts/{accountId}', 'cognito', deleteAccount),
-  r('PUT', '/v1/accounts/{accountId}', 'cognito', updateAccount, [withEntitlements(), writableGuard(accountsInAccountUpdate)]),
-  r('PATCH', '/v1/accounts/{accountId}/status', 'cognito', updateAccountStatus, [withEntitlements(), writableGuard(accountsInAccountUpdate)]),
+  r('PUT', '/v1/accounts/{accountId}', 'cognito', updateAccount),
+  r('PATCH', '/v1/accounts/{accountId}/status', 'cognito', updateAccountStatus),
   r('GET', '/v1/ad-config', 'cognito', getAdConfig),
   r('GET', '/v1/admin/config', 'admin', adminGetConfig),
   r('PUT', '/v1/admin/config', 'admin', adminUpdateConfig),
@@ -105,7 +104,7 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('POST', '/v1/auth/login', 'public', authLogin),
   r('POST', '/v1/auth/refresh', 'public', authRefresh),
   r('POST', '/v1/auth/signup', 'public', authSignup),
-  r('POST', '/v1/enhance-text', 'cognito', enhanceText, [withEntitlements(), metered('ai_enhance')]),
+  r('POST', '/v1/enhance-text', 'cognito', enhanceText, [metered('ai_enhance')]),
   r('POST', '/v1/errors/report', 'public', reportError, [optionalUser()]),
   r('POST', '/v1/goals', 'cognito', createGoal),
   r('GET', '/v1/goals/progress', 'cognito', getGoalsProgress),
@@ -128,15 +127,15 @@ export const LEGACY_ROUTES: RouteDef[] = [
   r('GET', '/v1/subscriptions/plans', 'public', getSubscriptionPlans),
   r('GET', '/v1/subscriptions/verify', 'cognito', verifyCheckoutSession),
   r('GET', '/v1/trades', 'cognito', listTrades),
-  r('POST', '/v1/trades', 'cognito', createTrade, [withEntitlements(), writableGuard(accountsInCreateBody)]),
-  r('POST', '/v1/trades/bulk-delete', 'cognito', bulkDeleteTrades, [withEntitlements(), writableGuard(accountsInTradeIds)]),
-  r('POST', '/v1/trades/bulk-update', 'cognito', bulkUpdateTrades, [withEntitlements(), writableGuard(accountsInBulkUpdate)]),
-  r('POST', '/v1/trades/extract', 'cognito', extractTrades, [withEntitlements(), metered('ai_extract', async (c) => extractUnits(await c.req.raw.clone().text()))]),
-  r('POST', '/v1/trades/restore', 'cognito', restoreTrades, [withEntitlements(), writableGuard(accountsInTradeIds)]),
+  r('POST', '/v1/trades', 'cognito', createTrade),
+  r('POST', '/v1/trades/bulk-delete', 'cognito', bulkDeleteTrades),
+  r('POST', '/v1/trades/bulk-update', 'cognito', bulkUpdateTrades),
+  r('POST', '/v1/trades/extract', 'cognito', extractTrades, [metered('ai_extract', async (c) => extractUnits(await c.req.raw.clone().text()))]),
+  r('POST', '/v1/trades/restore', 'cognito', restoreTrades),
   r('POST', '/v1/trades/sync', 'cognito', syncTrades),
   r('GET', '/v1/trades/{tradeId}', 'cognito', getTrade),
-  r('DELETE', '/v1/trades/{tradeId}', 'cognito', deleteTrade, [withEntitlements(), writableGuard(accountsInTradeDelete)]),
-  r('PUT', '/v1/trades/{tradeId}', 'cognito', updateTrade, [withEntitlements(), writableGuard(accountsInTradeUpdate)]),
+  r('DELETE', '/v1/trades/{tradeId}', 'cognito', deleteTrade),
+  r('PUT', '/v1/trades/{tradeId}', 'cognito', updateTrade),
   r('PUT', '/v1/user/notifications', 'cognito', updateUserNotifications),
   r('PUT', '/v1/user/preferences', 'cognito', updateUserPreferences),
   r('GET', '/v1/user/profile', 'cognito', getUserProfile),

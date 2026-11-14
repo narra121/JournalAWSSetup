@@ -3,8 +3,7 @@ import { Hono, type Context } from 'hono';
 import { ddb } from '../../shared/dynamo';
 import { fail } from '../../features/http';
 import type { AppEnv } from '../types';
-import { saveWritableAccounts } from './accounts';
-import { computeEntitlements } from './entitlements';
+import { computeEntitlements, isReadOnly } from './entitlements';
 import { periodResetsAt, readUsage } from './quota';
 import { allProPriceIds, billingCurrencyFor, checkoutOrigin, getStripe, portalConfigId, proPriceId, type Currency, type Interval } from './stripe';
 
@@ -42,14 +41,10 @@ meRoutes.get('/me/entitlements', async (c) => {
       usage,
       periodResetsAt: periodResetsAt(),
       billingCurrency: currencyFor(c),
-      writableAccountIds: c.get('subscription')?.writableAccountIds ?? null,
+      // The accounts the caller may write to: none while read-only, null = all of them.
+      writableAccountIds: isReadOnly(entitlements) ? [] : null,
     },
   });
-});
-
-meRoutes.put('/me/writable-accounts', async (c) => {
-  const body: any = await c.req.json().catch(() => null);
-  return saveWritableAccounts(c, body?.accountIds);
 });
 
 billingRoutes.post('/billing/checkout', async (c) => {

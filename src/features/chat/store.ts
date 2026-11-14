@@ -1,3 +1,4 @@
+import type { QueryResult } from '../analysis/types';
 import { INSIGHT_ID } from '../insights/store';
 import type { AiItem, AiStore } from '../store';
 
@@ -19,6 +20,10 @@ export interface ChatMessage {
   disclaimer?: string;
   model?: string;
   tradeIds?: string[];
+  /** tool results the app draws under the answer (absent on older messages and on answers without tools) */
+  tables?: QueryResult[];
+  /** currency of the amounts in `tables`; null when unknown */
+  currency?: string | null;
 }
 
 export const SESSION_ID = INSIGHT_ID;

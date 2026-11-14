@@ -3,6 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { fail } from '../../features/http';
+import { uploadPrefix } from '../../shared/images';
 import type { AppEnv } from '../types';
 
 export const uploadRoutes = new Hono<AppEnv>();
@@ -14,18 +15,19 @@ export const UPLOAD_URL_SECONDS = 300;
 /** Screenshots one user may add per rolling 24 h (a trade holds at most 6). */
 export const MAX_UPLOADS_PER_DAY = 100;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_LIST_PAGES = 10;
+/** The upload prefix holds about two days of uploads (the lifecycle rule expires the rest), so one page is normal. */
+const MAX_LIST_PAGES = 3;
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 
 const invalid = (c: any, message: string) => fail(c, 400, 'VALIDATION_ERROR', message);
 
-/** Objects the user put under `images/<userId>/upload/` in the last 24 h; counting stops once the daily limit is reached. */
+/** Objects the user put under their upload prefix in the last 24 h; counting stops once the daily limit is reached. */
 async function uploadsToday(userId: string): Promise<number> {
   const since = Date.now() - DAY_MS;
   let count = 0;
   let token: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
-    const res = await s3.send(new ListObjectsV2Command({ Bucket: process.env.IMAGES_BUCKET!, Prefix: `images/${userId}/upload/`, ContinuationToken: token }));
+    const res = await s3.send(new ListObjectsV2Command({ Bucket: process.env.IMAGES_BUCKET!, Prefix: uploadPrefix(userId), ContinuationToken: token }));
     count += (res.Contents ?? []).filter((o) => (o.LastModified?.getTime() ?? 0) > since).length;
     if (count >= MAX_UPLOADS_PER_DAY || !res.IsTruncated) break;
     token = res.NextContinuationToken;
@@ -36,7 +38,7 @@ async function uploadsToday(userId: string): Promise<number> {
 /**
  * POST /v1/uploads/images { contentType, size } → presigned S3 PUT for one screenshot (png/jpeg/webp, at most 2 MiB).
  * The signature covers Content-Type and Content-Length, so the upload cannot exceed what was declared. A trade then
- * references the returned `key` (it must stay under the caller's own `images/<userId>/` prefix).
+ * references the returned `key`; saving the trade copies it under the trade, and the upload expires after a day.
  */
 uploadRoutes.post('/images', async (c) => {
   const body: any = await c.req.json().catch(() => null);
@@ -49,7 +51,7 @@ uploadRoutes.post('/images', async (c) => {
     return fail(c, 429, 'RATE_LIMITED', 'You have uploaded a lot of screenshots today. Please try again tomorrow.', { retryAfter: 3600 });
   }
 
-  const key = `images/${c.get('userId')}/upload/${randomUUID()}.${EXTENSIONS[contentType]}`;
+  const key = `${uploadPrefix(c.get('userId'))}${randomUUID()}.${EXTENSIONS[contentType]}`;
   const url = await getSignedUrl(
     s3,
     new PutObjectCommand({ Bucket: process.env.IMAGES_BUCKET!, Key: key, ContentType: contentType, ContentLength: size }),

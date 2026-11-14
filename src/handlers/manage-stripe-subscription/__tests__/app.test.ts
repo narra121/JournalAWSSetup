@@ -457,4 +457,130 @@ describe('manage-stripe-subscription handler', () => {
     expect(mockSubscriptionsUpdate).toHaveBeenCalled();
     expect(mockSubscriptionsCancel).not.toHaveBeenCalled();
   });
+
+  // ── Pause is guarded (M7) ──────────────────────────────────────
+
+  it.each(['cancellation_requested', 'past_due', 'paused', 'cancelled', 'trial'])(
+    'PUT pause is refused with 400 when the stored status is %s, and Stripe is not touched',
+    async (status) => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...activeSubscription, status } });
+
+      const res = await handler(makeEvent('PUT', { action: 'pause' })) as any;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('Only an active subscription can be paused');
+      expect(mockSubscriptionsUpdate).not.toHaveBeenCalled();
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    },
+  );
+
+  it.each(['active', 'cancellation_requested', 'past_due', 'cancelled'])(
+    'PUT resume is refused with 400 when the stored status is %s',
+    async (status) => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...activeSubscription, status } });
+
+      const res = await handler(makeEvent('PUT', { action: 'resume' })) as any;
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('not paused');
+      expect(mockSubscriptionsUpdate).not.toHaveBeenCalled();
+    },
+  );
+
+  // ── The writes follow the webhook's rules (M7) ──────────────────
+
+  const writes = () => ddbMock.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+  const GUARD = 'stripeSubscriptionId = :subId AND (attribute_not_exists(lastStripeEventAt) OR lastStripeEventAt <= :at)';
+
+  it('every write names its subscription and carries the snapshot time, so an older state cannot overwrite a newer one', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    ddbMock.on(UpdateCommand).resolves({});
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ pause_collection: { behavior: 'void' } }));
+
+    await handler(makeEvent('PUT', { action: 'pause' }));
+
+    const [write] = writes();
+    expect(write.ConditionExpression).toBe(GUARD);
+    expect(write.UpdateExpression).toContain('lastStripeEventAt = :at');
+    expect(write.ExpressionAttributeValues).toMatchObject({ ':subId': 'sub_test123', ':status': 'paused' });
+    expect(write.ExpressionAttributeValues![':at']).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/);
+  });
+
+  it('the stored status is the one Stripe reports after the change, not the one the request asked for', async () => {
+    // Resuming a subscription that is also set to cancel at period end is cancellation_requested, as the webhook stores it.
+    ddbMock.on(GetCommand).resolves({ Item: { ...activeSubscription, status: 'paused' } });
+    ddbMock.on(UpdateCommand).resolves({});
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ cancel_at_period_end: true }));
+
+    const res = await handler(makeEvent('PUT', { action: 'resume' })) as any;
+
+    expect(JSON.parse(res.body).data.status).toBe('cancellation_requested');
+    expect(writes()[0].ExpressionAttributeValues).toMatchObject({ ':status': 'cancellation_requested' });
+  });
+
+  it('a newer Stripe event or another subscription on the row skips the write quietly; the request still succeeds', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('newer'), { name: 'ConditionalCheckFailedException' }));
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ pause_collection: { behavior: 'void' } }));
+
+    const res = await handler(makeEvent('PUT', { action: 'pause' })) as any;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.status).toBe('paused');
+    log.mockRestore();
+  });
+
+  it('any other write failure is an error', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    ddbMock.on(UpdateCommand).rejects(new Error('throttled'));
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ pause_collection: { behavior: 'void' } }));
+
+    expect(((await handler(makeEvent('PUT', { action: 'pause' }))) as any).statusCode).toBe(500);
+    err.mockRestore();
+  });
+
+  it('undo cancellation, cancel at cycle end and cancel now use the same guarded write', async () => {
+    ddbMock.on(UpdateCommand).resolves({});
+
+    ddbMock.on(GetCommand).resolves({ Item: cancellationRequestedSubscription });
+    mockSubscriptionsRetrieve.mockResolvedValue(makeStripeSubscription({ cancel_at_period_end: true }));
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ cancel_at_period_end: false }));
+    await handler(makeEvent('PATCH', { action: 'undo_cancellation' }));
+    expect(writes()[0]).toMatchObject({ ConditionExpression: GUARD });
+    expect(writes()[0].UpdateExpression).toContain('REMOVE cancelAt');
+    expect(writes()[0].ExpressionAttributeValues).toMatchObject({ ':status': 'active' });
+
+    ddbMock.resetHistory();
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    mockSubscriptionsRetrieve.mockResolvedValue(makeStripeSubscription());
+    mockSubscriptionsUpdate.mockResolvedValue(makeStripeSubscription({ cancel_at_period_end: true }));
+    await handler(makeEvent('DELETE', { cancelAtCycleEnd: true }));
+    expect(writes()[0]).toMatchObject({ ConditionExpression: GUARD });
+    expect(writes()[0].ExpressionAttributeValues).toMatchObject({ ':status': 'cancellation_requested', ':cancelAt': 'cycle_end' });
+
+    ddbMock.resetHistory();
+    mockSubscriptionsCancel.mockResolvedValue(makeStripeSubscription({ status: 'canceled' }));
+    await handler(makeEvent('DELETE', { cancelAtCycleEnd: false }));
+    expect(writes()[0]).toMatchObject({ ConditionExpression: GUARD });
+    expect(writes()[0].ExpressionAttributeValues).toMatchObject({ ':status': 'cancelled' });
+    expect(writes()[0].ExpressionAttributeValues![':endedAt']).toBeDefined();
+  });
+
+  it('the status sync of a GET is guarded too, so it cannot undo a webhook that arrived after the read', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: activeSubscription });
+    ddbMock.on(UpdateCommand).resolves({});
+    mockSubscriptionsRetrieve.mockResolvedValue(makeStripeSubscription({ status: 'past_due' }));
+
+    await handler(makeEvent('GET'));
+
+    expect(writes()[0]).toMatchObject({ ConditionExpression: GUARD });
+    expect(writes()[0].ExpressionAttributeValues).toMatchObject({ ':status': 'past_due', ':subId': 'sub_test123' });
+
+    ddbMock.on(UpdateCommand).rejects(Object.assign(new Error('newer'), { name: 'ConditionalCheckFailedException' }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(((await handler(makeEvent('GET'))) as any).statusCode).toBe(200);
+    log.mockRestore();
+  });
 });

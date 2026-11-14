@@ -1,4 +1,5 @@
 import { CognitoIdentityProviderClient, ListUsersCommand, AdminLinkProviderForUserCommand, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { cognitoFilterValue } from '../../shared/cognitoFilter';
 
 const cognito = new CognitoIdentityProviderClient({});
 
@@ -16,10 +17,9 @@ export const handler = async (event: any) => {
     const emailVerified = String(event.request?.userAttributes?.email_verified) === 'true';
     if (email && USER_POOL_ID && emailVerified) {
       try {
-        const safeEmail = email.replace(/"/g, '\\"');
         const existing = await cognito.send(new ListUsersCommand({
           UserPoolId: USER_POOL_ID,
-          Filter: `email = "${safeEmail}"`,
+          Filter: `email = "${cognitoFilterValue(email)}"`,
           Limit: 10,
         }));
 
@@ -72,10 +72,9 @@ export const handler = async (event: any) => {
   // so this is where the former /auth/signup existence check lives). TradeFlow src/lib/auth/authService.ts matches the
   // message text `USER_EXISTS` in Cognito's UserLambdaValidationException.
   if (event.triggerSource === 'PreSignUp_SignUp' && email && USER_POOL_ID) {
-    const safeEmail = email.replace(/"/g, '\\"');
     const existing = await cognito.send(new ListUsersCommand({
       UserPoolId: USER_POOL_ID,
-      Filter: `email = "${safeEmail}"`,
+      Filter: `email = "${cognitoFilterValue(email)}"`,
       Limit: 10,
     }));
     if (existing.Users?.some(u => u.UserStatus === 'CONFIRMED' || u.UserStatus === 'EXTERNAL_PROVIDER')) {

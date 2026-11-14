@@ -47,6 +47,13 @@ describe('auth-post-confirmation handler', () => {
     expect(putCalls[0].args[0].input.Item!.userId).toBe('user-123');
   });
 
+  it('starts the free trial on the trial and Pro plans (plansVersion 2, status trial)', async () => {
+    await handler(makeEvent('PostConfirmation_ConfirmSignUp'));
+    const item = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item!;
+    expect(item).toMatchObject({ status: 'trial', plansVersion: 2 });
+    expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression).toBe('attribute_not_exists(userId)');
+  });
+
   it('sets trialEnd to 14 days in the future', async () => {
     const event = makeEvent('PostConfirmation_ConfirmSignUp');
 

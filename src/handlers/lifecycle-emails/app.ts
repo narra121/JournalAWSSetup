@@ -93,41 +93,56 @@ async function forEachLimited<T>(items: T[], limit: number, fn: (item: T) => Pro
 }
 
 export interface WeeklyDeps {
-  generate: (userId: string, entitlements: ReturnType<typeof computeEntitlements>, range: { from: string; to: string }) => Promise<{ ok: boolean; cached?: boolean; summary?: string }>;
+  /** the 7 days before today in the user's zone, and the currencies with at least 5 trades in them */
+  plan: (userId: string, now: Date) => Promise<{ from: string; to: string; currencies: string[] }>;
+  generate: (userId: string, entitlements: ReturnType<typeof computeEntitlements>, input: { from: string; to: string; currency: string }) => Promise<{ ok: boolean; cached?: boolean; summary?: string }>;
 }
 
 export interface WeeklyResult {
+  /** reports generated and mailed (one per currency) */
   generated: number;
+  /** users opted out, and reports cached or not generated */
   skipped: number;
   failed: number;
 }
 
 /**
- * Weekly job for Pro and trial users who have the weekly report switched on (default on): generates the insight for
- * the last 7 days and sends the "report ready" mail. A cached insight (nothing new) sends nothing.
+ * Weekly job for Pro and trial users who have the weekly report switched on (default on): one report per currency the
+ * user traded at least 5 times in the last 7 days, each judged against its 90-day baseline, and one "report ready"
+ * mail per new report. A cached report (nothing new) sends nothing.
  */
 export async function runWeeklyReports(deps: WeeklyDeps, now: Date = new Date()): Promise<WeeklyResult> {
   const result: WeeklyResult = { generated: 0, skipped: 0, failed: 0 };
-  const to = new Date(now.getTime() - DAY).toISOString().slice(0, 10);
-  const from = new Date(now.getTime() - 7 * DAY).toISOString().slice(0, 10);
   await forEachLimited(await scanSubscriptions(), WEEKLY_CONCURRENCY, async (sub) => {
     const entitlements = computeEntitlements(sub, now);
     if (entitlements.plan === 'free') return;
+    const failed = (err: any, currency?: string) => {
+      result.failed++;
+      console.error(JSON.stringify({ msg: 'weekly_report_failed', userId: sub.userId, ...(currency ? { currency } : {}), error: err.message }));
+    };
+    let plan: Awaited<ReturnType<WeeklyDeps['plan']>>;
     try {
       const prefs = (await ddb.send(new GetCommand({ TableName: process.env.USER_PREFERENCES_TABLE!, Key: { userId: sub.userId } }))).Item;
       if (prefs?.notifications?.weeklyReport === false) {
         result.skipped++;
         return;
       }
-      const res = await deps.generate(sub.userId, entitlements, { from, to });
-      if (!res.ok || res.cached) {
-        result.skipped++;
-        return;
-      }
-      if (await mailUser(sub.userId, (addr) => weeklyReportMail(addr, res.summary ?? 'Your latest insights are ready.'))) result.generated++;
+      plan = await deps.plan(sub.userId, now);
     } catch (err: any) {
-      result.failed++;
-      console.error(JSON.stringify({ msg: 'weekly_report_failed', userId: sub.userId, error: err.message }));
+      return failed(err);
+    }
+    // One currency failing does not stop the user's other reports.
+    for (const currency of plan.currencies) {
+      try {
+        const res = await deps.generate(sub.userId, entitlements, { from: plan.from, to: plan.to, currency });
+        if (!res.ok || res.cached) {
+          result.skipped++;
+          continue;
+        }
+        if (await mailUser(sub.userId, (addr) => weeklyReportMail(addr, res.summary ?? 'Your latest insights are ready.'))) result.generated++;
+      } catch (err: any) {
+        failed(err, currency);
+      }
     }
   });
   return result;
@@ -135,10 +150,12 @@ export async function runWeeklyReports(deps: WeeklyDeps, now: Date = new Date())
 
 /** Wiring used by the Event Function: features' insight generator with the user's own quota. */
 export async function defaultWeeklyDeps(): Promise<WeeklyDeps> {
-  const { generateInsight, defaultInsightDeps } = await import('../../features/index');
+  const { generateInsight, weeklyPlan } = await import('../../features/insights/service');
+  const { defaultInsightDeps } = await import('../../features/insights/routes');
   return {
-    generate: async (userId, entitlements, range) => {
-      const res = await generateInsight(defaultInsightDeps, createQuota(userId, entitlements), userId, { accountId: null, ...range });
+    plan: (userId, now) => weeklyPlan(defaultInsightDeps, userId, now),
+    generate: async (userId, entitlements, input) => {
+      const res = await generateInsight(defaultInsightDeps, createQuota(userId, entitlements), userId, { accountId: null, ...input });
       return res.ok ? { ok: true, cached: res.cached, summary: res.insight.summary } : { ok: false };
     },
   };

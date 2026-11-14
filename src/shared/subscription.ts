@@ -99,7 +99,7 @@ export async function getSubscriptionTier(userId: string): Promise<TierResult> {
       return { tier: 'free_with_ads', showAds: true, status: 'none' };
     }
 
-    // The plan rules live in computeEntitlements, so ads follow the same Free / trial / Pro decision as the features.
+    // The plan rules live in computeEntitlements, so ads follow the same read-only / trial / Pro decision as the features.
     const entitlements = computeEntitlements(sub);
     if (entitlements.plan === 'trial') {
       return { tier: 'trial', showAds: false, trialEnd: sub.trialEnd, status: sub.status };

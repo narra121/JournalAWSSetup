@@ -7,7 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { batchWritePutAll } from '../../shared/batchWrite';
 import { getUserId } from '../../shared/auth';
 import { GOAL_TYPE_CONFIG, DEFAULT_GOAL_TARGETS } from '../../shared/goalDefaults';
-import { isCalendarDay } from '../../shared/timezone';
+import { dayOf, getUserTimeZone, isCalendarDay } from '../../shared/timezone';
 
 const RULES_TABLE = process.env.RULES_TABLE!;
 const GOALS_TABLE = process.env.GOALS_TABLE!;
@@ -46,6 +46,20 @@ function getPreviousPeriodKey(periodKey: string): string {
 
 function getPeriodType(periodKey: string): 'weekly' | 'monthly' {
   return periodKey.startsWith('month#') ? 'monthly' : 'weekly';
+}
+
+/** True when `day` (YYYY-MM-DD) lies in the period: a week key holds the 7 days from its first day, a month key its month. */
+function periodHoldsDay(periodKey: string, day: string): boolean {
+  if (periodKey.startsWith('month#')) return day.startsWith(`${periodKey.slice('month#'.length)}-`);
+  const first = Date.parse(`${periodKey.slice('week#'.length)}T00:00:00Z`);
+  const offset = Date.parse(`${day}T00:00:00Z`) - first;
+  return offset >= 0 && offset < 7 * 86_400_000;
+}
+
+/** Whether today, in the user's time zone, is in the period; only the current period may be written by a GET. */
+async function isCurrentPeriod(userId: string, periodKey: string): Promise<boolean> {
+  const timeZone = await getUserTimeZone(userId).catch(() => null);
+  return periodHoldsDay(periodKey, dayOf(new Date().toISOString(), timeZone));
 }
 
 function isLegacyRecord(sk: string): boolean {
@@ -194,7 +208,8 @@ export const handler: ApiHandler = async (event) => {
     log.warn('invalid periodKey', { periodKey });
     return errorResponse(400, ErrorCodes.VALIDATION_ERROR, 'Invalid periodKey format');
   }
-  const isCurrentPeriod = event.queryStringParameters?.currentPeriod === 'true';
+  // The client's claim; it only counts once the server has checked it against the clock (see below).
+  const currentPeriodClaimed = event.queryStringParameters?.currentPeriod === 'true';
 
   try {
     // ── No periodKey: backward-compatible global fetch ──
@@ -254,8 +269,8 @@ export const handler: ApiHandler = async (event) => {
     }
 
     // No records for this period
-    // Past period — return empty (read-only)
-    if (!isCurrentPeriod) {
+    // Past, future or unclaimed period — return empty (read-only)
+    if (!currentPeriodClaimed || !(await isCurrentPeriod(userId, periodKey))) {
       log.info('no records for past period, returning empty', { periodKey });
       return envelope({
         statusCode: 200,
@@ -364,9 +379,11 @@ function cloneRules(sourceRules: any[], userId: string, periodKey: string): any[
   }));
 }
 
+/** Only the goals of the period's own kind are carried over: a weekly goal is not a monthly one. */
 function cloneGoals(sourceGoals: any[], userId: string, periodKey: string): any[] {
   const now = new Date().toISOString();
-  return sourceGoals.map(goal => ({
+  const periodType = getPeriodType(periodKey);
+  return sourceGoals.filter(goal => goal.period === periodType).map(goal => ({
     ...goal,
     userId,
     goalId: `${periodKey}#${idTail(goal.goalId)}`,
@@ -376,4 +393,4 @@ function cloneGoals(sourceGoals: any[], userId: string, periodKey: string): any[
 }
 
 // Export helpers for testing
-export { getPreviousPeriodKey, getPeriodType, isLegacyRecord, createDefaultRules, createDefaultGoals };
+export { getPreviousPeriodKey, getPeriodType, isLegacyRecord, createDefaultRules, createDefaultGoals, periodHoldsDay };

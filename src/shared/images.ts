@@ -37,14 +37,30 @@ export async function removeImagesForTrade(userId: string, tradeId: string) {
 }
 
 /**
- * Copies each stored screenshot of `images` to `images/<userId>/<newTradeId>/` and returns the list pointing at the
- * copies, so a duplicate of a trade owns its objects. Entries without a `key` are returned unchanged.
+ * Where POST /v1/uploads/images puts a screenshot until a trade saves it. One literal prefix, so the bucket lifecycle
+ * rule in template.yaml can expire what no trade took.
  */
-export async function copyImagesToTrade(userId: string, images: any[], newTradeId: string): Promise<any[]> {
+export const uploadPrefix = (userId: string) => `images/upload/${userId}/`;
+
+/** A key a caller may attach to a trade: under its own `images/<userId>/` (a saved screenshot) or its upload prefix. */
+export const ownsImageKey = (userId: string, key: string) => key.startsWith(`images/${userId}/`) || key.startsWith(uploadPrefix(userId));
+
+/**
+ * Copies each stored screenshot of `images` (only those whose key passes `only`) to `images/<userId>/<newTradeId>/` and
+ * returns the list pointing at the copies, so a duplicate of a trade owns its objects. Other entries are returned unchanged.
+ */
+export async function copyImagesToTrade(userId: string, images: any[], newTradeId: string, only: (key: string) => boolean = () => true): Promise<any[]> {
   return Promise.all(images.map(async (im) => {
-    if (typeof im?.key !== 'string' || !im.key.startsWith(`images/${userId}/`)) return im;
+    if (typeof im?.key !== 'string' || !ownsImageKey(userId, im.key) || !only(im.key)) return im;
     const key = `images/${userId}/${newTradeId}/${im.key.split('/').pop()}`;
     await s3.send(new CopyObjectCommand({ Bucket: BUCKET, CopySource: `${BUCKET}/${im.key.split('/').map(encodeURIComponent).join('/')}`, Key: key }));
     return { ...im, key };
   }));
 }
+
+/**
+ * Gives a trade its own copy of each screenshot it takes from the upload prefix. The upload is left for the lifecycle
+ * rule, so a retried save finds it again. Run it before the trade is written: a stored key then always exists.
+ */
+export const adoptUploads = (userId: string, images: any[], tradeId: string): Promise<any[]> =>
+  copyImagesToTrade(userId, images, tradeId, (key) => key.startsWith(uploadPrefix(userId)));

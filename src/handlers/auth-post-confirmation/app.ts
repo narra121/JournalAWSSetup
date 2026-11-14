@@ -1,9 +1,9 @@
 import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createDefaultRules, createDefaultSavedOptions } from '../../shared/user-initialization';
 import { ddb } from '../../shared/dynamo';
+import { PLANS_VERSION, TRIAL_DAYS } from '../../app/billing/entitlements';
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE!;
-const TRIAL_DAYS = 14;
 
 export const handler = async (event: any) => {
   const userId = event.request.userAttributes.sub;
@@ -19,7 +19,7 @@ export const handler = async (event: any) => {
     const results = await Promise.allSettled([
       createDefaultRules(userId),
       createDefaultSavedOptions(userId),
-      // Start 14-day free trial
+      // The free trial (every Pro feature); after it the journal is read-only until Pro.
       ddb.send(new PutCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Item: {
@@ -27,6 +27,7 @@ export const handler = async (event: any) => {
           status: 'trial',
           trialEnd: trialEnd.toISOString(),
           trialStarted: now.toISOString(),
+          plansVersion: PLANS_VERSION,
           createdAt: now.toISOString(),
           updatedAt: now.toISOString(),
         },
@@ -45,7 +46,7 @@ export const handler = async (event: any) => {
     });
     console.log('post-confirmation init complete', { userId, trialEnd: trialEnd.toISOString(), results: results.map((r, i) => `${labels[i]}:${r.status}`) });
 
-    // Without the trial row the user stays on Free for good; failing the trigger makes Cognito fail the confirmation so it is retried.
+    // Without the trial row the first request would start the trial later; failing the trigger makes Cognito fail the confirmation so it is retried.
     const trial = results[TRIAL];
     if (trial.status === 'rejected' && !trialExists(trial)) throw trial.reason;
   }

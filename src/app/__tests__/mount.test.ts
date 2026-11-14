@@ -36,10 +36,10 @@ describe('feature route mounting', () => {
     expect(res.status).toBe(401);
   });
 
-  it('exposes userId and entitlements (free without a subscription item)', async () => {
+  it('exposes userId and entitlements (no subscription item: the first request starts the trial)', async () => {
     ddb.on(GetCommand).resolves({});
     const res = await app.request('/v1/stub/whoami', { headers: auth });
-    expect(await res.json()).toEqual({ userId: 'u1', plan: 'free' });
+    expect(await res.json()).toEqual({ userId: 'u1', plan: 'trial' });
   });
 
   it('a trial in the future gives the trial plan', async () => {
@@ -52,16 +52,16 @@ describe('feature route mounting', () => {
     ddb.on(GetCommand).resolves({});
     ddb.on(UpdateCommand).resolves({ Attributes: { count: 4 } });
     const res = await app.request('/v1/stub/spend', { method: 'POST', headers: auth });
-    expect(await res.json()).toEqual({ remaining: 6 });
-    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(await res.json()).toEqual({ remaining: 496 });
+    const input = ddb.commandCalls(UpdateCommand).map((c) => c.args[0].input).find((i) => i.TableName === 'usage')!;
     expect(input.ConditionExpression).toContain('attribute_not_exists');
-    expect(input.ExpressionAttributeValues).toMatchObject({ ':n': 1, ':max': 9 });
+    expect(input.ExpressionAttributeValues).toMatchObject({ ':n': 1, ':max': 499 });
   });
 });
 
 describe('GET /v1/me/entitlements', () => {
   it('returns entitlements, usage, reset date and billing currency', async () => {
-    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', writableAccountIds: ['a1'] } });
+    ddb.on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
     ddb.on(QueryCommand).resolves({ Items: [{ sk: `${new Date().toISOString().slice(0, 7)}#ai_chat`, count: 3 }] });
     const res = await app.request('/v1/me/entitlements', { headers: { ...auth, 'cloudfront-viewer-country': 'IN' } });
     const body = await res.json();
@@ -69,7 +69,7 @@ describe('GET /v1/me/entitlements', () => {
     expect(body.data.entitlements).toMatchObject({ plan: 'pro', limits: { ai_extract: 200, ai_insight: 30, ai_chat: 500, broker_import: 200, ai_enhance: 500 } });
     expect(body.data.usage).toEqual({ ai_extract: 0, ai_insight: 0, ai_chat: 3, broker_import: 0, ai_enhance: 0 });
     expect(body.data.billingCurrency).toBe('INR');
-    expect(body.data.writableAccountIds).toEqual(['a1']);
+    expect(body.data.writableAccountIds).toBeNull();
     expect(body.data.periodResetsAt).toMatch(/-01T00:00:00.000Z$/);
   });
 });

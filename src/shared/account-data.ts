@@ -4,17 +4,22 @@ import { DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { batchWriteDeleteAll } from './batchWrite';
 import { resolveCognitoUsername } from './cognitoUser';
 import { ddb } from './dynamo';
+import { uploadPrefix } from './images';
 import type { Logger } from './logger';
+import { STATS_DIRTY_PK } from './statsDirty';
 import { getStripe } from './stripe-config';
 
 const cognito = new CognitoIdentityProviderClient({});
 const s3 = new S3Client({});
 
-/** Tables with a (userId, <sort key>) primary key, in the order they are read and purged. */
+/**
+ * Tables with a (userId, <sort key>) primary key, in the order they are purged. Accounts go before trades: update-stats
+ * treats a trade removed from a missing account as part of a purge and does not rebuild its day or flag the user.
+ */
 function sortKeyTables() {
   return [
-    { name: 'trades', table: process.env.TRADES_TABLE!, sortKey: 'tradeId' },
     { name: 'accounts', table: process.env.ACCOUNTS_TABLE!, sortKey: 'accountId' },
+    { name: 'trades', table: process.env.TRADES_TABLE!, sortKey: 'tradeId' },
     { name: 'goals', table: process.env.GOALS_TABLE!, sortKey: 'goalId' },
     { name: 'rules', table: process.env.RULES_TABLE!, sortKey: 'ruleId' },
     { name: 'stats', table: process.env.DAILY_STATS_TABLE!, sortKey: 'sk' },
@@ -175,12 +180,17 @@ export async function purgeUser(userId: string, log?: Logger, claims?: Record<st
     await batchWriteDeleteAll({ ddb, tableName: table, keys, log });
     deleted[name] = keys.length;
   }
+  // The flag update-stats may have set for this user before it saw the accounts gone.
+  await ddb.send(new DeleteCommand({ TableName: process.env.DAILY_STATS_TABLE!, Key: { userId: STATS_DIRTY_PK, sk: userId } }));
   for (const { name, table } of singleItemTables()) {
     await ddb.send(new DeleteCommand({ TableName: table, Key: { userId } }));
     deleted[name] = 1;
   }
 
-  const imageKeys = await listKeys(process.env.IMAGES_BUCKET!, `images/${userId}/`);
+  const imageKeys = [
+    ...(await listKeys(process.env.IMAGES_BUCKET!, `images/${userId}/`)),
+    ...(await listKeys(process.env.IMAGES_BUCKET!, uploadPrefix(userId))),
+  ];
   await deleteKeys(process.env.IMAGES_BUCKET!, imageKeys);
   const reportBucket = process.env.ERROR_REPORTS_BUCKET;
   const reportKeys = reportBucket

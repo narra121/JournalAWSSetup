@@ -24,7 +24,9 @@ const scopeOf = (accountId: unknown): string => (typeof accountId === 'string' &
 journalRoutes.get('/days', async (c) => {
   const from = c.req.query('from') ?? '0000-01-01';
   const to = c.req.query('to') ?? '9999-12-31';
-  if (!DATE.test(from) || !DATE.test(to)) return fail(c, 400, 'VALIDATION_ERROR', 'Use dates like 2026-11-12 for from and to.');
+  if (!isRealDay(from) || !isRealDay(to)) return fail(c, 400, 'VALIDATION_ERROR', 'Use dates like 2026-11-12 for from and to.');
+  // DynamoDB rejects BETWEEN with a lower bound above the upper one.
+  if (from > to) return fail(c, 400, 'VALIDATION_ERROR', 'from must be on or before to.');
   const accountId = c.req.query('accountId');
 
   const days: any[] = [];
@@ -33,8 +35,9 @@ journalRoutes.get('/days', async (c) => {
     const res = await ddb.send(
       new QueryCommand({
         TableName: process.env.AI_DATA_TABLE!,
+        // `:b` ends in the highest code point, so every `<to>#<scope>` sorts inside the range whatever the account id.
         KeyConditionExpression: 'userId = :u AND sk BETWEEN :a AND :b',
-        ExpressionAttributeValues: { ':u': c.get('userId'), ':a': `${PREFIX}${from}`, ':b': `${PREFIX}${to}#~` },
+        ExpressionAttributeValues: { ':u': c.get('userId'), ':a': `${PREFIX}${from}`, ':b': `${PREFIX}${to}#\u{10ffff}` },
         ExclusiveStartKey: lastKey,
       }),
     );

@@ -1,10 +1,10 @@
 import type { ApiHandler } from '../../shared/types';
 import { ddb } from '../../shared/dynamo';
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { errorResponse, envelope, ErrorCodes } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
 import { getUserId } from '../../shared/auth';
-import { queryDailyStats } from '../../shared/dailyStats';
+import { accountTally } from '../../shared/dailyStats';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
 
@@ -47,23 +47,33 @@ export const handler: ApiHandler = async (event) => {
     // The single-number totals stay only when they are meaningful, i.e. all accounts share one currency.
     const single = totalsByCurrency.size <= 1 ? [...totalsByCurrency.values()][0] ?? { balance: 0, pnl: 0 } : null;
 
-    // The counts are summed from DailyStats (one row per account and day), so they trail a trade write by the stream delay.
-    const days = await queryDailyStats(userId, 'ALL', '0000-01-01', '9999-12-31', '#sk, #date, accountId, tradeCount');
-    const tally = new Map<string, { tradeCount: number; lastTradeDate: string | null }>();
-    for (const day of days) {
-      if (!(day.tradeCount > 0)) continue;
-      const t = tally.get(day.accountId) ?? { tradeCount: 0, lastTradeDate: null };
-      t.tradeCount += day.tradeCount;
-      if (!t.lastTradeDate || day.date > t.lastTradeDate) t.lastTradeDate = day.date;
-      tally.set(day.accountId, t);
-    }
+    // update-stats and rebuild-stats-job keep tradeCount and lastTradeDate on the account. One created before they did
+    // has neither: it is summed from its DailyStats days once and stored, so no manual backfill is needed.
+    await Promise.all(accounts.filter((acc) => typeof acc.tradeCount !== 'number').map(async (acc) => {
+      const { tradeCount, lastTradeDate } = await accountTally(userId, acc.accountId);
+      acc.tradeCount = tradeCount;
+      acc.lastTradeDate = lastTradeDate;
+      try {
+        await ddb.send(new UpdateCommand({
+          TableName: ACCOUNTS_TABLE,
+          Key: { userId, accountId: acc.accountId },
+          UpdateExpression: `SET #tradeCount = :count${lastTradeDate ? ', #lastTradeDate = :last' : ''}`,
+          // Skipped when update-stats or the rebuild stored the counters meanwhile.
+          ConditionExpression: 'attribute_exists(userId) AND attribute_not_exists(#tradeCount)',
+          ExpressionAttributeNames: { '#tradeCount': 'tradeCount', ...(lastTradeDate ? { '#lastTradeDate': 'lastTradeDate' } : {}) },
+          ExpressionAttributeValues: { ':count': tradeCount, ...(lastTradeDate ? { ':last': lastTradeDate } : {}) },
+        }));
+      } catch (e: any) {
+        if (e.name !== 'ConditionalCheckFailedException') log.warn('could not store trade count', { accountId: acc.accountId, error: e.message });
+      }
+    }));
 
     log.info('accounts retrieved', { count: accounts.length });
     
     return envelope({
       statusCode: 200,
       data: {
-        accounts: accounts.map((acc) => ({ ...acc, tradeCount: tally.get(acc.accountId)?.tradeCount ?? 0, lastTradeDate: tally.get(acc.accountId)?.lastTradeDate ?? null })),
+        accounts: accounts.map((acc) => ({ ...acc, lastTradeDate: acc.lastTradeDate ?? null })),
         ...(single ? { totalBalance: single.balance, totalPnl: single.pnl } : {}),
         totalsByCurrency: Object.fromEntries(totalsByCurrency)
       },

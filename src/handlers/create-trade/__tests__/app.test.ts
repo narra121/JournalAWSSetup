@@ -813,6 +813,46 @@ describe('create-trade: dates, accounts, idempotency, bulk (BE-005, 031, 033-035
     });
   });
 
+  describe('screenshots uploaded before the trade (H10)', () => {
+    const upload = 'images/upload/user-1/a.png';
+
+    it('single create stores a copy under the new trade, drops other users\' uploads and leaves the upload for expiry', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      const res = (await handler(makeEvent({ ...validTrade, images: [{ key: upload }, { key: 'images/upload/user-2/b.png' }] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(201);
+      const [item] = writtenItems();
+      expect(item.images.map((i: any) => i.key)).toEqual([`images/user-1/${item.tradeId}/a.png`]);
+      expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(1);
+      expect(s3Mock.commandCalls(CopyObjectCommand)[0].args[0].input).toMatchObject({ CopySource: `test-bucket/${upload}`, Key: item.images[0].key });
+    });
+
+    it('bulk create copies each item\'s uploads under that item\'s trade', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      ddbMock.on(BatchWriteCommand).resolves({});
+      const res = (await handler(makeEvent({ items: [{ ...validTrade, images: [{ key: upload }] }] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(201);
+      const item = ddbMock.commandCalls(BatchWriteCommand)[0].args[0].input.RequestItems!['test-trades'][0].PutRequest!.Item!;
+      expect(item.images[0].key).toBe(`images/user-1/${item.tradeId}/a.png`);
+    });
+
+    it('every account gets its own copy: the first under its trade, the others copied from it', async () => {
+      s3Mock.on(CopyObjectCommand).resolves({});
+      await handler(makeEvent({ ...validTrade, accountIds: ['acc-1', 'acc-2'], images: [{ key: upload }] }), {} as any, () => {});
+      const [first, second] = writtenItems();
+      expect(first.images[0].key).toBe(`images/user-1/${first.tradeId}/a.png`);
+      expect(second.images[0].key).toBe(`images/user-1/${second.tradeId}/a.png`);
+      const sources = s3Mock.commandCalls(CopyObjectCommand).map((c) => c.args[0].input.CopySource);
+      expect(sources).toEqual([`test-bucket/${upload}`, `test-bucket/${first.images[0].key}`]);
+    });
+
+    it('stores nothing when the copy fails', async () => {
+      s3Mock.on(CopyObjectCommand).rejects(new Error('NoSuchKey'));
+      const res = (await handler(makeEvent({ ...validTrade, images: [{ key: upload }] }), {} as any, () => {})) as any;
+      expect(res.statusCode).toBe(500);
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+    });
+  });
+
   describe('idempotent multi-account create (BE-035)', () => {
     it('after a partial failure the retry creates only the account that is missing', async () => {
       ddbMock.on(QueryCommand).callsFake((input) =>
@@ -903,5 +943,38 @@ describe('create-trade: dates, accounts, idempotency, bulk (BE-005, 031, 033-035
       expect(body.data.errors).toHaveLength(1);
       expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
     });
+  });
+});
+
+describe('create-trade: the reviewed flag (CONTRACT I1)', () => {
+  const stored = () => ddbMock.commandCalls(PutCommand).map((c) => c.args[0].input.Item!);
+
+  it('stores reviewed: true and returns it', async () => {
+    const res = (await handler(makeEvent({ ...validTrade, reviewed: true }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(201);
+    expect(stored()[0].reviewed).toBe(true);
+    expect(JSON.parse(res.body).data.trade.reviewed).toBe(true);
+  });
+
+  it('stores false when reviewed is absent or false', async () => {
+    await handler(makeEvent(validTrade), {} as any, () => {});
+    await handler(makeEvent({ ...validTrade, reviewed: false }), {} as any, () => {});
+    expect(stored().map((i) => i.reviewed)).toEqual([false, false]);
+  });
+
+  it('400 for a reviewed that is not true or false, and nothing is stored', async () => {
+    const res = (await handler(makeEvent({ ...validTrade, reviewed: 'yes' }), {} as any, () => {})) as any;
+    expect(res.statusCode).toBe(400);
+    expect(stored()).toHaveLength(0);
+  });
+
+  it('every account of a multi-account create and every bulk item keeps its own reviewed', async () => {
+    await handler(makeEvent({ ...validTrade, reviewed: true, accountIds: ['acc-1', 'acc-2'] }), {} as any, () => {});
+    expect(stored().map((i) => i.reviewed)).toEqual([true, true]);
+
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    await handler(makeEvent({ items: [{ ...validTrade, symbol: 'A', reviewed: true }, { ...validTrade, symbol: 'B' }] }), {} as any, () => {});
+    const items = ddbMock.commandCalls(BatchWriteCommand)[0].args[0].input.RequestItems!['test-trades'].map((r) => r.PutRequest!.Item!);
+    expect(Object.fromEntries(items.map((i) => [i.symbol, i.reviewed]))).toEqual({ A: true, B: false });
   });
 });

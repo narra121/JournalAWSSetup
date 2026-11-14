@@ -82,6 +82,27 @@ describe('legacyExtract (dev Function URL kept for the stale prod frontend)', ()
     });
   });
 
+  describe('after the trial (read-only)', () => {
+    const day = 86_400_000;
+
+    it('a read-only dev-pool user → 402 TRIAL_EXPIRED; no quota is used and the model is never called', async () => {
+      ddb.on(GetCommand).resolves({ Item: { userId: 'sub-dev-token', status: 'trial', trialEnd: new Date(Date.now() - day).toISOString(), plansVersion: 2 } });
+      const res = await legacyExtract(event('dev-token'));
+      expect(res.statusCode).toBe(402);
+      expect(JSON.parse(res.body)).toMatchObject({ success: false, errorCode: 'TRIAL_EXPIRED', message: 'Your free trial has ended. Upgrade to Pro to add, edit or delete.' });
+      expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(extract).not.toHaveBeenCalled();
+    });
+
+    it('a record from before the trial plans counts as a fresh trial (this function only reads), so the extract runs', async () => {
+      ddb.on(GetCommand).resolves({ Item: { userId: 'sub-dev-token', status: 'trial', trialEnd: new Date(Date.now() - 30 * day).toISOString() } });
+      ddb.on(UpdateCommand).resolves({ Attributes: { count: 1 } });
+      extract.mockResolvedValue({ statusCode: 200, body: '{}' });
+      expect((await legacyExtract(event('dev-token'))).statusCode).toBe(200);
+      expect(ddb.commandCalls(UpdateCommand).map((c) => c.args[0].input.TableName)).toEqual(['usage']);
+    });
+  });
+
   it('refunds the unit when extraction fails', async () => {
     ddb.on(GetCommand).resolves({});
     ddb.on(UpdateCommand).resolves({ Attributes: { count: 1 } });

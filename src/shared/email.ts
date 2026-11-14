@@ -56,10 +56,10 @@ export function trialEndingMail(to: string, endsOn: string): Mail {
   const url = `${appUrl()}/app/billing`;
   return {
     to,
-    subject: 'Your TradeQut Pro trial ends in 3 days',
-    text: `Your Pro trial ends on ${endsOn}. After that you move to the Free plan: your trades, journal, calendar, dashboard, goals and export stay. Pro features such as advanced analytics, unlimited accounts and higher AI limits need a Pro plan.\n\nPlans and billing: ${url}\n\n${TRANSACTIONAL_FOOTER}`,
+    subject: 'Your TradeQut free trial ends in 3 days',
+    text: `Your free trial ends on ${endsOn}. After that your journal is read-only: you can view and export your trades, but not add, edit or delete them. Upgrade to Pro to keep everything working.\n\nPlans and billing: ${url}\n\n${TRANSACTIONAL_FOOTER}`,
     html: layout(
-      `<h2>Your Pro trial ends on ${endsOn}</h2><p>After that you move to the Free plan. Your trades, journal, calendar, dashboard, goals and export stay. Advanced analytics, unlimited accounts and higher AI limits need Pro.</p><p><a href="${url}">See plans</a></p>`,
+      `<h2>Your free trial ends on ${endsOn}</h2><p>After that your journal is read-only: you can view and export your trades, but not add, edit or delete them. Upgrade to Pro to keep everything working.</p><p><a href="${url}">See plans</a></p>`,
       TRANSACTIONAL_FOOTER,
     ),
   };
@@ -69,10 +69,10 @@ export function trialEndedMail(to: string): Mail {
   const url = `${appUrl()}/app/billing`;
   return {
     to,
-    subject: 'Your TradeQut Pro trial has ended',
-    text: `You are now on the Free plan. All your trades and your journal are intact. What changed: 2 trading accounts, 3 broker imports, 5 AI extractions, 1 AI report and 10 chat messages a month, and advanced analytics are not included. You can upgrade any time: ${url}\n\n${TRANSACTIONAL_FOOTER}`,
+    subject: 'Your TradeQut free trial has ended',
+    text: `Your journal is now read-only. All your trades are safe, and you can still view and export them. What changed: adding, editing and deleting trades, imports, notes, rules, AI reports and chat need Pro. Upgrade to Pro: ${url}\n\n${TRANSACTIONAL_FOOTER}`,
     html: layout(
-      `<h2>You are now on the Free plan</h2><p>All your trades and your journal are intact. Free includes 2 trading accounts, 3 broker imports, 5 AI extractions, 1 AI report and 10 chat messages a month. Advanced analytics need Pro.</p><p><a href="${url}">Upgrade any time</a></p>`,
+      `<h2>Your journal is now read-only</h2><p>All your trades are safe, and you can still view and export them. Adding, editing and deleting trades, imports, notes, rules, AI reports and chat need Pro.</p><p><a href="${url}">Upgrade to Pro</a></p>`,
       TRANSACTIONAL_FOOTER,
     ),
   };

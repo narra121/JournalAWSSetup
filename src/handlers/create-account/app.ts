@@ -83,6 +83,7 @@ export const handler: ApiHandler = async (event) => {
       initialBalance: data.initialBalance,
       currency,
       notes: data.notes || null,
+      tradeCount: 0,
       createdAt: now,
       updatedAt: now
     };

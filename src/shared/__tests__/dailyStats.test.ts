@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.stubEnv('DAILY_STATS_TABLE', 'stats');
 const ddb = mockClient(DynamoDBDocumentClient);
-const { queryDailyStats } = await import('../dailyStats');
+const { queryDailyStats, accountTally, latestTradeDay } = await import('../dailyStats');
 
 beforeEach(() => ddb.reset());
 
@@ -51,5 +51,38 @@ describe('queryDailyStats (BE-091: the one DailyStats query)', () => {
       expect(call.args[0].input.ProjectionExpression).toBe('userId, #sk, #date');
       expect(call.args[0].input.ExpressionAttributeNames).toEqual({ '#date': 'date', '#sk': 'sk' });
     }
+  });
+});
+
+describe('account counters (M1)', () => {
+  it('accountTally sums the day records of one account and names the newest day; rows without trades are skipped', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ date: '2026-04-01', tradeCount: 2 }, { date: '2026-04-09', tradeCount: 1 }, { date: '2026-05-01', tradeCount: 0 }, { date: '2026-06-01' }] });
+    expect(await accountTally('u1', 'a')).toEqual({ tradeCount: 3, lastTradeDate: '2026-04-09' });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input).toMatchObject({
+      ProjectionExpression: '#date, tradeCount',
+      ExpressionAttributeValues: { ':skStart': 'a#0000-01-01', ':skEnd': 'a#9999-12-31' },
+    });
+  });
+
+  it('accountTally of an account without day records is 0 and null', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    expect(await accountTally('u1', 'a')).toEqual({ tradeCount: 0, lastTradeDate: null });
+  });
+
+  it('latestTradeDay reads one item of the account, newest sort key first', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ date: '2026-04-09' }] });
+    expect(await latestTradeDay('u1', 'a')).toBe('2026-04-09');
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input).toMatchObject({
+      TableName: 'stats',
+      ScanIndexForward: false,
+      Limit: 1,
+      ProjectionExpression: '#date',
+      ExpressionAttributeNames: { '#sk': 'sk', '#date': 'date' },
+    });
+  });
+
+  it('latestTradeDay is null when the account has no day record', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    expect(await latestTradeDay('u1', 'a')).toBeNull();
   });
 });

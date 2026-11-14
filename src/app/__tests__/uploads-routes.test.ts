@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { S3Client } from '@aws-sdk/client-s3';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { mockClient } from 'aws-sdk-client-mock';
 
 vi.stubEnv('USER_POOL_ID', 'us-east-1_t');
 vi.stubEnv('USER_POOL_CLIENT_ID', 'c');
@@ -9,6 +11,7 @@ vi.stubEnv('IMAGES_BUCKET', 'images-bucket');
 const signer = vi.fn();
 vi.mock('@aws-sdk/s3-request-presigner', () => ({ getSignedUrl: (...a: any[]) => signer(...a) }));
 
+mockClient(DynamoDBDocumentClient).on(GetCommand).resolves({ Item: { userId: 'u1', status: 'active', plansVersion: 2 } });
 const { createApp } = await import('../app');
 const { setTokenVerifier } = await import('../auth/cognito');
 const app = createApp();
@@ -16,7 +19,7 @@ const post = (body: unknown) =>
   app.request('/v1/uploads/images', { method: 'POST', headers: { authorization: 'Bearer good', 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
 
 const list = vi.spyOn(S3Client.prototype, 'send');
-const recent = (n: number, ageMs = 1000) => Array.from({ length: n }, (_, i) => ({ Key: `images/u1/upload/${i}.png`, LastModified: new Date(Date.now() - ageMs) }));
+const recent = (n: number, ageMs = 1000) => Array.from({ length: n }, (_, i) => ({ Key: `images/upload/u1/${i}.png`, LastModified: new Date(Date.now() - ageMs) }));
 
 beforeEach(() => {
   list.mockReset().mockResolvedValue({ Contents: [], IsTruncated: false } as never);
@@ -30,7 +33,7 @@ describe('POST /v1/uploads/images', () => {
     expect(res.status).toBe(200);
     const { data } = await res.json();
     expect(data.url).toContain('signed');
-    expect(data.key).toMatch(/^images\/u1\/upload\/[0-9a-f-]{36}\.png$/);
+    expect(data.key).toMatch(/^images\/upload\/u1\/[0-9a-f-]{36}\.png$/);
     expect(data).toMatchObject({ method: 'PUT', headers: { 'Content-Type': 'image/png' }, expiresIn: 300, maxBytes: 2097152 });
 
     const [, command, options] = signer.mock.calls[0];
@@ -67,7 +70,13 @@ describe('POST /v1/uploads/images', () => {
     expect(res.status).toBe(429);
     expect((await res.json()).errorCode).toBe('RATE_LIMITED');
     expect(signer).not.toHaveBeenCalled();
-    expect(list.mock.calls[0][0].input).toMatchObject({ Bucket: 'images-bucket', Prefix: 'images/u1/upload/' });
+    expect(list.mock.calls[0][0].input).toMatchObject({ Bucket: 'images-bucket', Prefix: 'images/upload/u1/' });
+  });
+
+  it('reads at most 3 pages of the upload prefix, however long it is (BE-057)', async () => {
+    list.mockResolvedValue({ Contents: recent(50, 3 * 24 * 3600 * 1000), IsTruncated: true, NextContinuationToken: 't' } as never);
+    expect((await post({ contentType: 'image/png', size: 100 })).status).toBe(200);
+    expect(list).toHaveBeenCalledTimes(3);
   });
 
   it('counts only the last 24 hours, across pages', async () => {

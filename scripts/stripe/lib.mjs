@@ -29,7 +29,7 @@ export function stripeFor(secretKey, expectedPrefix) {
   return new Stripe(secretKey);
 }
 
-/** Finds or creates the Pro product, the four prices (by lookup_key) and a Customer Portal configuration. */
+/** Finds or creates the Pro product, the four prices (by lookup_key; a price with a different amount, currency or interval is replaced) and a Customer Portal configuration. */
 export async function ensureCatalog(stripe, { dryRun, returnUrl }) {
   const plan = { product: null, prices: {}, portalConfigId: null, created: [] };
 
@@ -44,20 +44,23 @@ export async function ensureCatalog(stripe, { dryRun, returnUrl }) {
 
   for (const p of PRICES) {
     const existing = (await stripe.prices.list({ lookup_keys: [p.key], active: true, limit: 1 })).data[0];
-    if (existing) {
+    if (existing && existing.unit_amount === p.amount && existing.currency === p.currency && existing.recurring?.interval === p.interval) {
       plan.prices[p.key] = existing.id;
       continue;
     }
-    plan.created.push(`price ${p.key} ${p.amount} ${p.currency}/${p.interval}`);
+    plan.created.push(`price ${p.key} ${p.amount} ${p.currency}/${p.interval}${existing ? ` (replaces ${existing.id})` : ''}`);
     if (!dryRun) {
+      // A Stripe price's amount cannot be edited, so a changed amount is a new price that takes over the lookup key.
       const price = await stripe.prices.create({
         product: product.id,
         currency: p.currency,
         unit_amount: p.amount,
         recurring: { interval: p.interval },
         lookup_key: p.key,
+        transfer_lookup_key: true,
         metadata: { tradequt_plan: 'pro' },
       });
+      if (existing) await stripe.prices.update(existing.id, { active: false });
       plan.prices[p.key] = price.id;
     } else {
       plan.prices[p.key] = '(would create)';

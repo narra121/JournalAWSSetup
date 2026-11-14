@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SseParser, sseFrame, ssePing } from '../sse';
 import { isAdviceRequest } from '../../chat/guard';
 
@@ -66,12 +66,18 @@ describe('gemini client', () => {
   beforeEach(() => {
     __resetGeminiKeyCache();
     process.env.GEMINI_API_KEY_PARAM = '/test/gemini';
+    process.env.AI_PROVIDER = 'gemini';
+  });
+  afterEach(() => {
+    delete process.env.AI_PROVIDER;
   });
 
   it('builds JSON-mode body with system instruction and schema', () => {
     const b = buildBody({ system: 'S', contents: [{ role: 'user', parts: [{ text: 'U' }] }], temperature: 0.2, maxOutputTokens: 100, responseSchema: { type: 'OBJECT' } });
     expect(b.systemInstruction.parts[0].text).toBe('S');
-    expect(b.generationConfig).toMatchObject({ responseMimeType: 'application/json', responseSchema: { type: 'OBJECT' }, thinkingConfig: { thinkingBudget: 0 } });
+    expect(b.generationConfig).toEqual({ temperature: 0.2, maxOutputTokens: 100, responseMimeType: 'application/json', responseSchema: { type: 'OBJECT' } });
+    expect(JSON.stringify(b)).not.toMatch(/thinking/i);
+    expect(b).not.toHaveProperty('tools');
   });
 
   it('falls back to the next model on 429 and returns text + usage', async () => {
@@ -92,7 +98,7 @@ describe('gemini client', () => {
 
   it('the error carries the model and HTTP status of the last failed attempt', async () => {
     const a = await generate({ system: 's', contents: [], temperature: 0, maxOutputTokens: 10 }, vi.fn().mockResolvedValue(fail(400)) as any).catch((e) => e);
-    expect(a).toMatchObject({ model: 'gemini-2.5-flash', status: 400 });
+    expect(a).toMatchObject({ model: 'gemini-3.5-flash-lite', status: 400 });
     const b = await generate({ system: 's', contents: [], temperature: 0, maxOutputTokens: 10 }, vi.fn().mockResolvedValue(fail(429)) as any).catch((e) => e);
     expect(b).toMatchObject({ model: 'gemini-2.5-flash-lite', status: 429 });
     expect(b.message).toMatch(/^gemini-2\.5-flash-lite 429/);
@@ -115,7 +121,7 @@ describe('gemini client', () => {
     expect(out).toEqual([
       { type: 'text', text: 'Hello' },
       { type: 'text', text: ' world' },
-      { type: 'end', model: 'gemini-2.5-flash', usage: { promptTokens: 5, outputTokens: 2 }, finishReason: 'STOP' },
+      { type: 'end', model: 'gemini-3.5-flash-lite', usage: { promptTokens: 5, outputTokens: 2 }, finishReason: 'STOP' },
     ]);
   });
 
@@ -152,7 +158,7 @@ describe('gemini client', () => {
       vi.useRealTimers();
       expect(f).toHaveBeenCalledTimes(1);
       expect(err).toBeInstanceOf(AiUnavailableError);
-      expect(err).toMatchObject({ model: 'gemini-2.5-flash', status: 503 });
+      expect(err).toMatchObject({ model: 'gemini-3.5-flash-lite', status: 503 });
     });
 
     it('the caller signal reaches fetch, and an aborted call stops without trying the fallback', async () => {

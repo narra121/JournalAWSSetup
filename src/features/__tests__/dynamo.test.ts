@@ -167,6 +167,46 @@ describe('Trades repository', () => {
     expect(instants).toMatchObject({ ':a': '2026-04-01T00:00:00.000Z', ':b': '2026-04-30T12:00:00.000Z' });
   });
 
+  describe('time zone of the date bounds (CONTRACT I1)', () => {
+    const rowsAt = (openDates: string[]) => {
+      m.on(QueryCommand).resolves({ Items: openDates.map((_, i) => ({ userId: 'u1', tradeId: `t${i}` })) });
+      m.on(BatchGetCommand).resolves({ Responses: { 'Trades-test': openDates.map((openDate, i) => ({ tradeId: `t${i}`, openDate })) } });
+    };
+
+    it('west of UTC: the query starts at the bare date so date-only trades are found; rows are kept by their local day', async () => {
+      rowsAt(['2026-10-01', '2026-10-01T02:00:00.000Z', '2026-10-01T12:00:00.000Z', '2026-11-01T03:00:00.000Z', '2026-11-01']);
+      const { trades } = await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', timeZone: 'America/New_York' });
+      expect(m.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues).toMatchObject({ ':a': '2026-10-01', ':b': '2026-11-01T03:59:59.999Z' });
+      // 02:00Z is 30 Sep 22:00 in New York; 1 Nov 03:00Z is 31 Oct 23:00; the date-only 1 Nov is outside
+      expect(trades.map((t) => t.openDate)).toEqual(['2026-10-01', '2026-10-01T12:00:00.000Z', '2026-11-01T03:00:00.000Z']);
+    });
+
+    it('8 March 2026 is 23 hours long in New York (clocks go forward); London is still on GMT', async () => {
+      rowsAt([]);
+      await dynamoTradeSource.loadTrades('u1', { from: '2026-03-08', to: '2026-03-08', timeZone: 'America/New_York' });
+      await dynamoTradeSource.loadTrades('u1', { from: '2026-03-08', to: '2026-03-08', timeZone: 'Europe/London' });
+      const [ny, london] = m.commandCalls(QueryCommand).map((c) => c.args[0].input.ExpressionAttributeValues);
+      expect(ny).toMatchObject({ ':a': '2026-03-08', ':b': '2026-03-09T03:59:59.999Z' });
+      expect(london).toMatchObject({ ':a': '2026-03-08', ':b': '2026-03-08T23:59:59.999Z' });
+    });
+
+    it('east of UTC: an instant late on the last UTC day belongs to the next local day', async () => {
+      rowsAt(['2026-03-31T18:00:00.000Z', '2026-03-31T18:30:00.000Z']);
+      const { trades } = await dynamoTradeSource.loadTrades('u1', { from: '2026-03-01', to: '2026-03-31', timeZone: 'Asia/Tokyo' });
+      expect(m.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues).toMatchObject({ ':a': '2026-02-28T15:00:00.000Z', ':b': '2026-03-31T14:59:59.999Z' });
+      expect(trades).toEqual([]);
+    });
+
+    it('UTC and the IST default', async () => {
+      rowsAt([]);
+      await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', timeZone: 'UTC' });
+      await dynamoTradeSource.loadTrades('u1', { from: '2026-10-01', to: '2026-10-31', timeZone: null });
+      const [utc, ist] = m.commandCalls(QueryCommand).map((c) => c.args[0].input.ExpressionAttributeValues);
+      expect(utc).toMatchObject({ ':a': '2026-10-01', ':b': '2026-10-31T23:59:59.999Z' });
+      expect(ist).toMatchObject({ ':a': '2026-09-30T18:30:00.000Z', ':b': '2026-10-31T18:29:59.999Z' });
+    });
+  });
+
   it('keys that stay unprocessed after the backoff attempts are an error, not a silent gap (BE-054)', async () => {
     m.on(QueryCommand).resolves({ Items: [{ userId: 'u1', tradeId: 'a' }] });
     m.on(BatchGetCommand).resolves({ Responses: { 'Trades-test': [] }, UnprocessedKeys: { 'Trades-test': { Keys: [{ userId: 'u1', tradeId: 'a' }] } } });
@@ -191,9 +231,20 @@ describe('Trades repository', () => {
   });
 
   it('reads rule texts and normalises trade rows', async () => {
-    m.on(QueryCommand).resolves({ Items: [{ ruleId: 'r1', text: 'No FOMO' }, { ruleId: 'r2' }] });
+    m.on(QueryCommand).resolves({ Items: [{ ruleId: 'r1', rule: 'No FOMO' }, { ruleId: 'r2' }] });
     expect([...(await dynamoTradeSource.loadRuleTexts('u1'))]).toEqual([['r1', 'No FOMO']]);
     expect(toTradeRow({ tradeId: 't', accountId: '-1', pnl: '5', stopLoss: 0, mistakes: ['a'] })).toMatchObject({ id: 't', accountId: null, pnl: 0, stopLoss: 0, mistakes: ['a'] });
+  });
+
+  it('carries the I1 fields: notes from tradeNotes, option type normalised, reviewed false when absent', () => {
+    const r = toTradeRow({
+      tradeId: 't', takeProfit: 110, riskRewardRatio: 2, marketCondition: 'Trending', newsEvents: ['CPI'], outcome: 'TP', tradeNotes: 'Clean retest',
+      lessons: ['Wait for the close'], optionType: 'CE', expiry: '2026-11-25', reviewed: true,
+    });
+    expect(r).toMatchObject({ takeProfit: 110, riskRewardRatio: 2, marketCondition: 'Trending', newsEvents: ['CPI'], outcome: 'TP', notes: 'Clean retest', lessons: ['Wait for the close'], optionType: 'call', expiry: '2026-11-25', reviewed: true });
+    expect(toTradeRow({ tradeId: 'u', optionType: 'put' })).toMatchObject({ takeProfit: null, riskRewardRatio: null, marketCondition: null, newsEvents: [], outcome: null, notes: null, lessons: [], optionType: 'put', expiry: null, reviewed: false });
+    expect(toTradeRow({ tradeId: 'v', optionType: 'PE', reviewed: 'yes' })).toMatchObject({ optionType: 'put', reviewed: false });
+    expect(toTradeRow({ tradeId: 'w', optionType: 'straddle' }).optionType).toBeNull();
   });
 
   it('missing table configuration is an error, not a silent empty result', async () => {

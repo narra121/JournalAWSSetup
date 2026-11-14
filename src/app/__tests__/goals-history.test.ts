@@ -75,6 +75,22 @@ describe('GET /v1/goals/history', () => {
     expect(range).toMatchObject({ ':startDate': '2026-11-02', ':endDate': '2026-11-15' });
   });
 
+  it('a single account is judged against the period defaults when it has no goal of its own, not against 0 (M2)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-11T10:00:00Z'));
+    ddb.on(QueryCommand, { TableName: 'stats' }).resolves({ Items: [day('2026-11-10', 600)] });
+    ddb.on(QueryCommand, { TableName: 'goals' }).resolves({ Items: [
+      goal('week#2026-11-09', 'profit', 500), // accountId null: the default
+      { ...goal('week#2026-11-09', 'winRate', 50), goalId: 'week#2026-11-09#mine', accountId: 'acc1' },
+      goal('week#2026-11-09', 'winRate', 99),
+    ] });
+    const body = await (await get('?period=week&count=1&accountId=acc1')).json();
+    const week = body.data.periods[0];
+    expect(week.goals.profit).toMatchObject({ target: 500, achieved: true });
+    // The account's own win rate goal wins over the default of 99.
+    expect(week.goals.winRate).toMatchObject({ target: 50 });
+  });
+
   it('totalCapital is passed through: the drawdown goal is a percentage of it', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-11T10:00:00Z'));
