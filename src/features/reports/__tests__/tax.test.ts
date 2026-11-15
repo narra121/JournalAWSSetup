@@ -61,7 +61,7 @@ describe('buildTaxReport', () => {
   it('charges: statutory parts use the dated rates, the rest is brokerage/GST/other', () => {
     const one = buildTaxReport([fixture[3]], '2026-27', null);
     expect(one.charges.stt).toBe(13.5); // 0.15% of the 9,000 sell premium (rate from 2026-04-01)
-    expect(one.charges.exchange).toBe(5.78); // 0.03503% × (7,500 + 9,000)
+    expect(one.charges.exchange).toBe(5.86); // 0.0355299% × (7,500 + 9,000), FA73061 from 2026-03-01
     expect(Math.abs(one.charges.stamp - 0.225)).toBeLessThan(0.01);
     expect(one.charges.total).toBe(60);
     const sum = one.charges.stt + one.charges.exchange + one.charges.sebi + one.charges.stamp + one.charges.brokerageGstAndOther;
@@ -72,6 +72,9 @@ describe('buildTaxReport', () => {
   it('warns that these are estimates and mentions the turnover method', () => {
     expect(r.warnings.join(' ')).toMatch(/chartered accountant/);
     expect(r.warnings.join(' ')).toMatch(/ICAI/);
+    expect(r.warnings.join(' ')).toMatch(/premium on its sale leg, then compares the total with a fixed ₹10 crore/);
+    expect(r.warnings.join(' ')).toMatch(/resources\/fo-turnover-calculator/);
+    expect(r.warnings.join(' ')).not.toMatch(/follows the ICAI/);
     expect(buildTaxReport([fixture[3]], '2026-27', null).warnings.join(' ')).not.toMatch(/fees may be missing/);
   });
 

@@ -131,7 +131,11 @@ export function buildTaxReport(trades: TradeRow[], fy: string, accountId: string
     'Estimates from your journal: intraday and F&O results use trade-level P&L; confirm figures and tax treatment with your chartered accountant before filing.',
     'Charges are split using statutory rates in force on each trade date (NSE rates assumed); brokerage, GST and other charges are the remainder of the fees recorded on your trades.',
   ];
-  if (fnoB.trades) warnings.push('F&O turnover follows the ICAI guidance (absolute profits and losses, plus premium on the sale leg of options).');
+  if (fnoB.trades) {
+    warnings.push(
+      'F&O turnover here adds the absolute profit or loss before fees of each closed futures and options trade and, for every options trade, the premium on its sale leg, then compares the total with a fixed ₹10 crore. It does not offer the other premium reading in the ICAI Guidance Note or the ₹1 crore limit: see tradequt.com/resources/fo-turnover-calculator.',
+    );
+  }
   if (notCoveredCount) warnings.push(`${notCoveredCount} forex, crypto or CFD trades are not covered by this report.`);
   // The statutory parts are estimated from rates; when they exceed the fees recorded, they are not a split of the total.
   if (round2(statTotal) > round2(totalFees)) {

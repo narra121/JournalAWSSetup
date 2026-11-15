@@ -154,6 +154,53 @@ describe('India charges', () => {
     expect(ratesFor('2019-01-01').effectiveFrom).toBe('2020-07-01');
   });
 
+  const futuresTrade = (day: string, exchange = 'NSE') =>
+    buildEpisodes([
+      f({ symbol: 'NIFTY26APRFUT', assetClass: 'futures', exchange, side: 'BUY', quantity: 75, price: 24000, time: `${day}T04:00:00.000Z` }),
+      f({ symbol: 'NIFTY26APRFUT', assetClass: 'futures', exchange, side: 'SELL', quantity: 75, price: 24100, time: `${day}T05:00:00.000Z` }),
+    ]).episodes;
+  const opt = (day: string) => estimateCharges(optionsTrade(day), 'zerodha')[0]!;
+
+  it('STT before 1 Apr 2023 is futures 0.01% and options 0.05% (FATAX56235)', () => {
+    expect(opt('2023-03-31').stt).toBe(4.5); // 0.05% × 9,000
+    expect(opt('2023-04-01').stt).toBe(5.63); // 0.0625% × 9,000
+    expect(estimateCharges(futuresTrade('2023-03-31'), 'zerodha')[0]!.stt).toBe(180.75); // 0.01% × 18,07,500
+    expect(estimateCharges(futuresTrade('2023-04-01'), 'zerodha')[0]!.stt).toBe(225.94); // 0.0125%
+    expect(ratesFor('2020-07-01').stt.options.sell).toBe(0.0005);
+  });
+
+  it('NSE IPFT is charged both sides from 1 Apr 2023, cut to Rs 0.01 per crore from 1 Mar 2026, outside GST', () => {
+    expect(opt('2023-03-31').other).toBe(0);
+    expect(opt('2023-04-01').other).toBe(0.08); // Rs 50 per crore × 16,500
+    expect(opt('2026-02-28').other).toBe(0.08);
+    expect(opt('2026-03-01').other).toBe(0);
+    expect(estimateCharges(futuresTrade('2024-10-15'), 'zerodha')[0]!.other).toBe(3.61); // Rs 10 per crore × 36,07,500
+    expect(estimateCharges(futuresTrade('2024-10-15', 'BFO'), 'zerodha')[0]!.other).toBe(0);
+    // GST = 18% of brokerage 40 + exchange + SEBI 0.0165; IPFT not in the base.
+    expect(opt('2026-02-28').gst).toBe(8.24);
+  });
+
+  it('NSE transaction charge follows FA73061 from 1 Mar 2026', () => {
+    expect(opt('2026-02-28').exchange).toBe(5.78); // 0.03503% × 16,500
+    expect(opt('2026-03-01').exchange).toBe(5.86); // 0.0355299% × 16,500
+    expect(opt('2026-03-01').gst).toBe(8.26);
+    expect(estimateCharges(futuresTrade('2026-02-28'), 'zerodha')[0]!.exchange).toBe(62.41); // 0.00173% × 36,07,500
+    expect(estimateCharges(futuresTrade('2026-03-01'), 'zerodha')[0]!.exchange).toBe(66.01); // 0.0018299%
+  });
+
+  it('NSE cash: IPFT Rs 10 per crore from 1 Apr 2023; transaction charge Rs 306.99 per crore from 1 Mar 2026', () => {
+    expect(ratesFor('2023-03-31').ipft.intraday).toBe(0);
+    expect(ratesFor('2023-04-01').ipft.delivery).toBe(0.000001);
+    expect(ratesFor('2026-02-28').exchange.intraday.nse).toBe(0.0000297);
+    expect(ratesFor('2026-03-01').exchange.intraday.nse).toBe(0.000030699);
+  });
+
+  it('exercise STT is 0.125% of intrinsic value, 0.15% from 1 Apr 2026 (FATAX73524)', () => {
+    expect(ratesFor('2021-01-04').sttExercise).toBe(0.00125);
+    expect(ratesFor('2026-03-31').sttExercise).toBe(0.00125);
+    expect(ratesFor('2026-04-01').sttExercise).toBe(0.0015);
+  });
+
   it('brokerage per order follows each plan', () => {
     expect(brokerage('zerodha', 'delivery', 100000)).toBe(0);
     expect(brokerage('zerodha', 'intraday', 100000)).toBe(20);

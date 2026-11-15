@@ -20,10 +20,10 @@ describe('broker fixtures', () => {
 
     const opt = sym(r, 'NIFTY2641324000CE');
     expect(opt).toMatchObject({ assetClass: 'options', optionType: 'call', strike: 24000, expiry: '2026-04-13', underlying: 'NIFTY', quantity: 75, entryPrice: 120.5, exitPrice: 150.25, grossPnl: 2231.25, openDate: '2026-04-08T04:00:10.000Z' });
-    // Hand-computed: brokerage 2×₹20; STT 0.15% × 11,268.75 (2026-04-01 rate); NSE options 0.03503% × 20,306.25; SEBI ₹10/cr; stamp 0.003% × 9,037.50; GST 18% on brokerage+exchange+SEBI.
-    expect(opt.charges).toEqual({ brokerage: 40, stt: 16.9, exchange: 7.11, sebi: 0.02, stamp: 0.27, gst: 8.48, other: 0 });
-    expect(opt.fees).toBe(72.78);
-    expect(opt.pnl).toBe(2158.47);
+    // Hand-computed: brokerage 2×₹20; STT 0.15% × 11,268.75 (2026-04-01 rate); NSE options 0.0355299% × 20,306.25 (FA73061, from 2026-03-01); IPFT ₹0.01/cr; SEBI ₹10/cr; stamp 0.003% × 9,037.50; GST 18% on brokerage+exchange+SEBI.
+    expect(opt.charges).toEqual({ brokerage: 40, stt: 16.9, exchange: 7.21, sebi: 0.02, stamp: 0.27, gst: 8.5, other: 0 });
+    expect(opt.fees).toBe(72.9);
+    expect(opt.pnl).toBe(2158.35);
     expect(opt.chargesEstimated).toBe(true);
     expect(opt.externalId).toBe('zerodha:41000006:41000007');
 
