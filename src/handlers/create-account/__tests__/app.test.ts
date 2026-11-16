@@ -94,22 +94,13 @@ describe('create-account handler', () => {
     expect(putInput.Item?.tradeCount).toBe(0);
   });
 
-  it('creates default goals for the new account', async () => {
-    await handler(makeEvent(validAccount), {} as any, () => {}) as any;
-
-    // Default goals: 4 types x 2 periods (weekly+monthly) = 8 goals
-    // These are written via BatchWriteCommand
-    const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
-    expect(batchCalls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('still answers 201 with the account when only the default goals fail to write (BE-102)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    ddbMock.on(BatchWriteCommand).rejects(new Error('ProvisionedThroughputExceededException'));
+  // R-039: goals written here were copied into the first period as if the user had set them; the client shows the
+  // defaults as 'Default — set your own' until the user sets a goal.
+  it('writes no goals: a new account has none until the user sets one (R-039)', async () => {
     const res = await handler(makeEvent(validAccount), {} as any, () => {}) as any;
     expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).data.account.name).toBe('My Trading Account');
-    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(1);
+    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(PutCommand).map((c) => c.args[0].input.TableName)).toEqual(['test-accounts']);
   });
 
   // ── Auth errors ─────────────────────────────────────────────

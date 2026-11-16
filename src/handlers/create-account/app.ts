@@ -5,12 +5,9 @@ import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuid } from 'uuid';
 import { errorResponse, envelope, ErrorCodes, formatErrors, getValidator } from '../../shared/validation';
 import { makeLogger } from '../../shared/logger';
-import { batchWritePutAll } from '../../shared/batchWrite';
 import { getUserId } from '../../shared/auth';
-import { GOAL_TYPE_CONFIG, DEFAULT_GOAL_TARGETS, VALID_GOAL_TYPES } from '../../shared/goalDefaults';
 
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE!;
-const GOALS_TABLE = process.env.GOALS_TABLE!;
 
 const accountSchema = {
   type: 'object',
@@ -61,11 +58,6 @@ export const handler: ApiHandler = async (event) => {
   }
 
   try {
-    if (!GOALS_TABLE) {
-      log.error('GOALS_TABLE env var is not configured');
-      return errorResponse(500, ErrorCodes.INTERNAL_ERROR, 'Goals table is not configured');
-    }
-
     const accountId = uuid();
     const now = new Date().toISOString();
 
@@ -93,62 +85,8 @@ export const handler: ApiHandler = async (event) => {
       Item: account
     }));
 
-    // Create default goals for this account
-    const defaultGoals: any[] = [];
-    for (const goalType of VALID_GOAL_TYPES) {
-      const config = GOAL_TYPE_CONFIG[goalType];
-      // Weekly goal
-      defaultGoals.push({
-        userId,
-        goalId: uuid(),
-        accountId,
-        goalType,
-        period: 'weekly',
-        target: DEFAULT_GOAL_TARGETS.weekly[goalType],
-        title: config.title,
-        description: config.description,
-        unit: config.unit,
-        icon: config.icon,
-        color: config.color,
-        isInverse: config.isInverse,
-        createdAt: now,
-        updatedAt: now
-      });
-
-      // Monthly goal
-      defaultGoals.push({
-        userId,
-        goalId: uuid(),
-        accountId,
-        goalType,
-        period: 'monthly',
-        target: DEFAULT_GOAL_TARGETS.monthly[goalType],
-        title: config.title,
-        description: config.description,
-        unit: config.unit,
-        icon: config.icon,
-        color: config.color,
-        isInverse: config.isInverse,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-
-    // The account exists now: a failed goals write must not answer 500 (the client would retry and create a second account).
-    // get-rules-goals writes the defaults of a period on first read anyway.
-    if (defaultGoals.length > 0) {
-      try {
-        await batchWritePutAll({
-          ddb,
-          tableName: GOALS_TABLE,
-          items: defaultGoals,
-          log
-        });
-        log.info('default goals created for account', { accountId, goalsCount: defaultGoals.length });
-      } catch (goalsError: any) {
-        log.error('default goals not created for account', { accountId, error: goalsError.message });
-      }
-    }
+    // No goals are written: a goal exists only once the user sets one. Goal records without a period key would be
+    // copied into the first period as the user's own (get-rules-goals planPeriod), the defaults the client shows instead.
 
     log.info('account created', { accountId });
     
