@@ -114,6 +114,31 @@ export function toUtcIso(t: LocalDateTime, offsetMinutes: number): string {
   return new Date(ms).toISOString();
 }
 
+/** Minutes an IANA zone is ahead of UTC at an instant. */
+function zoneOffsetAt(ms: number, zone: string): number {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - Math.floor(ms / 1000) * 1000) / 60000;
+}
+
+/** UTC ISO of a wall-clock time in an IANA zone, with that date's own offset (summer and winter time differ). */
+export function toUtcIsoInZone(t: LocalDateTime, zone: string): string {
+  const wall = Date.UTC(t.y, t.mo - 1, t.d, t.h, t.mi, t.s);
+  let ms = wall - zoneOffsetAt(wall, zone) * 60000;
+  ms = wall - zoneOffsetAt(ms, zone) * 60000;
+  return new Date(ms).toISOString();
+}
+
+/** True for an IANA zone name this runtime knows. */
+export function isZoneName(zone: unknown): zone is string {
+  if (typeof zone !== 'string' || !zone || zone.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** IST calendar date (YYYY-MM-DD) of a UTC ISO instant. */
 export function istDate(iso: string): string {
   return new Date(Date.parse(iso) + IST_OFFSET_MINUTES * 60000).toISOString().slice(0, 10);

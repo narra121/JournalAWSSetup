@@ -131,6 +131,8 @@ describe('POST /parse', () => {
     [{ source: 'auto', fileName: 'a', contentBase64: 'QQ==', utcOffsetMinutes: 9999 }],
     [{ source: 'auto', fileName: 'a', contentBase64: 'QQ==', mapping: { evil: 'x' } }],
     [{ source: 'auto', fileName: 'a', contentBase64: 'QQ==', accountId: 5 }],
+    [{ source: 'auto', fileName: 'a', contentBase64: 'QQ==', timeZone: 'Mars/Olympus' }],
+    [{ source: 'auto', fileName: 'a', contentBase64: 'QQ==', timeZone: 42 }],
   ])('400 for invalid body %#', async (b) => {
     expect((await post(setup().app, '/parse', b)).status).toBe(400);
   });

@@ -15,6 +15,7 @@ export interface ParseRequest {
   fileName: string;
   contentBase64: string;
   utcOffsetMinutes?: number;
+  timeZone?: string;
   mapping?: Partial<Record<CanonicalField, string>>;
 }
 
@@ -99,7 +100,7 @@ export function parseImport(req: ParseRequest): ParseResponse {
     return { detectedSource: 'unknown', trades: [], skipped: 0, fileHash, warnings: [`This file does not look like a ${parser.name} export. Check the source or let the app detect it.`] };
   }
 
-  const ctx = { utcOffsetMinutes: req.utcOffsetMinutes ?? parser.defaultUtcOffsetMinutes, mapping: req.mapping, warnings };
+  const ctx = { utcOffsetMinutes: req.utcOffsetMinutes ?? parser.defaultUtcOffsetMinutes, timeZone: req.timeZone, mapping: req.mapping, warnings };
   const out = parser.parse(table, ctx);
   if (out.kind === 'needsMapping') {
     return { detectedSource: parser.id, trades: [], skipped: 0, fileHash, warnings, columns: { headers: out.headers, suggested: out.suggested } };

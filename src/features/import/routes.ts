@@ -6,6 +6,7 @@ import { dynamoTradeSource, type TradeSource } from '../trades-repo';
 import { SOURCE_IDS, sourcesMetadata } from './registry';
 import { importKey, importKeyPrefix, parseImport } from './service';
 import type { CanonicalField, SourceId } from './types';
+import { isZoneName } from './table';
 
 /** A re-parse of the same file within this window (other account or mapping) does not use another import unit. */
 export const REPARSE_WINDOW_MS = 30 * 60 * 1000;
@@ -28,7 +29,7 @@ export function importApp(deps: ImportDeps = defaultImportDeps): Hono<AppEnv> {
   app.post('/parse', async (c) => {
     const body = await readJson(c);
     if (!body) return fail(c, 400, 'VALIDATION_ERROR', 'Request body must be a JSON object.');
-    const { source, fileName, contentBase64, accountId, utcOffsetMinutes, mapping } = body;
+    const { source, fileName, contentBase64, accountId, utcOffsetMinutes, timeZone, mapping } = body;
     if (source !== 'auto' && !SOURCE_IDS.includes(source as SourceId)) return fail(c, 400, 'VALIDATION_ERROR', 'Unknown source.');
     if (typeof fileName !== 'string' || !fileName || fileName.length > 255) return fail(c, 400, 'VALIDATION_ERROR', 'fileName is required (max 255 characters).');
     if (typeof contentBase64 !== 'string' || !contentBase64) return fail(c, 400, 'VALIDATION_ERROR', 'contentBase64 is required.');
@@ -37,6 +38,7 @@ export function importApp(deps: ImportDeps = defaultImportDeps): Hono<AppEnv> {
     if (utcOffsetMinutes != null && (typeof utcOffsetMinutes !== 'number' || !Number.isFinite(utcOffsetMinutes) || Math.abs(utcOffsetMinutes) > 840)) {
       return fail(c, 400, 'VALIDATION_ERROR', 'utcOffsetMinutes must be between -840 and 840.');
     }
+    if (timeZone != null && !isZoneName(timeZone)) return fail(c, 400, 'VALIDATION_ERROR', 'timeZone must be an IANA time zone name.');
     let cleanMapping: Partial<Record<CanonicalField, string>> | undefined;
     if (mapping != null) {
       if (typeof mapping !== 'object' || Array.isArray(mapping)) return fail(c, 400, 'VALIDATION_ERROR', 'mapping must be an object.');
@@ -48,7 +50,7 @@ export function importApp(deps: ImportDeps = defaultImportDeps): Hono<AppEnv> {
     }
 
     const userId = c.get('userId');
-    const res = parseImport({ source: source as SourceId | 'auto', fileName, contentBase64, utcOffsetMinutes: utcOffsetMinutes as number | undefined, mapping: cleanMapping });
+    const res = parseImport({ source: source as SourceId | 'auto', fileName, contentBase64, utcOffsetMinutes: utcOffsetMinutes as number | undefined, timeZone: (timeZone as string | undefined) ?? undefined, mapping: cleanMapping });
     const { fileHash, ...out } = res;
 
     let duplicates: number | undefined;

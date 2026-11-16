@@ -106,6 +106,8 @@ export interface Tabular {
 
 export interface ParseContext {
   utcOffsetMinutes: number;
+  /** The user's IANA zone for files with no broker clock (generic CSV); when set it wins over `utcOffsetMinutes`. */
+  timeZone?: string;
   mapping?: Partial<Record<CanonicalField, string>>;
   warnings: string[];
 }

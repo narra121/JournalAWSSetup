@@ -1,5 +1,5 @@
 import type { Row } from '../csv';
-import { normHeader, num, parseLocalDateTime, toUtcIso } from '../table';
+import { normHeader, num, parseLocalDateTime, toUtcIso, toUtcIsoInZone } from '../table';
 import { parseIndianSymbol } from '../symbols';
 import type { CanonicalField, ClosedTrade, Fill, ImportParser, ParseContext, ParserOutput, Tabular } from '../types';
 import { parseSide } from './fills';
@@ -76,7 +76,8 @@ function parseGeneric(t: Tabular, ctx: ParseContext): ParserOutput {
   const when = (r: Row, primary: CanonicalField) => {
     const raw = cell(r, primary) || cell(r, 'time') || cell(r, 'date');
     const d = parseLocalDateTime(raw, !cell(r, primary) && cell(r, 'date') && cell(r, 'time') ? cell(r, 'time') : '');
-    return d ? toUtcIso(d, ctx.utcOffsetMinutes) : null;
+    if (!d) return null;
+    return ctx.timeZone ? toUtcIsoInZone(d, ctx.timeZone) : toUtcIso(d, ctx.utcOffsetMinutes);
   };
   let skipped = 0;
 

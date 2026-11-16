@@ -138,6 +138,13 @@ describe('unknown and generic files', () => {
     expect(r.trades[0]).toMatchObject({ symbol: 'EURUSD', side: 'BUY', quantity: 1, openDate: '2026-04-07T09:00:00.000Z' });
   });
 
+  it('generic csv in a zone with summer time reads each row with its own date\'s offset (timeZone wins over utcOffsetMinutes)', () => {
+    // London: 7 Apr 2026 is BST (UTC+1), 3 Jan 2026 is GMT (UTC+0). A November upload sends today's offset 0.
+    const csv = 'Instrument,Direction,Lots,Entry Price,Exit Price,Open Time,Close Time,Net P/L\nEURUSD,Buy,1,1.1000,1.1050,2026-04-07 09:00,2026-04-07 11:00,50\nGBPUSD,Sell,2,1.2700,1.2650,2026-01-03 09:00,2026-01-03 11:00,100\n';
+    const r = parseImport({ source: 'generic_csv', fileName: 'g.csv', contentBase64: text(csv), utcOffsetMinutes: 0, timeZone: 'Europe/London' });
+    expect(r.trades.map((t) => t.openDate).sort()).toEqual(['2026-01-03T09:00:00.000Z', '2026-04-07T08:00:00.000Z']);
+  });
+
   it('generic csv needing a mapping returns columns, then parses with the mapping', () => {
     const odd = 'Foo,Bar,Baz,Qux,Quux,Corge,Grault\nEURUSD,Buy,1,1.1,1.2,2026-04-07 09:00,2026-04-07 10:00\n';
     const first = parseImport({ source: 'generic_csv', fileName: 'o.csv', contentBase64: text(odd), utcOffsetMinutes: 0 });
