@@ -1,7 +1,11 @@
 import { mean, sampleLabel, verdict } from './evidence';
 import { BEYOND_STOP_R, groupByDay, knownBefore, median, type TradeFacts } from './facts';
-import { idsOf, netOf, r4, round2, rsOf } from './segments';
+import { idsOf, netOf, r4, rsOf } from './segments';
 import { DETECTOR_IDS, type Detector, type DetectorId } from './types';
+// Symbol format ("$146.50", "₹110.00"), as the app prints the figures beside these sentences.
+import { money as moneyText } from '../insights/format';
+
+const money = (v: number, currency?: string | null) => moneyText(v, currency ?? null);
 
 export const REENTRY_MINUTES = 15;
 export const SIZE_UP_MULTIPLE = 1.5;
@@ -19,8 +23,6 @@ export interface DetectorOptions {
   currency?: string | null;
 }
 
-const money = (v: number, currency?: string | null) =>
-  `${v < 0 ? '−' : ''}${Math.abs(round2(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? ` ${currency}` : ''}`;
 const rText = (v: number | null) => (v == null ? 'no R (no stop)' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}R`);
 const minutes = (v: number | null) => (v == null ? 'n/a' : `${Math.round(v)} min`);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

@@ -37,11 +37,11 @@ describe('the fixed detector list (report §4.6)', () => {
     const d = detect();
     expect(d.beyondStop).toMatchObject({ count: 2, net: -230, avgR: -1.75, label: 'too-few', verdict: 'watch' });
     expect(d.beyondStop.detail).toContain('2 of 6 losing trades');
-    expect(d.beyondStop.detail).toContain('110.00 INR');
+    expect(d.beyondStop.detail).toContain('₹110.00');
     // after a loss (t2 +1, t7 −0.5, t8 −0.5, t9 +1; t5 has no stop) against after a win (t3 +0.4, t10 +1)
     expect(d.afterLoss).toMatchObject({ count: 5, net: 280, avgR: 0.25, normalAvgR: 0.7 });
     expect(d.sizeUpAfterLoss.detail).toContain('2 of 5 trades');
-    expect(d.sizeUpAfterLoss.detail).toContain('40.00 INR');
+    expect(d.sizeUpAfterLoss.detail).toContain('₹40.00');
     expect(d.losersHeldLonger.detail).toContain('winners 15 min, losers 25 min');
     expect(d.losersHeldLonger.detail).toContain('4 of 6 losing trades');
     // compared with the other losers: t6 (+0.5R before fees) and t8 (−0.5R)
@@ -50,7 +50,7 @@ describe('the fixed detector list (report §4.6)', () => {
     expect(d.brokenRule.detail).toContain('"No revenge trades" 2×');
     expect(d.expiryDay).toMatchObject({ count: 1, net: -50, avgR: -0.5, normalAvgR: 0.4 });
     expect(d.noStop).toMatchObject({ count: 1, net: 10, avgR: null });
-    expect(d.fees.detail).toContain('6.00 INR');
+    expect(d.fees.detail).toContain('₹6.00');
   });
 
   it('afterDailyLimit without a limit: count 0 and a note', () => {
