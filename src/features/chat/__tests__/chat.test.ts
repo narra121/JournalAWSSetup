@@ -181,6 +181,9 @@ describe('POST /sessions/:id/messages', () => {
     expect(q.used.ai_chat).toBe(0);
     const msgs = ((await (await app.request(`/sessions/${id}/messages`)).json()) as any).data.messages;
     expect(msgs.map((m: any) => m.role)).toEqual(['user']);
+    // The chat that holds the question is listed by it, not as an untitled "New chat" (dev: a chat stopped before any text).
+    const sessions = ((await (await app.request('/sessions')).json()) as any).data.sessions;
+    expect(sessions.find((s: any) => s.id === id)).toMatchObject({ title: 'hello', messageCount: 1 });
   });
 
   it('logs one ai_call info line with the model and tokens of an answered message, never the prompt or the answer', async () => {

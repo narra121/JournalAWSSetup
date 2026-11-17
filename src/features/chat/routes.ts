@@ -157,6 +157,10 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
 
     const userMsg: ChatMessage = { id: timeId(deps.now()), role: 'user', content, createdAt: deps.now().toISOString() };
     await putMessage(deps.store, userId, sessionId, userMsg);
+    // Named now, not only after the answer: a chat stopped or failed before any text still holds this question.
+    if (!session.title) {
+      await touchSession(deps.store, userId, sessionId, { updatedAt: deps.now().toISOString(), title: content.slice(0, TITLE_MAX), ...(refused ? {} : { accountId: period.accountId }) }).catch(() => undefined);
+    }
     const prior = (await listMessages(deps.store, userId, sessionId, HISTORY_TURNS + 1, true)).filter((m) => m.id !== userMsg.id).slice(-HISTORY_TURNS);
 
     const encoder = new TextEncoder();
