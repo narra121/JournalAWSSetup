@@ -295,6 +295,27 @@ describe('empty replies, cancellation and the session counter', () => {
     expect(reqOf(stream, 1).signal!.aborted).toBe(true);
   });
 
+  it('a Stop (client cancel) is not logged as ai_unavailable: that warning is for provider failures (dev: "stream broke: This operation was aborted")', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const { app, stream } = setup();
+      stream.mockImplementationOnce(async function* (req: GeminiRequest): AsyncGenerator<StreamChunk> {
+        await new Promise((r) => req.signal!.addEventListener('abort', r, { once: true }));
+        throw new Error('openai/gpt-6-luna stream broke: This operation was aborted');
+      });
+      const id = await newSession(app);
+      const reader = (await app.request(`/sessions/${id}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'Which symbol lost me the most?' }),
+      })).body!.getReader();
+      await reader.cancel();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(reqOf(stream, 0).signal!.aborted).toBe(true);
+      expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('ai_unavailable'))).toHaveLength(0);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('two messages posted at once cannot both pass the 100-message cap (BE-108)', async () => {
     const { app, store } = setup();
     const id = await newSession(app);

@@ -252,7 +252,8 @@ export function chatApp(deps: ChatDeps = defaultChatDeps): Hono<AppEnv> {
           }
         } catch (e) {
           failed = true;
-          logAiFailure('chat', e, { requestId: c.get('requestId'), userId });
+          // A Stop or a closed tab aborts the call on purpose; ai_unavailable is kept for provider failures.
+          if (!upstream.signal.aborted) logAiFailure('chat', e, { requestId: c.get('requestId'), userId });
           if (!answer) await c.get('quota').consume('ai_chat', -1).catch(() => undefined);
           send(sseFrame('error', { code: 'AI_UNAVAILABLE', message: answer ? 'The answer was cut off. Please ask again.' : 'The AI service is unavailable right now. You were not charged; try again shortly.' }));
         }
