@@ -1,7 +1,11 @@
 # Prod cut-over: API Gateway + 61 Lambdas → Lambda Web Function + Event Function
 
-Stack `tradequt-prod` (account 675016865482, us-east-1). Owner approved the cut-over on 2026-11-11; it is run by the
-main thread in the integration phase, after the dev soak. Nothing in this file has been executed against prod.
+**Historical.** This was the one-time cut-over of `tradequt-prod`; it has been done (the prod stack now exports `ApiWebFunctionName`
+`tradequt-prod-api`, and the API domain is served by CloudFront). Do not run steps 0 to 5 again. The parts that stay useful are
+step 1 (backups), step 2 (the `--param` rules, also enforced on every later prod deploy), step 6 (rollback A, B and C) and step 7.
+For normal prod deploys use [operations.md](operations.md) and `docs/ARCHITECTURE.md` section 9.
+
+Stack `tradequt-prod` (account 675016865482, us-east-1). Owner approved the cut-over on 2026-11-11.
 
 ## What changes
 
@@ -22,11 +26,11 @@ fail for 1–2 minutes (alias TTL 60 s).
 ## 0. Prerequisites (all must be true)
 
 1. Dev has soaked 24 h with no alarm and `/aws/lambda/web/tradequt-dev-api` errors = 0.
-2. The prod frontend no longer calls the dev extract URL (B-096): deploy TradeFlow `main` built without
+2. The prod frontend no longer calls the dev extract URL: deploy TradeFlow `main` built without
    `VITE_EXTRACT_TRADES_URL`, then `rg "lambda-url" dist/assets` finds nothing. Only then remove `LegacyExtractFunction` from dev.
 3. Stripe live objects exist (see `stripe-live.md`) and `/tradequt/prod/stripe/price/pro_*` + `portalConfigId` are in SSM.
-4. Prod admin secrets exist at `/tradequt/prod/adminSecret` and `/tradequt/prod/adminJwtSecret` (ACCESS-NEEDED #11).
-5. SES identity for the From domain exists (ACCESS-NEEDED #10); otherwise e-mails fail but nothing else is affected.
+4. Prod admin secrets exist at `/tradequt/prod/adminSecret` and `/tradequt/prod/adminJwtSecret`.
+5. SES identity for the From domain exists; otherwise e-mails fail but nothing else is affected.
 6. Tooling: `pip install "aws-sam-cli>=1.172.1" "cfn-lint>=1.60.0"`, bun 1.3.x, AWS profile `personal` (or CI keys).
 7. The artifacts stack exists: `aws cloudformation describe-stacks --stack-name tradequt-artifacts` (created 2026-11-11).
 
@@ -35,7 +39,7 @@ fail for 1–2 minutes (alias TTL 60 s).
 ```
 node scripts/backup.mjs --stage prod --out <R>\build\backups\prod-<yyyyMMdd_HHmmss>
 ```
-Writes: nine on-demand DynamoDB backups (waits for `AVAILABLE`), `stack.json`, `template-original.json`, `resources.json`,
+Writes: one on-demand DynamoDB backup per table in the stack (11, waits for `AVAILABLE`), `stack.json`, `template-original.json`, `resources.json`,
 `user-pool.json`, `user-pool-client.json`, `route53-records.json`, `REVERT.md`. Keep the folder until the soak ends.
 The frontend and admin buckets are not changed by this stack update (no backup needed beyond the S3 versions they already keep).
 
@@ -96,7 +100,7 @@ attempt (`AiData-*`, `Usage-*`) must be deleted before the retry after confirmin
 4. Owner signs in on tradequt.com: lists accounts and trades, creates and deletes a trade (delete shows Undo), opens
    Billing (checkout session opens, not paid), exports data.
 5. `aws cloudformation describe-stacks --stack-name tradequt-prod` → `UPDATE_COMPLETE`; `aws lambda-web get-web-function-endpoint` active.
-6. Alarms: `aws cloudwatch describe-alarms --alarm-name-prefix ""` for the five alarms with `ActionsEnabled=true`; publish a test message to `tradequt-prod-alarms`.
+6. Alarms: `aws cloudwatch describe-alarms --alarm-name-prefix ""` for the six alarms with `ActionsEnabled=true`; publish a test message to `tradequt-prod-alarms`.
 7. `describe-continuous-backups` on each table → `ENABLED`.
 
 ## 6. Rollback
@@ -118,5 +122,6 @@ attempt (`AiData-*`, `Usage-*`) must be deleted before the retry after confirmin
 
 ## 7. After the cut-over
 
-Delete nothing for 7 days. Then: remove the dev `LegacyExtractFunction` (set `ProdUserPoolId` empty on dev), delete the
+Delete nothing for 7 days. Then: remove the dev `LegacyExtractFunction` (set `ProdUserPoolId` empty on dev; it still exists on dev:
+the `LegacyExtractFunctionUrl` output is present), delete the
 backups older than 30 days, remove the Firebase and Razorpay repository secrets, and rotate the shared admin secrets.
