@@ -31,6 +31,8 @@ export interface Fill extends Instrument {
   tradeId: string;
   /** order id; brokerage is charged per executed order */
   orderId?: string;
+  /** charges the file itself lists for this fill's whole quantity; used instead of an estimate */
+  charges?: Charges;
 }
 
 /** Charges breakdown in account currency (positive = cost). */

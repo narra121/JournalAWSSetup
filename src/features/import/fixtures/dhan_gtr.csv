@@ -1,0 +1,16 @@
+Global transction report,From 01-04-2026 to 30-04-2026
+Name,
+UCC,
+Mobile,
+Email ID,
+
+Date,Scrip Name,Exchange,Bill No.,Buy Qty.,Buy Value,Sell Qty.,Sell Value,Brokerage,GST,STT,SEBI Fees,Stamp Duty,Txn. Charges,Oth. Charges,Gross Amount
+01-04-2026 00:00,OPT NIFTY 07 Apr 2026 23000 CE,NSE,4894,150,15000,150,16500,40,7.92,16.5,0.03,0.45,5.33,0,1429.77
+02-04-2026 00:00,Reliance Industries,NSE,4901,10,13000,,,0,0.2,13,0.01,1.95,0.39,0,-13015.55
+06-04-2026 00:00,Reliance Industries,NSE,4950,,,10,13400,0,0.2,13.4,0.01,0,0.4,0,13385.99
+07-04-2026 00:00,FUT WIPRO 28 Apr 2026,NSE,4960,3000,750000,3000,753000,40,7.9,94.13,0.75,15,12.98,0,2829.24
+08-04-2026 00:00,OPT CRUDEOIL 16 Apr 2026 9000 PE,MCX,4970,200,127380,200,128340,40,7.7,64.17,0.13,3.82,3.2,0,840.98
+
+Net P&L,5470.43,Brokerage,120,Gross P&L,5860,Total Charges,389.57
+
+NOTE : This sheet was downloaded at 9/4/2026 12:43 AM

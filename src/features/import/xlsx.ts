@@ -66,6 +66,17 @@ function readEntry(buf: Buffer, e: ZipEntry, budget: { left: number }): string {
   } else throw new FileFormatError(`Unsupported XLSX compression ${e.method}`);
   budget.left -= raw.length;
   if (budget.left <= 0) throw new FileFormatError('XLSX is too large');
+  return xmlText(raw);
+}
+
+/** XML part → text. UTF-8 unless the part starts with a byte-order mark: MetaTrader 5 writes every part as UTF-16LE. */
+function xmlText(raw: Buffer): string {
+  if (raw[0] === 0xff && raw[1] === 0xfe) return raw.subarray(2).toString('utf16le');
+  if (raw[0] === 0xfe && raw[1] === 0xff) {
+    const be = Buffer.from(raw.subarray(2, 2 + ((raw.length - 2) & ~1)));
+    return be.swap16().toString('utf16le');
+  }
+  if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) return raw.subarray(3).toString('utf8');
   return raw.toString('utf8');
 }
 

@@ -1,6 +1,7 @@
 // Regenerates the binary/HTML fixtures: node src/features/import/fixtures/generate.mjs
-// (CSV fixtures are plain text and edited by hand.) Layouts are modelled on the brokers' exports and have not
-// been compared with real files; see progress log "UNVERIFIED".
+// (CSV fixtures are plain text and edited by hand.) groww.xlsx, upstox_trade.xlsx, angelone_trades.xlsx, mt5.xlsx,
+// mt4_volume.html and dhan_gtr.csv copy the header rows of real exports with invented values; dhan.csv, upstox.csv
+// and angelone.csv are earlier guessed layouts the parsers still accept.
 import { deflateRawSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,11 +20,14 @@ function crc32(buf) {
   return ~crc >>> 0;
 }
 
-function zip(files) {
+// MetaTrader 5 writes every XML part of its XLSX as UTF-16LE with a byte-order mark.
+const utf16 = (s) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(s, 'utf16le')]);
+
+function zip(files, encode = (s) => Buffer.from(s, 'utf8')) {
   const locals = [], centrals = [];
   let offset = 0;
   for (const [name, content] of Object.entries(files)) {
-    const raw = Buffer.from(content, 'utf8');
+    const raw = encode(content);
     const data = deflateRawSync(raw);
     const nameBuf = Buffer.from(name);
     const lh = Buffer.alloc(30);
@@ -45,7 +49,7 @@ function zip(files) {
 }
 
 const colName = (i) => String.fromCharCode(65 + i);
-function xlsx(sheetName, rows) {
+function xlsx(sheetName, rows, encode) {
   const sheetRows = rows
     .map((r, i) => `<row r="${i + 1}">${r.map((v, j) => (typeof v === 'number' ? `<c r="${colName(j)}${i + 1}"><v>${v}</v></c>` : `<c r="${colName(j)}${i + 1}" t="inlineStr"><is><t>${esc(v)}</t></is></c>`)).join('')}</row>`)
     .join('');
@@ -55,20 +59,83 @@ function xlsx(sheetName, rows) {
     'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${esc(sheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`,
     'xl/_rels/workbook.xml.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
     'xl/worksheets/sheet1.xml': `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`,
-  });
+  }, encode);
 }
 
 writeFileSync(
   join(dir, 'groww.xlsx'),
   xlsx('Order History', [
-    ['Groww Order History'],
-    ['Stock name', 'Symbol', 'ISIN', 'Type', 'Quantity', 'Value', 'Exchange', 'Exchange Order Id', 'Executed date and time', 'Order status'],
+    ['Name', 'John Trader'],
+    ['Unique Client Code', '1234567890'],
+    ['Order History for stocks from 01-04-2026 to 30-04-2026'],
+    [],
+    ['Stock name', 'Symbol', 'ISIN', 'Type', 'Quantity', 'Value', 'Exchange', 'Exchange Order Id', 'Execution date and time', 'Order status'],
     ['Wipro Ltd', 'WIPRO', 'INE075A01022', 'BUY', 20, 9000, 'NSE', '1100000000200001', '07-04-2026 10:15 AM', 'Executed'],
     ['Wipro Ltd', 'WIPRO', 'INE075A01022', 'SELL', 20, 9200, 'NSE', '1100000000200002', '07-04-2026 02:05 PM', 'Executed'],
     ['Zomato Ltd', 'ZOMATO', 'INE758T01015', 'BUY', 100, 22000, 'NSE', '1100000000200003', '08-04-2026 09:30 AM', 'Cancelled'],
     ['Suzlon Energy Ltd', 'SUZLON', 'INE040H01021', 'BUY', 500, 27500, 'NSE', '1100000000200004', '08-04-2026 11:00 AM', 'Executed'],
     ['Suzlon Energy Ltd', 'SUZLON', 'INE040H01021', 'SELL', 500, 27000, 'NSE', '1100000000200005', '08-04-2026 01:20 PM', 'Executed'],
   ]),
+);
+
+writeFileSync(
+  join(dir, 'upstox_trade.xlsx'),
+  xlsx('TRADE', [
+    ['UPSTOX SECURITIES PRIVATE LIMITED'],
+    ['UCC'],
+    ['Report Time Period', '28-08-2026 To 04-09-2026'],
+    ['Generated On', '2026-09-04 00:07:10'],
+    ['Date', 'Company', 'Amount', 'Exchange', 'Segment', 'Scrip Code', 'Instrument Type', 'Strike Price', 'Expiry', 'Trade Num', 'Trade Time', 'Side', 'Quantity', 'Price'],
+    ['2026-08-28 00:00:00', 'GNG Electronics Limited', 1243.7, 'NSE', 'EQ', '544455', 'Equity', 0, '', '204257888', '11:52:13', 'Buy', 2, 621.85],
+    ['2026-08-28 00:00:00', 'GNG Electronics Limited', 1865.7, 'NSE', 'EQ', '544455', 'Equity', 0, '', '204257889', '11:52:13', 'Buy', 3, 621.9],
+    ['2026-08-28 00:00:00', 'GNG Electronics Limited', 3103, 'NSE', 'EQ', '544455', 'Equity', 0, '', '204288620', '11:53:57', 'Sell', 5, 620.6],
+    ['2026-08-28 00:00:00', 'NIFTY', 2470, 'FON', 'FO', 'NIFTY', 'European Put', 24000, '01-09-2026', '1468483', '11:37:22', 'Buy', 65, 38],
+    ['2026-08-28 00:00:00', 'NIFTY', 2385.5, 'FON', 'FO', 'NIFTY', 'European Put', 24000, '01-09-2026', '1489993', '11:38:40', 'Sell', 65, 36.7],
+    ['2026-08-28 00:00:00', 'BSX', 1816, 'FOB', 'FO', 'BSX', 'European Call', 78300, '03-09-2026', '910080', '11:49:32', 'Sell', 20, 90.8],
+    ['2026-08-28 00:00:00', 'BSX', 1801, 'FOB', 'FO', 'BSX', 'European Call', 78300, '03-09-2026', '903090', '11:46:39', 'Buy', 20, 90.05],
+    ['From 19-Jul-2025, our Broking operations were transitioned from RKSV Commodities India Pvt. Ltd. to Upstox Securities Pvt. Ltd.'],
+  ]),
+);
+
+const angelHeader = ['Scrip/Contract', 'Buy/Sell', 'Buy Price', 'Sell Price', 'Quantity', 'Brokerage', 'GST', 'STT', 'Sebi Tax', 'Exchange Turnover Charges', 'Stamp Duty', 'Other Charges', 'IPFT Charges', 'Order Type', 'Segment', 'Exchange', 'Order ID', 'Trade ID', 'Date'];
+const angel = (scrip, side, price, qty, seg, exch, orderId, tradeId) =>
+  [scrip, side, side === 'Buy' ? price : '', side === 'Sell' ? price : '', qty, 0, 0.1, 0, 0, 0.05, 0, 0, 0, 'Intraday', seg, exch, orderId, tradeId, '2026-08-27 00:00:00'];
+writeFileSync(
+  join(dir, 'angelone_trades.xlsx'),
+  xlsx('TradesAndCharges', [
+    ['ClientCode', ''],
+    ['DateOfDownload', '2026-09-04'],
+    ['Charges Summary'],
+    ['Total Trades', '3'],
+    ['TradeBook And Charges'],
+    angelHeader,
+    // listed sell first; the trade numbers show the buy came first
+    angel('VA TECH WABAG LTD', 'Sell', 2158.2, 1, 'CAPITAL', 'NSE', '1300000034896423', '603956514'),
+    angel('VA TECH WABAG LTD', 'Buy', 2163, 1, 'CAPITAL', 'NSE', '1300000034043618', '603859766'),
+    angel('OPTIDX NIFTY Aug 25 2026 24150.00 PE (BT)', 'Buy', 17.65, 65, 'FUTURES', 'NSE', '2700000096568170', '8234904'),
+    angel('OPTIDX NIFTY Aug 25 2026 24150.00 PE (BT)', 'Sell', 32.9, 65, 'FUTURES', 'NSE', '2700000117831547', '9219102'),
+    // per-order brokerage row: no quantity, no trade id
+    ['OPTIDX NIFTY Aug 25 2026 24150.00 PE (BT)', 'Buy', 0, '', 0, 20, 3.6, 0, 0, 0, 0, 0, 0, 'Intraday', 'FUTURES', 'NSE', '2700000096568170', '', '2026-08-27 00:00:00'],
+    angel('BSXOPT SENSEX Aug 27 2026 77600.00 CE (BT)', 'Buy', 54.75, 40, 'FUTURES', 'BSE', '1787805984776337810', '17332330'),
+    angel('BSXOPT SENSEX Aug 27 2026 77600.00 CE (BT)', 'Sell', 44.2, 40, 'FUTURES', 'BSE', '1787807596841291357', '19769610'),
+    ['NOTE: Charges are as per the contract notes'],
+  ]),
+);
+
+writeFileSync(
+  join(dir, 'mt5.xlsx'),
+  xlsx('Sheet1', [
+    ['Trade History Report'],
+    ['Name:', 'John Trader'],
+    ['Positions'],
+    ['Time', 'Position', 'Symbol', 'Type', 'Volume', 'Price', 'S / L', 'T / P', 'Time', 'Price', 'Commission', 'Swap', 'Profit'],
+    ['2026.07.31 14:51:06', '1688228478', 'XAUUSD', 'buy', 0.05, 4053.41, 0, 0, '2026.07.31 15:20:53', 4054.3, 0, 0, 4.45],
+    ['2026.08.03 09:00:00', '1688234031', 'XAUUSD', 'sell', 0.1, 4060, 4062, 0, '2026.08.03 10:00:00', 4062, -0.5, 0, -20],
+    ['Orders'],
+    ['Open Time', 'Order', 'Symbol', 'Type', 'Volume', '', 'Price', 'S / L', 'T / P', 'Time', '', 'State', 'Comment'],
+    ['Results'],
+    ['Total Net Profit:', '', '', -16.05],
+  ], utf16),
 );
 
 writeFileSync(
@@ -98,6 +165,19 @@ ${mt4Row(['50010003', '2026.04.08 09:00:00', 'buy', '0.05', 'xauusd', '2300.50',
 <tr align=right><td colspan=10><b>Closed P/L:</b></td><td><b>-2.45</b></td><td><b>0.00</b></td><td><b>-0.80</b></td><td><b>45.03</b></td></tr>
 <tr align=center><td colspan=14><b>Open Trades:</b></td></tr>
 <tr align=center bgcolor="#C0C0C0"><td><b>Ticket</b></td><td><b>Open Time</b></td><td><b>Type</b></td><td><b>Size</b></td><td><b>Item</b></td><td><b>Price</b></td><td><b>S / L</b></td><td><b>T / P</b></td><td><b>Price</b></td><td><b>Commission</b></td><td><b>Taxes</b></td><td><b>Swap</b></td><td><b>Profit</b></td></tr>
+</table></body></html>`,
+);
+
+// Newer MT4 builds head the lots column "Volume"; a deleted pending order is listed with its type and no fill.
+writeFileSync(
+  join(dir, 'mt4_volume.html'),
+  `<html><head><title>Statement: 7654321</title></head><body><table>
+<tr align=center><td colspan=14><b>Closed Transactions:</b></td></tr>
+<tr align=center><td>Ticket</td><td>Open Time</td><td>Type</td><td>Volume</td><td>Item</td><td>Price</td><td>S / L</td><td>T / P</td><td>Close Time</td><td>Price</td><td>Commission</td><td>Taxes</td><td>Swap</td><td>Profit</td></tr>
+${mt4Row(['1087504226', '2025.10.21 06:18:56', 'buy', '0.10', 'gold', '4 358.09', '0.00', '0.00', '2025.10.21 06:22:03', '4 356.54', '0.00', '0.00', '0.00', '-15.50'])}
+<tr align=right><td>1087504300</td><td>2025.10.21 07:00:00</td><td>buy limit</td><td>0.10</td><td>gold</td><td>4 300.00</td><td>0.00</td><td>0.00</td><td>2025.10.21 23:59:59</td><td>4 340.00</td><td colspan=4>deleted [good for day]</td></tr>
+${mt4Row(['1087504275', '2025.10.21 06:31:07', 'sell', '0.20', 'gold', '4 345.34', '0.00', '0.00', '2025.10.21 06:37:34', '4 339.00', '0.00', '0.00', '0.00', '126.80'])}
+<tr align=right><td colspan=10><b>Closed P/L:</b></td><td>0.00</td><td>0.00</td><td>0.00</td><td>111.30</td></tr>
 </table></body></html>`,
 );
 

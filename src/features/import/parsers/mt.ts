@@ -31,10 +31,12 @@ function layout(t: Tabular, kind: (typeof REQUIRED)[number]): MtLayout | null {
     for (let i = 0; i < Math.min(s.rows.length, 400); i++) {
       const h = s.rows[i].map(normHeader);
       if (kind === 'mt4') {
-        if (!(h.includes('ticket') && h.includes('open time') && h.includes('close time') && h.includes('size') && h.includes('item'))) continue;
+        // The lots column is "Size", "Volume" or (older builds) "Lots" depending on the terminal build.
+        const size = Math.max(nth(h, 'size'), nth(h, 'volume'), nth(h, 'lots'));
+        if (!(h.includes('ticket') && h.includes('open time') && h.includes('close time') && size >= 0 && h.includes('item'))) continue;
         return {
           headerIndex: i, rows: s.rows,
-          col: { id: nth(h, 'ticket'), open: nth(h, 'open time'), type: nth(h, 'type'), size: nth(h, 'size'), item: nth(h, 'item'), entry: nth(h, 'price', 0), sl: nth(h, 's l'), tp: nth(h, 't p'), close: nth(h, 'close time'), exit: nth(h, 'price', 1), commission: nth(h, 'commission'), taxes: nth(h, 'taxes'), swap: nth(h, 'swap'), profit: nth(h, 'profit') },
+          col: { id: nth(h, 'ticket'), open: nth(h, 'open time'), type: nth(h, 'type'), size, item: nth(h, 'item'), entry: nth(h, 'price', 0), sl: nth(h, 's l'), tp: nth(h, 't p'), close: nth(h, 'close time'), exit: nth(h, 'price', 1), commission: nth(h, 'commission'), taxes: nth(h, 'taxes'), swap: nth(h, 'swap'), profit: nth(h, 'profit') },
         };
       }
       if (!(h.includes('position') && h.includes('symbol') && h.includes('volume') && h.includes('swap') && h.includes('profit') && nth(h, 'time', 1) >= 0)) continue;
@@ -61,7 +63,8 @@ function parseMt(kind: (typeof REQUIRED)[number], t: Tabular, ctx: ParseContext)
       if (first) break;
       continue;
     }
-    if (/^(balance|credit|deposit|withdrawal|correction|bonus)/i.test(cell(r, c.type))) continue;
+    // Cash movements, and pending orders that were deleted or cancelled without filling, are not trades.
+    if (/^(balance|credit|deposit|withdrawal|correction|bonus)|\b(limit|stop)$/i.test(cell(r, c.type))) continue;
     const side = parseSide(cell(r, c.type));
     const open = parseLocalDateTime(cell(r, c.open));
     const close = parseLocalDateTime(cell(r, c.close));

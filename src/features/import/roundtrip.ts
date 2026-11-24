@@ -1,4 +1,4 @@
-import type { Fill, Instrument } from './types';
+import type { Charges, Fill, Instrument } from './types';
 import { istDate } from './table';
 
 /** One leg of a FIFO-matched lot: what charges are computed on. */
@@ -10,6 +10,8 @@ export interface Leg {
   orderId: string;
   /** Equity: same-IST-day open and close → intraday, else delivery. Derivatives: 'fno'. */
   kind: 'intraday' | 'delivery' | 'fno';
+  /** this leg's share of the charges its fill carried (Fill.charges); absent when the file lists none */
+  charges?: Charges;
 }
 
 export interface Episode {
@@ -44,6 +46,18 @@ interface Lot {
   price: number;
   time: string;
   orderId: string;
+  /** the opening fill's charges and quantity, so each closed part takes its share */
+  charges?: Charges;
+  fillQty: number;
+}
+
+const CHARGE_KEYS = ['brokerage', 'stt', 'exchange', 'sebi', 'stamp', 'gst', 'other'] as const;
+
+function shareOf(c: Charges | undefined, part: number, whole: number): Charges | undefined {
+  if (!c) return undefined;
+  const out = {} as Charges;
+  for (const k of CHARGE_KEYS) out[k] = (c[k] * part) / whole;
+  return out;
 }
 
 interface Open {
@@ -127,8 +141,8 @@ export function buildEpisodes(fills: Fill[], asOf?: string): RoundTripResult {
         const take = Math.min(lot.qty, qty);
         const kind: Leg['kind'] = f.assetClass === 'stock' ? (istDate(lot.time) === istDate(f.time) ? 'intraday' : 'delivery') : 'fno';
         cur.legs.push(
-          { side: cur.side, quantity: take, price: lot.price, time: lot.time, orderId: lot.orderId, kind },
-          { side: f.side, quantity: take, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId, kind },
+          { side: cur.side, quantity: take, price: lot.price, time: lot.time, orderId: lot.orderId, kind, charges: shareOf(lot.charges, take, lot.fillQty) },
+          { side: f.side, quantity: take, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId, kind, charges: shareOf(f.charges, take, f.quantity) },
         );
         cur.closeQty += take;
         cur.closeValue += take * f.price;
@@ -145,17 +159,17 @@ export function buildEpisodes(fills: Fill[], asOf?: string): RoundTripResult {
 
     const o = open.get(key);
     if (o) {
-      o.lots.push({ qty, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId });
+      o.lots.push({ qty, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId, charges: f.charges, fillQty: f.quantity });
       o.openQty += qty;
       o.openValue += qty * f.price;
       o.lastTime = f.time;
       o.lastFillId = f.tradeId;
       o.fillIds.add(f.tradeId);
     } else {
-      const { side: _s, quantity: _q, price: _p, time: _t, tradeId: _id, orderId: _o, ...instrument } = f;
+      const { side: _s, quantity: _q, price: _p, time: _t, tradeId: _id, orderId: _o, charges: _c, ...instrument } = f;
       open.set(key, {
         side: f.side,
-        lots: [{ qty, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId }],
+        lots: [{ qty, price: f.price, time: f.time, orderId: f.orderId ?? f.tradeId, charges: f.charges, fillQty: f.quantity }],
         openQty: qty,
         openValue: qty * f.price,
         closeQty: 0,
@@ -192,7 +206,7 @@ export function buildEpisodes(fills: Fill[], asOf?: string): RoundTripResult {
     if (o.instrument.assetClass === 'options' && o.side === 'BUY' && expiry && expiry < istDate(fileEnd)) {
       const closeTime = `${expiry}T10:00:00.000Z`;
       for (const lot of o.lots) {
-        o.legs.push({ side: 'BUY', quantity: lot.qty, price: lot.price, time: lot.time, orderId: lot.orderId, kind: 'fno' });
+        o.legs.push({ side: 'BUY', quantity: lot.qty, price: lot.price, time: lot.time, orderId: lot.orderId, kind: 'fno', charges: shareOf(lot.charges, lot.qty, lot.fillQty) });
       }
       o.lots = [];
       o.closeQty = o.openQty;

@@ -74,20 +74,24 @@ export interface LocalDateTime {
   s: number;
 }
 
+/** Order of the parts in a numeric date such as 03/04/26. */
+export type DateOrder = 'dmy' | 'mdy';
+
 /**
  * Wall-clock date/time in the formats Indian brokers and MetaTrader use (no zone):
- * 2026-04-03, 2026-04-03T09:20:33, 2026-04-03 09:20:33, 2026.04.03 09:20, 03-04-2026, 03/04/2026 (day first),
- * 03-Apr-2026, 03 Apr 2026, "Apr 03, 2026 09:20 AM", with optional AM/PM. `time` may be given separately.
+ * 2026-04-03, 2026-04-03T09:20:33, 2026-04-03 09:20:33, 2026.04.03 09:20, 03-04-2026, 03/04/2026, 03/04/26 (day first
+ * unless `order` is 'mdy'), 03-Apr-2026, 03 Apr 2026, "Apr 03, 2026 09:20 AM", with optional AM/PM. `time` may be given separately.
  */
-export function parseLocalDateTime(date: string, time = ''): LocalDateTime | null {
+export function parseLocalDateTime(date: string, time = '', order: DateOrder = 'dmy'): LocalDateTime | null {
   const s = `${date} ${time}`.trim().replace(/\s+/g, ' ');
   let y: number, mo: number, d: number;
   let rest = '';
   let m: RegExpExecArray | null;
   if ((m = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})[T ]?(.*)$/.exec(s))) {
     y = +m[1]; mo = +m[2]; d = +m[3]; rest = m[4];
-  } else if ((m = /^(\d{1,2})[-./](\d{1,2})[-./](\d{4})[T ]?(.*)$/.exec(s))) {
-    d = +m[1]; mo = +m[2]; y = +m[3]; rest = m[4];
+  } else if ((m = /^(\d{1,2})[-./](\d{1,2})[-./](\d{4}|\d{2}(?!\d))[T ]?(.*)$/.exec(s))) {
+    [d, mo] = order === 'mdy' ? [+m[2], +m[1]] : [+m[1], +m[2]];
+    y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; rest = m[4];
   } else if ((m = /^(\d{1,2})[- ]([A-Za-z]{3,4})[a-z]*[- ,]+(\d{2,4})[T ]?(.*)$/.exec(s))) {
     d = +m[1]; mo = MONTHS[m[2].toLowerCase()] ?? 0; y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; rest = m[4];
   } else if ((m = /^([A-Za-z]{3,4})[a-z]* (\d{1,2}),? (\d{4})[T ]?(.*)$/.exec(s))) {

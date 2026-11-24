@@ -1,5 +1,6 @@
 import type { ImportParser, SourceId } from './types';
-import { angelone, dhan, groww, upstox, zerodha } from './parsers/fills';
+import { dhan } from './parsers/dhan';
+import { angelone, groww, upstox, zerodha } from './parsers/fills';
 import { genericCsv } from './parsers/generic';
 import { mt4, mt5 } from './parsers/mt';
 import { zerodhaPnl } from './parsers/zerodhaPnl';

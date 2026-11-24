@@ -4,7 +4,7 @@ import { estimateCharges, totalCharges } from './charges/india';
 import { decodeFile } from './decode';
 import { detectParser } from './detect';
 import { parserById } from './registry';
-import { buildEpisodes } from './roundtrip';
+import { buildEpisodes, type Episode } from './roundtrip';
 import type { CanonicalField, Charges, ClosedTrade, NormalizedTrade, ParserOutput, SourceId } from './types';
 import { FileFormatError } from './xlsx';
 
@@ -46,19 +46,28 @@ const closedToTrade = (c: ClosedTrade, source: SourceId): NormalizedTrade => {
   };
 };
 
+/** The charges the file listed for every leg of the episode, summed; null when any leg has none. */
+function listedCharges(e: Episode): Charges | null {
+  if (!e.legs.length || !e.legs.every((l) => l.charges)) return null;
+  const r2 = (x: number) => Math.round((x + Number.EPSILON) * 100) / 100;
+  const sum = (k: keyof Charges) => r2(e.legs.reduce((a, l) => a + l.charges![k], 0));
+  return { brokerage: sum('brokerage'), stt: sum('stt'), exchange: sum('exchange'), sebi: sum('sebi'), stamp: sum('stamp'), gst: sum('gst'), other: sum('other') };
+}
+
 function fillsToTrades(out: Extract<ParserOutput, { kind: 'fills' }>, source: SourceId, warnings: string[]): NormalizedTrade[] {
   const rt = buildEpisodes(out.fills);
   if (rt.unmatchedFills) warnings.push(`${rt.unmatchedFills} closing fills had no opening fill in this file (position opened before the first date in the file). Include earlier dates to import them.`);
   if (rt.openPositions) warnings.push(`${rt.openPositions} positions are still open at the end of the file and were skipped.`);
   if (rt.expiredClosed) warnings.push(`${rt.expiredClosed} bought options expired with no closing trade; they are recorded as closed at 0.`);
 
-  const charges: (Charges | null)[] = out.plan ? estimateCharges(rt.episodes, out.plan) : rt.episodes.map(() => null);
-  if (charges.some(Boolean)) {
+  const estimated: (Charges | null)[] = out.plan ? estimateCharges(rt.episodes, out.plan) : rt.episodes.map(() => null);
+  const listed = rt.episodes.map(listedCharges);
+  if (estimated.some((c, i) => c && !listed[i])) {
     warnings.push("Charges are estimated from statutory rates in force on each trade date and the broker's standard brokerage plan; your contract note is authoritative.");
   }
   return rt.episodes.map((e, i) => {
     const mult = e.instrument.contractMultiplier;
-    const c = charges[i];
+    const c = listed[i] ?? estimated[i];
     const fees = c ? totalCharges(c) : 0;
     const r = computePnl({
       side: e.side, quantity: e.quantity, entryPrice: e.entryPrice, exitPrice: e.exitPrice,
@@ -73,7 +82,7 @@ function fillsToTrades(out: Extract<ParserOutput, { kind: 'fills' }>, source: So
       ...(i2.underlying ? { underlying: i2.underlying } : {}), ...(i2.optionType ? { optionType: i2.optionType } : {}),
       ...(i2.strike != null ? { strike: i2.strike } : {}), ...(i2.expiry ? { expiry: i2.expiry } : {}),
       externalId: `${source}:${e.firstFillId}:${e.lastFillId}`, importSource: source,
-      ...(c ? { charges: c, chargesEstimated: true } : {}), fills: e.fills,
+      ...(c ? { charges: c, chargesEstimated: !listed[i] } : {}), fills: e.fills,
     };
   });
 }

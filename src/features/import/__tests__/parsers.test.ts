@@ -105,8 +105,75 @@ describe('broker fixtures', () => {
   });
 
   it('auto-detect never confuses fixtures', () => {
-    const expected: Record<string, string> = { 'zerodha.csv': 'zerodha', 'dhan.csv': 'dhan', 'upstox.csv': 'upstox', 'angelone.csv': 'angelone', 'groww.xlsx': 'groww', 'mt4.html': 'mt4', 'mt5.html': 'mt5', 'zerodha_pnl.xlsx': 'zerodha_pnl' };
+    const expected: Record<string, string> = {
+      'zerodha.csv': 'zerodha', 'dhan.csv': 'dhan', 'upstox.csv': 'upstox', 'angelone.csv': 'angelone', 'groww.xlsx': 'groww', 'mt4.html': 'mt4', 'mt5.html': 'mt5', 'zerodha_pnl.xlsx': 'zerodha_pnl',
+      'dhan_gtr.csv': 'dhan', 'upstox_trade.xlsx': 'upstox', 'angelone_trades.xlsx': 'angelone', 'mt4_volume.html': 'mt4', 'mt5.xlsx': 'mt5',
+    };
     for (const [f, id] of Object.entries(expected)) expect(run(f).detectedSource).toBe(id);
+  });
+});
+
+describe('real export layouts', () => {
+  const total = (r: ReturnType<typeof run>, k: 'pnl' | 'grossPnl' | 'fees') => Math.round(r.trades.reduce((a, t) => a + t[k], 0) * 100) / 100;
+
+  it('dhan global transaction report: a BUY and a SELL per row, the report\'s own charges, net = Gross Amount column', () => {
+    const r = run('dhan_gtr.csv');
+    expect(r.detectedSource).toBe('dhan');
+    expect(r.trades.map((t) => t.symbol)).toEqual(['NIFTY 07 APR 2026 23000 CE', 'RELIANCE INDUSTRIES', 'WIPRO 28 APR 2026 FUT', 'CRUDEOIL 16 APR 2026 9000 PE']);
+    expect(sym(r, 'NIFTY 07 APR 2026 23000 CE')).toMatchObject({ assetClass: 'options', optionType: 'call', strike: 23000, expiry: '2026-04-07', underlying: 'NIFTY', quantity: 150, entryPrice: 100, exitPrice: 110, grossPnl: 1500, fees: 70.23, pnl: 1429.77, chargesEstimated: false, openDate: '2026-03-31T18:30:00.000Z' });
+    expect(sym(r, 'RELIANCE INDUSTRIES')).toMatchObject({ assetClass: 'stock', side: 'BUY', entryPrice: 1300, exitPrice: 1340, grossPnl: 400, fees: 29.56, closeDate: '2026-04-05T18:30:00.000Z' });
+    expect(sym(r, 'WIPRO 28 APR 2026 FUT')).toMatchObject({ assetClass: 'futures', expiry: '2026-04-28', grossPnl: 3000 });
+    expect(sym(r, 'CRUDEOIL 16 APR 2026 9000 PE').grossPnl).toBe(960);
+    // Sum of the Gross Amount column (sell − buy − charges) of the five rows.
+    expect(total(r, 'pnl')).toBe(5470.43);
+    expect(r.warnings.join(' ')).toMatch(/no trade times/);
+    expect(r.warnings.join(' ')).not.toMatch(/estimated/);
+  });
+
+  it('upstox trade report: time from Trade Time, F&O contract from its columns, FOB/BSX → BSE SENSEX', () => {
+    const r = run('upstox_trade.xlsx');
+    expect(r.detectedSource).toBe('upstox');
+    expect(r.trades).toHaveLength(3);
+    expect(sym(r, 'GNG ELECTRONICS LIMITED')).toMatchObject({ quantity: 5, grossPnl: -6.4, fills: 3, openDate: '2026-08-28T06:22:13.000Z', closeDate: '2026-08-28T06:23:57.000Z' });
+    expect(sym(r, 'NIFTY 01 SEP 2026 24000 PE')).toMatchObject({ assetClass: 'options', optionType: 'put', strike: 24000, expiry: '2026-09-01', grossPnl: -84.5, openDate: '2026-08-28T06:07:22.000Z' });
+    // The sell is listed first but happened later.
+    expect(sym(r, 'SENSEX 03 SEP 2026 78300 CE')).toMatchObject({ side: 'BUY', entryPrice: 90.05, exitPrice: 90.8, grossPnl: 15, underlying: 'SENSEX' });
+    expect(total(r, 'grossPnl')).toBe(-75.9);
+  });
+
+  it('angel one trades and charges: price by side, spelled-out contracts, same-day fills in trade-number order', () => {
+    const r = run('angelone_trades.xlsx');
+    expect(r.detectedSource).toBe('angelone');
+    expect(r.trades).toHaveLength(3);
+    expect(sym(r, 'VA TECH WABAG LTD')).toMatchObject({ side: 'BUY', entryPrice: 2163, exitPrice: 2158.2, grossPnl: -4.8, openDate: '2026-08-26T18:30:00.000Z' });
+    expect(sym(r, 'NIFTY 25 AUG 2026 24150 PE')).toMatchObject({ assetClass: 'options', optionType: 'put', strike: 24150, expiry: '2026-08-25', grossPnl: 991.25 });
+    expect(sym(r, 'SENSEX 27 AUG 2026 77600 CE')).toMatchObject({ assetClass: 'options', underlying: 'SENSEX', grossPnl: -422 });
+    expect(r.skipped).toBe(2);
+    expect(r.warnings.join(' ')).toMatch(/no times/);
+  });
+
+  it('angel one csv dates are month first (8/5/26 0:00)', () => {
+    const csv = 'Scrip/Contract,Buy/Sell,Buy Price,Sell Price,Quantity,Order ID,Trade ID,Date,Exchange,Segment\nITC LTD,Buy,400,,10,11,101,8/5/26 0:00,NSE,CAPITAL\nITC LTD,Sell,,410,10,12,102,8/5/26 0:00,NSE,CAPITAL\n';
+    const r = parseImport({ source: 'auto', fileName: 'trades.csv', contentBase64: text(csv) });
+    expect(r.detectedSource).toBe('angelone');
+    expect(r.trades[0]).toMatchObject({ symbol: 'ITC LTD', grossPnl: 100, openDate: '2026-08-04T18:30:00.000Z' });
+  });
+
+  it('mt4 statement headed "Volume": read like "Size", deleted pending orders are not trades', () => {
+    const r = run('mt4_volume.html');
+    expect(r.detectedSource).toBe('mt4');
+    expect(r.trades.map((t) => t.externalId)).toEqual(['mt4:1087504226', 'mt4:1087504275']);
+    expect(r.skipped).toBe(0);
+    // Closed P/L line of the statement.
+    expect(total(r, 'pnl')).toBe(111.3);
+  });
+
+  it('mt5 xlsx history with UTF-16LE parts: positions read, net = Total Net Profit', () => {
+    const r = run('mt5.xlsx');
+    expect(r.detectedSource).toBe('mt5');
+    expect(r.trades).toHaveLength(2);
+    expect(r.trades[1]).toMatchObject({ side: 'SELL', quantity: 0.1, fees: 0.5, stopLoss: 4062 });
+    expect(total(r, 'pnl')).toBe(-16.05);
   });
 });
 
