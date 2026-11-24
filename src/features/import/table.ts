@@ -90,7 +90,8 @@ export function parseLocalDateTime(date: string, time = '', order: DateOrder = '
   if ((m = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})[T ]?(.*)$/.exec(s))) {
     y = +m[1]; mo = +m[2]; d = +m[3]; rest = m[4];
   } else if ((m = /^(\d{1,2})[-./](\d{1,2})[-./](\d{4}|\d{2}(?!\d))[T ]?(.*)$/.exec(s))) {
-    [d, mo] = order === 'mdy' ? [+m[2], +m[1]] : [+m[1], +m[2]];
+    // Month first only in the two-digit-year form a spreadsheet writes (8/27/26); four-digit years stay day first.
+    [d, mo] = order === 'mdy' && m[3].length === 2 ? [+m[2], +m[1]] : [+m[1], +m[2]];
     y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; rest = m[4];
   } else if ((m = /^(\d{1,2})[- ]([A-Za-z]{3,4})[a-z]*[- ,]+(\d{2,4})[T ]?(.*)$/.exec(s))) {
     d = +m[1]; mo = MONTHS[m[2].toLowerCase()] ?? 0; y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; rest = m[4];

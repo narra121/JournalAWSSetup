@@ -157,6 +157,9 @@ describe('real export layouts', () => {
     const r = parseImport({ source: 'auto', fileName: 'trades.csv', contentBase64: text(csv) });
     expect(r.detectedSource).toBe('angelone');
     expect(r.trades[0]).toMatchObject({ symbol: 'ITC LTD', grossPnl: 100, openDate: '2026-08-04T18:30:00.000Z' });
+    // A four-digit year stays day first.
+    const dmy = parseImport({ source: 'auto', fileName: 'trades.csv', contentBase64: text(csv.replace(/8\/5\/26 0:00/g, '13/04/2026')) });
+    expect(dmy.trades[0].openDate).toBe('2026-04-12T18:30:00.000Z');
   });
 
   it('mt4 statement headed "Volume": read like "Size", deleted pending orders are not trades', () => {

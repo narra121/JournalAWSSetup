@@ -63,9 +63,10 @@ export const dhan: ImportParser = {
       const sellValue = num(get('sell value'));
       const buy = buyQty > 0 && buyValue != null && buyValue >= 0;
       const sell = sellQty > 0 && sellValue != null && sellValue >= 0;
-      const charges = rowCharges(get);
+      // A row without charge cells gets estimated charges instead of a listed zero.
+      const charges = ['brokerage', 'stt', 'gst', 'txn charges'].some((k) => get(k) !== '') ? rowCharges(get) : undefined;
       const total = (buy ? buyValue! : 0) + (sell ? sellValue! : 0);
-      const part = (v: number) => scaled(charges, total > 0 ? v / total : buy && sell ? 0.5 : 1);
+      const part = (v: number) => charges && scaled(charges, total > 0 ? v / total : buy && sell ? 0.5 : 1);
       let used = false;
       if (buy) {
         fills.push({ ...instrument, side: 'BUY', quantity: buyQty, price: buyValue! / buyQty, time, tradeId: `${id}|B`, charges: part(buyValue!) });
@@ -78,7 +79,7 @@ export const dhan: ImportParser = {
       if (!used) skipped++;
     }
     if (fills.length) {
-      ctx.warnings.push("Dhan's Global Transaction Report has each day's buy and sell totals but no trade times: trades are dated by day at average prices, and one contract's trades on one day are combined.");
+      ctx.warnings.push("Dhan's Global Transaction Report has each day's buy and sell totals but no trade times: trades are dated by day at average prices, one contract's trades on one day are combined, and each day is read as bought first, then sold.");
     }
     return { kind: 'fills', fills, skipped, plan: 'dhan' };
   },
