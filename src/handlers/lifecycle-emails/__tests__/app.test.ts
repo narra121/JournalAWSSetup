@@ -1,9 +1,10 @@
-import { DynamoDBDocumentClient, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.stubEnv('SUBSCRIPTIONS_TABLE', 'subs');
 vi.stubEnv('USER_PREFERENCES_TABLE', 'prefs');
+vi.stubEnv('TRADES_TABLE', 'trades');
 vi.stubEnv('APP_URL', 'https://tradequt.com');
 
 const sendEmail = vi.fn();
@@ -38,7 +39,7 @@ describe('runLifecycleEmails', () => {
       { userId: 'cancelled', status: 'cancelled', trialEnd: inDays(2.5) },
     ] });
     const result = await runLifecycleEmails(NOW);
-    expect(result).toEqual({ trialEnding: 1, trialEnded: 1, failed: 0 });
+    expect(result).toEqual({ trialEnding: 1, trialEnded: 1, gettingStarted: 0, failed: 0 });
     const sent = sendEmail.mock.calls.map((c) => [c[0].to, c[0].subject]);
     expect(sent).toEqual([
       ['ending@example.com', 'Your TradeQut free trial ends in 3 days'],
@@ -58,7 +59,7 @@ describe('runLifecycleEmails', () => {
   it('marks each mail so a rerun does not send it twice', async () => {
     ddb.on(ScanCommand).resolves({ Items: [{ userId: 'u', status: 'trial', trialEnd: inDays(2.5) }] });
     ddb.on(UpdateCommand).rejects(Object.assign(new Error('c'), { name: 'ConditionalCheckFailedException' }));
-    expect(await runLifecycleEmails(NOW)).toEqual({ trialEnding: 0, trialEnded: 0, failed: 0 });
+    expect(await runLifecycleEmails(NOW)).toEqual({ trialEnding: 0, trialEnded: 0, gettingStarted: 0, failed: 0 });
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -69,7 +70,7 @@ describe('runLifecycleEmails', () => {
     ] });
     sendEmail.mockRejectedValueOnce(new Error('SES sandbox')).mockResolvedValue(undefined);
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    expect(await runLifecycleEmails(NOW)).toEqual({ trialEnding: 1, trialEnded: 0, failed: 1 });
+    expect(await runLifecycleEmails(NOW)).toEqual({ trialEnding: 1, trialEnded: 0, gettingStarted: 0, failed: 1 });
     spy.mockRestore();
   });
 
@@ -77,6 +78,115 @@ describe('runLifecycleEmails', () => {
     ddb.on(ScanCommand).resolves({ Items: [{ userId: 'gone', status: 'trial', trialEnd: inDays(2.5) }] });
     getUserEmail.mockResolvedValue(null);
     expect((await runLifecycleEmails(NOW)).trialEnding).toBe(0);
+  });
+});
+
+describe('runLifecycleEmails: getting-started mails of the first week', () => {
+  const trialUser = (userId: string, daysSinceSignUp: number, extra: Record<string, unknown> = {}) => ({
+    userId,
+    status: 'trial',
+    trialStarted: inDays(-daysSinceSignUp),
+    trialEnd: inDays(14 - daysSinceSignUp),
+    ...extra,
+  });
+  const run = async (items: Record<string, unknown>[], traded: Record<string, boolean> = {}) => {
+    ddb.on(ScanCommand).resolves({ Items: items });
+    ddb.on(GetCommand).resolves({ Item: { notifications: { tradeReminders: true } } });
+    ddb.on(QueryCommand).callsFake((input) => ({ Count: traded[input.ExpressionAttributeValues[':u']] ? 1 : 0 }));
+    const result = await runLifecycleEmails(NOW);
+    return { result, sent: sendEmail.mock.calls.map((c) => [c[0].to, c[0].subject]) };
+  };
+
+  it('day 1 and day 3 tell a user without trades how to get them in; day 7 says nothing to an empty journal', async () => {
+    const { result, sent } = await run([trialUser('d1', 1.5), trialUser('d3', 3.5), trialUser('d7', 7.5)]);
+    expect(sent).toEqual([
+      ['d1@example.com', 'Get your first trades into TradeQut'],
+      ['d3@example.com', 'Three ways to get trades into TradeQut'],
+    ]);
+    expect(result).toEqual({ trialEnding: 0, trialEnded: 0, gettingStarted: 2, failed: 0 });
+  });
+
+  it('a user who has trades is not told to import: nothing on day 1, tagging on day 3, the review on day 7', async () => {
+    const { sent } = await run([trialUser('d1', 1.5), trialUser('d3', 3.5), trialUser('d7', 7.5)], { d1: true, d3: true, d7: true });
+    expect(sent).toEqual([
+      ['d3@example.com', 'See what each mistake costs you'],
+      ['d7@example.com', 'Review your first week in TradeQut'],
+    ]);
+  });
+
+  it('sends nothing outside the three one-day windows', async () => {
+    const { sent } = await run([0.5, 2.5, 4.5, 6.9, 8.1, 13].map((d, i) => trialUser(`u${i}`, d)));
+    expect(sent).toEqual([]);
+    expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
+  });
+
+  it('a row without trialStarted (an older user whose trial was granted again) gets none', async () => {
+    const { sent } = await run([{ userId: 'old', status: 'trial', trialGrantedAt: inDays(-1.5), trialEnd: inDays(12.5) }]);
+    expect(sent).toEqual([]);
+  });
+
+  it('paying and cancelled users get none', async () => {
+    const { sent } = await run([trialUser('paid', 1.5, { status: 'active' }), trialUser('gone', 3.5, { status: 'cancelled' })]);
+    expect(sent).toEqual([]);
+  });
+
+  it('a user who switched the mails off gets none, and nothing is marked', async () => {
+    ddb.on(ScanCommand).resolves({ Items: [trialUser('off', 1.5)] });
+    ddb.on(GetCommand).resolves({ Item: { notifications: { tradeReminders: false } } });
+    ddb.on(QueryCommand).resolves({ Count: 0 });
+    expect((await runLifecycleEmails(NOW)).gettingStarted).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
+  it('a user with no preferences row yet gets the mails (the switch is on by default)', async () => {
+    ddb.on(ScanCommand).resolves({ Items: [trialUser('new', 1.5)] });
+    ddb.on(GetCommand).resolves({});
+    ddb.on(QueryCommand).resolves({ Count: 0 });
+    expect((await runLifecycleEmails(NOW)).gettingStarted).toBe(1);
+  });
+
+  it('marks each mail with the sign-up time so a rerun the same day does not send it twice', async () => {
+    const user = trialUser('once', 3.5);
+    await run([user]);
+    const mark = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(mark.ExpressionAttributeNames).toEqual({ '#m': 'gettingStartedDay3For' });
+    expect(mark.ExpressionAttributeValues).toEqual({ ':v': user.trialStarted });
+
+    sendEmail.mockClear();
+    ddb.on(UpdateCommand).rejects(Object.assign(new Error('c'), { name: 'ConditionalCheckFailedException' }));
+    expect((await runLifecycleEmails(NOW)).gettingStarted).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('counts only trades that are not deleted, also when the first page holds deleted ones only', async () => {
+    ddb.on(ScanCommand).resolves({ Items: [trialUser('paged', 1.5)] });
+    ddb.on(GetCommand).resolves({});
+    ddb.on(QueryCommand).resolvesOnce({ Count: 0, LastEvaluatedKey: { userId: 'paged', tradeId: 't1' } }).resolves({ Count: 1 });
+    expect((await runLifecycleEmails(NOW)).gettingStarted).toBe(0);
+    const queries = ddb.commandCalls(QueryCommand);
+    expect(queries).toHaveLength(2);
+    expect(queries[0].args[0].input).toMatchObject({ TableName: 'trades', FilterExpression: 'attribute_not_exists(deletedAt)', Select: 'COUNT' });
+    expect(queries[0].args[0].input.Limit).toBeUndefined();
+    expect(queries[1].args[0].input.ExclusiveStartKey).toEqual({ userId: 'paged', tradeId: 't1' });
+  });
+
+  it('every getting-started mail carries the switch-off link in both parts and no upgrade pitch', async () => {
+    await run([trialUser('a', 1.5), trialUser('b', 3.5), trialUser('c', 3.5), trialUser('d', 7.5)], { c: true, d: true });
+    expect(sendEmail).toHaveBeenCalledTimes(4);
+    for (const [mail] of sendEmail.mock.calls) {
+      expect(mail.text).toContain('https://tradequt.com/app/settings/notifications');
+      expect(mail.html).toContain('<a href="https://tradequt.com/app/settings/notifications">Settings → Notifications</a>');
+      expect(mail.subject + mail.text + mail.html).not.toMatch(/\bPro\b|upgrade|\$\d|₹|\bbest\b|#1\b|free forever|auto.?sync|mobile app|guarantee/i);
+    }
+  });
+
+  it('a failed getting-started send is counted and the next user still gets theirs', async () => {
+    sendEmail.mockRejectedValueOnce(new Error('SES down')).mockResolvedValue(undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { result, sent } = await run([trialUser('a', 1.5), trialUser('b', 1.5)]);
+    expect(result).toMatchObject({ gettingStarted: 1, failed: 1 });
+    expect(sent).toHaveLength(2);
   });
 });
 

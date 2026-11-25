@@ -57,6 +57,9 @@ const optionalFooter = () =>
 
 const SUPPORT_EMAIL = 'support@tradequt.com';
 
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 /** Sent once, when the account is confirmed. `trialEndsOn` is YYYY-MM-DD. */
 export function welcomeMail(to: string, trialEndsOn: string): Mail {
   const start = `${appUrl()}/app/dashboard`;
@@ -70,6 +73,77 @@ export function welcomeMail(to: string, trialEndsOn: string): Mail {
       TRANSACTIONAL_FOOTER,
     ),
   };
+}
+
+/** A getting-started mail of the first trial week. These are optional mails, so each carries the switch-off link. */
+function howToMail(to: string, subject: string, intro: string, steps: string[], link: { label: string; url: string }): Mail {
+  return {
+    to,
+    subject,
+    text: `${intro}\n\n${steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n${link.label}: ${link.url}\n\nQuestions: ${SUPPORT_EMAIL}\n\nYou can turn these emails off in Settings: ${notificationsUrl()}`,
+    html: layout(
+      `<h2>${escapeHtml(subject)}</h2><p>${escapeHtml(intro)}</p><ol>${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol><p><a href="${link.url}">${escapeHtml(link.label)}</a></p><p>Questions: <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>`,
+      optionalFooter(),
+    ),
+  };
+}
+
+const journalLink = () => ({ label: 'Open your journal', url: `${appUrl()}/app/dashboard` });
+
+export function firstTradesMail(to: string): Mail {
+  return howToMail(
+    to,
+    'Get your first trades into TradeQut',
+    'Your journal has no trades yet. A file from your broker or trading platform is the quickest way in.',
+    [
+      'Export your trade history from your broker or platform. The import page shows the export steps for each one it reads.',
+      'Open your journal and drop the file on step 2. Check the rows, then save.',
+      'No export file? Upload a screenshot of your trades, or add a trade by hand.',
+    ],
+    journalLink(),
+  );
+}
+
+export function otherWaysMail(to: string): Mail {
+  return howToMail(
+    to,
+    'Three ways to get trades into TradeQut',
+    'Your journal is still empty. Any one of these gets your trades in.',
+    [
+      'A broker or platform file: the import page shows the export steps for each one it reads.',
+      'Any other CSV: choose the generic CSV source and map your columns.',
+      'A screenshot of your trades, or a trade typed in by hand.',
+    ],
+    journalLink(),
+  );
+}
+
+export function tagTradesMail(to: string): Mail {
+  return howToMail(
+    to,
+    'See what each mistake costs you',
+    'Your trades are in. Tags turn them into answers.',
+    [
+      'Open a trade and tag its setup, the mistakes you made and the rules you broke.',
+      'Open Analytics to see which setups, hours and habits make or lose money.',
+      'Set a weekly goal and your rules under Goals.',
+    ],
+    { label: 'Open Analytics', url: `${appUrl()}/app/analytics` },
+  );
+}
+
+export function weekReviewMail(to: string): Mail {
+  return howToMail(
+    to,
+    'Review your first week in TradeQut',
+    'A week of trades is enough for a first review.',
+    [
+      'Open Insights and generate a report on your trades.',
+      'Ask the chat a question about your own trades, for example which setup lost the most.',
+      'Check the week against your goals and rules under Goals.',
+    ],
+    { label: 'Open Insights', url: `${appUrl()}/app/insights` },
+  );
 }
 
 export function trialEndingMail(to: string, endsOn: string): Mail {
@@ -110,9 +184,6 @@ export function paymentFailedMail(to: string): Mail {
     ),
   };
 }
-
-const escapeHtml = (text: string) =>
-  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 export function weeklyReportMail(to: string, summary: string): Mail {
   const url = `${appUrl()}/app/insights`;

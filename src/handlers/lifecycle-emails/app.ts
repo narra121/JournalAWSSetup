@@ -1,8 +1,19 @@
-import { GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { computeEntitlements } from '../../app/billing/entitlements';
 import { createQuota } from '../../app/billing/quota';
 import { ddb } from '../../shared/dynamo';
-import { getUserEmail, sendEmail, trialEndedMail, trialEndingMail, weeklyReportMail, type Mail } from '../../shared/email';
+import {
+  firstTradesMail,
+  getUserEmail,
+  otherWaysMail,
+  sendEmail,
+  tagTradesMail,
+  trialEndedMail,
+  trialEndingMail,
+  weekReviewMail,
+  weeklyReportMail,
+  type Mail,
+} from '../../shared/email';
 
 const DAY = 86_400_000;
 
@@ -44,18 +55,64 @@ async function mailUser(userId: string, build: (to: string) => Mail): Promise<bo
   return true;
 }
 
+/** True when the user has at least one trade that is not soft-deleted. */
+async function hasTrades(userId: string): Promise<boolean> {
+  let lastKey: Record<string, any> | undefined;
+  do {
+    // No Limit: DynamoDB applies it before the filter, so a first page of deleted trades would read as "none".
+    const res = await ddb.send(
+      new QueryCommand({
+        TableName: process.env.TRADES_TABLE!,
+        KeyConditionExpression: 'userId = :u',
+        FilterExpression: 'attribute_not_exists(deletedAt)',
+        ExpressionAttributeValues: { ':u': userId },
+        Select: 'COUNT',
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    if ((res.Count ?? 0) > 0) return true;
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return false;
+}
+
+/** The getting-started mail for each full day since sign-up; `null` where that user needs none. */
+const GETTING_STARTED: { day: number; marker: string; mail: (traded: boolean) => ((to: string) => Mail) | null }[] = [
+  { day: 1, marker: 'gettingStartedDay1For', mail: (traded) => (traded ? null : firstTradesMail) },
+  { day: 3, marker: 'gettingStartedDay3For', mail: (traded) => (traded ? tagTradesMail : otherWaysMail) },
+  { day: 7, marker: 'gettingStartedDay7For', mail: (traded) => (traded ? weekReviewMail : null) },
+];
+
+/** Sends the getting-started mail due today, unless the user switched these mails off; true when one was sent. */
+async function sendGettingStarted(sub: Record<string, any>, now: Date): Promise<boolean> {
+  // `trialStarted` is written only when an account is confirmed (auth-post-confirmation). A trial granted again by
+  // billing/middleware.ts sets `trialGrantedAt` instead, so a returning older user is never in these windows.
+  const started = new Date(sub.trialStarted ?? '').getTime();
+  if (Number.isNaN(started)) return false;
+  const age = now.getTime() - started;
+  const due = GETTING_STARTED.find((g) => age >= g.day * DAY && age < (g.day + 1) * DAY);
+  if (!due) return false;
+  const prefs = (await ddb.send(new GetCommand({ TableName: process.env.USER_PREFERENCES_TABLE!, Key: { userId: sub.userId } }))).Item;
+  if (prefs?.notifications?.tradeReminders === false) return false;
+  const build = due.mail(await hasTrades(sub.userId));
+  if (!build || !(await claim(sub.userId, due.marker, sub.trialStarted))) return false;
+  return mailUser(sub.userId, build);
+}
+
 export interface LifecycleResult {
   trialEnding: number;
   trialEnded: number;
+  gettingStarted: number;
   failed: number;
 }
 
 /**
  * Daily job. Trial users get one mail three days before the trial ends and one when it has ended (each at most once per
- * trial end date). Both are transactional notices and are always sent.
+ * trial end date). Both are transactional notices and are always sent. In the first week they also get up to three
+ * getting-started mails, which Settings → Notifications switches off.
  */
 export async function runLifecycleEmails(now: Date = new Date()): Promise<LifecycleResult> {
-  const result: LifecycleResult = { trialEnding: 0, trialEnded: 0, failed: 0 };
+  const result: LifecycleResult = { trialEnding: 0, trialEnded: 0, gettingStarted: 0, failed: 0 };
   for (const sub of await scanSubscriptions()) {
     if (sub.status !== 'trial' || !sub.trialEnd) continue;
     const end = new Date(sub.trialEnd).getTime();
@@ -71,6 +128,7 @@ export async function runLifecycleEmails(now: Date = new Date()): Promise<Lifecy
           if (await mailUser(sub.userId, (to) => trialEndedMail(to))) result.trialEnded++;
         }
       }
+      if (await sendGettingStarted(sub, now)) result.gettingStarted++;
     } catch (err: any) {
       result.failed++;
       console.error(JSON.stringify({ msg: 'lifecycle_email_failed', userId: sub.userId, error: err.message }));
