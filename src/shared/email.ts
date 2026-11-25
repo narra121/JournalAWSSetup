@@ -55,6 +55,23 @@ const notificationsUrl = () => `${appUrl()}/app/settings/notifications`;
 const optionalFooter = () =>
   `You can turn these emails off in <a href="${notificationsUrl()}">Settings → Notifications</a>.`;
 
+const SUPPORT_EMAIL = 'support@tradequt.com';
+
+/** Sent once, when the account is confirmed. `trialEndsOn` is YYYY-MM-DD. */
+export function welcomeMail(to: string, trialEndsOn: string): Mail {
+  const start = `${appUrl()}/app/dashboard`;
+  const guide = `${appUrl()}/guide#importing-trades`;
+  return {
+    to,
+    subject: 'Your TradeQut journal is ready',
+    text: `Your TradeQut account is confirmed and your free trial has started. Every feature is on until ${trialEndsOn}, and no card is needed.\n\nThree steps set up the journal:\n1. Create your trading account: a name and a starting balance are enough.\n2. Get your trades in: upload the file your broker or platform exports (a MetaTrader 4 or 5 report, an Indian broker trade file or any CSV) or a screenshot of your trades, or add a trade by hand.\n3. Set a weekly goal and your rules (optional).\n\nStart here: ${start}\nHow to export and import a file: ${guide}\n\nWhen the trial ends nothing is charged and your journal becomes read-only until you upgrade to Pro.\n\nQuestions: ${SUPPORT_EMAIL}\n\n${TRANSACTIONAL_FOOTER}`,
+    html: layout(
+      `<h2>Your journal is ready</h2><p>Your TradeQut account is confirmed and your free trial has started. Every feature is on until ${trialEndsOn}, and no card is needed.</p><p>Three steps set up the journal:</p><ol><li>Create your trading account: a name and a starting balance are enough.</li><li>Get your trades in: upload the file your broker or platform exports (a MetaTrader 4 or 5 report, an Indian broker trade file or any CSV) or a screenshot of your trades, or add a trade by hand.</li><li>Set a weekly goal and your rules (optional).</li></ol><p><a href="${start}">Set up your journal</a></p><p><a href="${guide}">How to export and import a file</a></p><p>When the trial ends nothing is charged and your journal becomes read-only until you upgrade to Pro.</p><p>Questions: <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>`,
+      TRANSACTIONAL_FOOTER,
+    ),
+  };
+}
+
 export function trialEndingMail(to: string, endsOn: string): Mail {
   const url = `${appUrl()}/app/billing`;
   return {

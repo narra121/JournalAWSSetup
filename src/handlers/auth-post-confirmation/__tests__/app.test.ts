@@ -9,17 +9,24 @@ vi.mock('../../../shared/user-initialization', () => ({
   createDefaultSavedOptions: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../../shared/email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../shared/email')>()),
+  sendEmail: vi.fn().mockResolvedValue(undefined),
+}));
+
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
 const { handler } = await import('../app.ts');
 
 import { createDefaultRules, createDefaultSavedOptions } from '../../../shared/user-initialization';
+import { sendEmail } from '../../../shared/email';
 
 beforeEach(() => {
   ddbMock.reset();
   ddbMock.on(PutCommand).resolves({});
   vi.mocked(createDefaultRules).mockClear();
   vi.mocked(createDefaultSavedOptions).mockClear();
+  vi.mocked(sendEmail).mockReset().mockResolvedValue(undefined);
 });
 
 describe('auth-post-confirmation handler', () => {
@@ -131,6 +138,63 @@ describe('auth-post-confirmation handler', () => {
     expect(createDefaultSavedOptions).not.toHaveBeenCalled();
     const putCalls = ddbMock.commandCalls(PutCommand);
     expect(putCalls).toHaveLength(0);
+  });
+
+  describe('welcome mail', () => {
+    const withEmail = (triggerSource: string, sub: string) => {
+      const event = makeEvent(triggerSource, sub);
+      return { ...event, request: { userAttributes: { ...event.request.userAttributes, email: 'new@example.com' } } };
+    };
+
+    it('goes once to the confirmed address when the trial row is new, with the trial end date', async () => {
+      await handler(withEmail('PostConfirmation_ConfirmSignUp', 'user-w1'));
+
+      expect(sendEmail).toHaveBeenCalledOnce();
+      const mail = vi.mocked(sendEmail).mock.calls[0][0];
+      const trialEnd = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item!.trialEnd as string;
+      expect(mail.to).toBe('new@example.com');
+      expect(mail.subject).toBe('Your TradeQut journal is ready');
+      expect(mail.text).toContain(`until ${trialEnd.slice(0, 10)}`);
+    });
+
+    it('is not sent again when the trial row already exists (a repeated confirmation)', async () => {
+      ddbMock.on(PutCommand).rejects(Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }));
+
+      await handler(withEmail('PostConfirmation_ConfirmSignUp', 'user-w2'));
+
+      expect(sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('is not sent for other triggers or when Cognito gives no address', async () => {
+      await handler(withEmail('PostConfirmation_ConfirmForgotPassword', 'user-w3'));
+      await handler(makeEvent('PostConfirmation_ConfirmSignUp', 'user-w4'));
+
+      expect(sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('a failed send is logged and the confirmation still succeeds', async () => {
+      vi.mocked(sendEmail).mockRejectedValueOnce(new Error('SES down'));
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const event = withEmail('PostConfirmation_ConfirmSignUp', 'user-w5');
+      await expect(handler(event)).resolves.toEqual(event);
+      expect(errorLog).toHaveBeenCalledWith('welcome mail failed', { userId: 'user-w5', error: 'SES down' });
+      errorLog.mockRestore();
+    });
+
+    it('a send that does not answer within 2 s is given up, so the trigger stays inside the 5 s Cognito allows', async () => {
+      vi.useFakeTimers();
+      vi.mocked(sendEmail).mockReturnValueOnce(new Promise(() => undefined));
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const event = withEmail('PostConfirmation_ConfirmSignUp', 'user-w6');
+      const run = handler(event);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(run).resolves.toEqual(event);
+      expect(errorLog).toHaveBeenCalledWith('welcome mail failed', { userId: 'user-w6', error: 'no answer in 2000 ms' });
+      errorLog.mockRestore();
+      vi.useRealTimers();
+    });
   });
 
   it('calls createDefaultRules and createDefaultSavedOptions', async () => {

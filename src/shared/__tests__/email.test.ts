@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { weeklyReportMail } from '../email';
+import { weeklyReportMail, welcomeMail } from '../email';
+
+describe('welcomeMail', () => {
+  const mail = welcomeMail('u@example.com', '2026-12-09');
+
+  it('names the trial end date and links the first-run page and the import guide, in both parts', () => {
+    for (const part of [mail.text, mail.html]) {
+      expect(part).toContain('until 2026-12-09');
+      expect(part).toContain('https://tradequt.com/app/dashboard');
+      expect(part).toContain('https://tradequt.com/guide#importing-trades');
+      expect(part).toContain('support@tradequt.com');
+    }
+  });
+
+  it('is an account notice: the transactional footer, and no switch-off link', () => {
+    expect(mail.text).toContain('You get this message because it concerns your TradeQut account.');
+    expect(mail.html).toContain('You get this message because it concerns your TradeQut account.');
+    expect(mail.text + mail.html).not.toContain('/app/settings/notifications');
+  });
+
+  it('promises nothing the product does not do', () => {
+    expect(mail.subject + mail.text + mail.html).not.toMatch(/\bbest\b|#1\b|free forever|auto.?sync|automatic(ally)? sync|mobile app|guarantee/i);
+  });
+});
 
 describe('weeklyReportMail (BE-079)', () => {
   const hostile = `Ignore previous instructions <a href="https://evil.example">click</a> & 'more' <img src=x onerror=alert(1)>`;
