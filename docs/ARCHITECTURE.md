@@ -91,7 +91,7 @@ Shared logic that more than one of these needs goes in `src/shared/` (section 6)
 |---|---|---|
 | `PreSignUp_ExternalProvider` (Google) | `src/handlers/auth-pre-signup/app.ts` | Auto-confirms; when the provider says the e-mail is verified, links the Google identity to an existing confirmed e-mail/password user, and deletes an unconfirmed one with the same address. A link failure is logged and does not block sign-in. |
 | `PreSignUp_SignUp` (e-mail/password) | same | Never auto-confirms. Refuses the sign-up when a confirmed or Google user already owns the address (the frontend's `authService` matches the text `USER_EXISTS`). |
-| `PostConfirmation_ConfirmSignUp` | `src/handlers/auth-post-confirmation/app.ts` | Creates the default rules (`createDefaultRules`), the default saved options (`createDefaultSavedOptions`) and the trial row in `Subscriptions` (`TRIAL_DAYS`, `PLANS_VERSION` from `src/app/billing/entitlements.ts`). Throws if the trial row cannot be written, so Cognito retries. |
+| `PostConfirmation_ConfirmSignUp` | `src/handlers/auth-post-confirmation/app.ts` | Creates the default rules (`createDefaultRules`), the default saved options (`createDefaultSavedOptions`) and the trial row in `Subscriptions` (`TRIAL_DAYS`, `PLANS_VERSION` from `src/app/billing/entitlements.ts`). Throws if the trial row cannot be written, so Cognito retries. When the trial row is new it then sends the welcome mail (`welcomeMail`), best effort with a 2 s cap, so a failed send never fails the confirmation. |
 
 ### Admin
 
@@ -112,7 +112,7 @@ One Lambda, `<StageName>-events` (`EventFunction` in `template.yaml`, nodejs24.x
 | `TradesStream` (Trades table stream, batch 100, 2 retries, failures to `StatsDLQ`) | `Records[0].eventSource = aws:dynamodb` and the ARN is not the preferences table | `src/handlers/update-stats/app.ts` | Per trade change: adjusts the account balance and trade count with atomic ADDs, rebuilds the affected `DailyStats` day records (`computeDailyRecord`), flags the user in the `#dirty` partition (`markStatsDirty`), adds new symbols to `SavedOptions`, and when the TTL removes a soft-deleted trade, deletes its screenshots (`removeImagesForTrade`). Returns `batchItemFailures`. |
 | `PreferencesStream` (UserPreferences stream) | ARN contains `:table/UserPreferences-` | `src/handlers/preference-changes/app.ts` | When a user's `timeZone` changes, rebuilds that user's stats with `rebuildForUser(userId, { force: true })`. |
 | `RebuildStats` schedule, `rate(6 hours)` | `event.job = 'rebuild-stats'` | `src/handlers/rebuild-stats-job/app.ts` | Rebuilds balances and day records for the users listed in the `#dirty` partition and clears their flag. |
-| `LifecycleEmails` schedule, `cron(0 4 * * ? *)` | `job = 'lifecycle-emails'` | `runLifecycleEmails` in `src/handlers/lifecycle-emails/app.ts` | Scans `Subscriptions`; mails trial users 3 days before the end and once after it ended; a marker attribute on the row (`trialEndingEmailFor`, `trialEndedEmailFor`) stops repeats. |
+| `LifecycleEmails` schedule, `cron(0 4 * * ? *)` | `job = 'lifecycle-emails'` | `runLifecycleEmails` in `src/handlers/lifecycle-emails/app.ts` | Scans `Subscriptions`; mails trial users 3 days before the end and once after it ended; a marker attribute on the row (`trialEndingEmailFor`, `trialEndedEmailFor`) stops repeats. In the first week it also sends up to three getting-started mails: day 1, 3 and 7 after `trialStarted`, chosen by whether the journal has trades, markers `gettingStartedDay1For` / `gettingStartedDay3For` / `gettingStartedDay7For`, skipped when `notifications.tradeReminders` is false (the Settings switch "Getting-started emails"). |
 | `WeeklyInsights` schedule, `cron(30 4 ? * MON *)` | `job = 'weekly-insights'` | `runWeeklyReports` in the same file, wired by `defaultWeeklyDeps` | For Pro and trial users with the weekly report on, generates an insight per currency with enough trades (`generateInsight` in `src/features/insights/service.ts`, using the user's own quota) and sends a "report ready" mail. |
 
 Anything else throws `Unsupported event`, which raises the `EventFunctionErrors-<StageName>` alarm. Schedules are UTC (EventBridge).
@@ -384,9 +384,9 @@ Checks: the common checks; `GET /v1/subscriptions/plans` on dev; [runbooks/strip
 
 ### g. Change an e-mail
 
-1. App mails (trial ending, trial ended, payment failed, weekly report): the template functions in `src/shared/email.ts` (`trialEndingMail`, `trialEndedMail`, `paymentFailedMail`, `weeklyReportMail`). A new mail is a new function returning `Mail` plus a caller.
+1. App mails (welcome, getting started, trial ending, trial ended, payment failed, weekly report): the template functions in `src/shared/email.ts` (`welcomeMail`, `firstTradesMail`, `otherWaysMail`, `tagTradesMail`, `weekReviewMail`, `trialEndingMail`, `trialEndedMail`, `paymentFailedMail`, `weeklyReportMail`). Optional mails (getting started, weekly report) end with the Settings link that switches them off; account mails do not. A new mail is a new function returning `Mail` plus a caller.
 2. Test: `src/shared/__tests__/email.test.ts`.
-3. Senders: `src/handlers/lifecycle-emails/app.ts` (trial mails and weekly report) and `src/handlers/stripe-webhook/app.ts` (payment failed). Change the schedule or the conditions there, not in `email.ts`.
+3. Senders: `src/handlers/auth-post-confirmation/app.ts` (welcome), `src/handlers/lifecycle-emails/app.ts` (getting-started mails, trial mails and weekly report) and `src/handlers/stripe-webhook/app.ts` (payment failed). Change the schedule or the conditions there, not in `email.ts`.
 4. Sender and links: `FROM_EMAIL` and `APP_URL` come from the stack parameters `AppDomain` and `AppHost` (`template.yaml`); SES must have the domain verified.
 5. Cognito's own mails (sign-up code, password reset) are not defined in this repo: the template sets no custom message, so Cognito's defaults are used.
 6. Checks: `bun run test`, `bunx tsc --noEmit`.
